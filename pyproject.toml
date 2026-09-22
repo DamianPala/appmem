@@ -1,0 +1,49 @@
+[project]
+name = "appmem"
+version = "0.1.0.dev0"
+description = "Live terminal view of RAM and swap usage per application, not per process"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+authors = [{ name = "Damian Pala" }]
+dependencies = []
+
+[project.scripts]
+appmem = "appmem.__main__:main"
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1",
+    "pytest>=8",
+    "ruff>=0.14",
+]
+
+[build-system]
+requires = ["uv_build>=0.10.10,<0.11.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "N", "UP", "B", "C4", "SIM", "RUF", "C90", "PLR0913", "PLR0917"]
+mccabe.max-complexity = 8
+pylint.max-args = 8
+pylint.max-positional-args = 5
+
+[tool.ruff.lint.isort]
+known-first-party = ["appmem"]
+
+[tool.pyright]
+pythonVersion = "3.12"
+typeCheckingMode = "strict"
+include = ["src", "tests"]
+venvPath = "."
+venv = ".venv"
+
+[tool.pytest.ini_options]
+addopts = "--strict-markers --strict-config -q"
+testpaths = ["tests"]
+filterwarnings = ["error"]
