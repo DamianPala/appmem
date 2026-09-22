@@ -6,7 +6,9 @@ license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
 authors = [{ name = "Damian Pala" }]
-dependencies = []
+dependencies = [
+    "textual>=8.2.8",
+]
 
 [project.scripts]
 appmem = "appmem.__main__:main"
@@ -15,6 +17,7 @@ appmem = "appmem.__main__:main"
 dev = [
     "pyright>=1.1",
     "pytest>=8",
+    "pytest-asyncio>=1.4.0",
     "ruff>=0.14",
 ]
 
@@ -47,3 +50,4 @@ venv = ".venv"
 addopts = "--strict-markers --strict-config -q"
 testpaths = ["tests"]
 filterwarnings = ["error"]
+asyncio_mode = "strict"

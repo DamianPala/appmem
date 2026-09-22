@@ -34,3 +34,23 @@ def pressure_word(some_avg10: float, full_avg10: float) -> str:
     if full_avg10 > 5:
         return "high"
     return f"some ({some_avg10:.1f} %)"
+
+
+def format_delta(num_bytes: int) -> str:
+    """Format a Δ byte count: ``+``/``-`` sign and size, or ``0`` for no change."""
+    if num_bytes == 0:
+        return "0"
+    sign = "+" if num_bytes > 0 else "-"
+    return f"{sign}{size(abs(num_bytes))}"
+
+
+def format_elapsed(seconds: float) -> str:
+    """Compact elapsed-time string for the Δ baseline header line, e.g. ``5m``, ``1h12m``."""
+    total = int(seconds)
+    if total < 60:
+        return f"{total}s"
+    minutes, _ = divmod(total, 60)
+    if minutes < 60:
+        return f"{minutes}m"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes}m" if minutes else f"{hours}h"
