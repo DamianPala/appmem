@@ -1,8 +1,11 @@
 """Tests for `appmem.cli` (SPEC.md "Command line", "Errors").
 
-None of these reach `AppMemApp.run()`: the interval/flag/version cases fail
-during argument parsing, and the TTY/cgroup cases fail before the app is
-built. The Textual pilot exercises `MainScreen`/`AppMemApp` directly.
+Most of these never reach `AppMemApp.run()`: the interval/flag/version cases
+fail during argument parsing, and the TTY/cgroup cases fail before the app is
+built. The Textual pilot exercises `MainScreen`/`AppMemApp` directly; the one
+exception here monkeypatches `AppMemApp.run` to check `_run_app`'s own
+post-run wiring (the JSON line printed after a mid-run cgroup vanish, final
+review slice 4 round 2 item 4) without driving a real Textual app.
 """
 
 from __future__ import annotations
@@ -14,7 +17,8 @@ import pytest
 
 from appmem import __version__
 from appmem.cli import main
-from helpers import user_service_root
+from appmem.ui.app import AppMemApp
+from helpers import user_service_root, write_memory_stat
 
 
 def _true() -> bool:
@@ -105,6 +109,33 @@ def test_missing_memory_stat_exits_with_cgroup_unavailable(
     assert exc_info.value.code == 1
     error = _last_json_line(capsys.readouterr().err)
     assert error["error"]["kind"] == "cgroup_unavailable"  # type: ignore[index]
+
+
+def test_prints_json_error_line_after_the_run_when_cgroup_vanished_mid_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `_run_app` prints the `cgroup_unavailable` JSON line itself once
+    # `app.cgroup_error_message` is set after `app.run()` returns (SPEC.md
+    # "Errors"); nothing else in this suite reaches that branch, since the
+    # pilot tests check `cgroup_error_message`/`return_code` directly instead
+    # of running a real app through `main()` (final review, slice 4 round 2
+    # item 4). The pre-start check passes here (a valid fixture tree), so
+    # `main()` reaches `_run_app`; `AppMemApp.run` is faked to skip actually
+    # driving a Textual app and just set the message a real mid-run failure
+    # would have set.
+    write_memory_stat(user_service_root(tmp_path, uid=1000))
+
+    def _fake_run(self: AppMemApp, *args: object, **kwargs: object) -> None:
+        self.cgroup_error_message = "missing cgroup path: fake mid-run vanish"
+
+    monkeypatch.setattr(AppMemApp, "run", _fake_run)
+
+    exit_code = main([], root=tmp_path, uid=1000, stdin_isatty=_true, stdout_isatty=_true)
+
+    assert exit_code == 1
+    error = _last_json_line(capsys.readouterr().err)
+    assert error["error"]["kind"] == "cgroup_unavailable"  # type: ignore[index]
+    assert error["error"]["message"] == "missing cgroup path: fake mid-run vanish"  # type: ignore[index]
 
 
 def test_version_prints_version_and_exits_zero(capsys: pytest.CaptureFixture[str]) -> None:

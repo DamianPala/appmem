@@ -106,12 +106,19 @@ def write_meminfo(
     (proc_dir / "meminfo").write_text("\n".join(lines) + "\n")
 
 
-def write_pressure(root: Path, *, some_avg10: float, full_avg10: float) -> None:
+def write_pressure(
+    root: Path,
+    *,
+    some_avg10: float,
+    full_avg10: float,
+    some_avg60: float = 0.0,
+    full_avg60: float = 0.0,
+) -> None:
     pressure_dir = root / "proc" / "pressure"
     pressure_dir.mkdir(parents=True, exist_ok=True)
     content = (
-        f"some avg10={some_avg10:.2f} avg60=0.00 avg300=0.00 total=0\n"
-        f"full avg10={full_avg10:.2f} avg60=0.00 avg300=0.00 total=0\n"
+        f"some avg10={some_avg10:.2f} avg60={some_avg60:.2f} avg300=0.00 total=0\n"
+        f"full avg10={full_avg10:.2f} avg60={full_avg60:.2f} avg300=0.00 total=0\n"
     )
     (pressure_dir / "memory").write_text(content)
 

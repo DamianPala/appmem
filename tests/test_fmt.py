@@ -35,22 +35,40 @@ def test_size_gib_keeps_one_decimal() -> None:
 
 
 def test_pressure_none_below_one_percent() -> None:
-    assert pressure_word(some_avg10=0.99, full_avg10=0.0) == "none"
+    assert pressure_word(some_avg10=0.99, some_avg60=0.0, full_avg10=0.0) == "none"
 
 
 def test_pressure_high_above_five_percent_full() -> None:
-    assert pressure_word(some_avg10=2.0, full_avg10=5.1) == "high"
+    assert pressure_word(some_avg10=2.0, some_avg60=0.0, full_avg10=5.1) == "high"
+
+
+def test_pressure_high_when_some_avg10_above_twenty_percent() -> None:
+    # A lot of tasks waiting even without a full stall yet (final review F9/A1).
+    assert pressure_word(some_avg10=20.1, some_avg60=0.0, full_avg10=0.0) == "high"
 
 
 def test_pressure_some_shows_value() -> None:
-    assert pressure_word(some_avg10=3.2, full_avg10=1.0) == "some (3.2 %)"
+    assert pressure_word(some_avg10=3.2, some_avg60=0.0, full_avg10=1.0) == "some (3.2 %)"
 
 
 def test_pressure_boundaries_are_exclusive() -> None:
-    # some avg10 == 1 is not < 1, so it is not "none".
-    assert pressure_word(some_avg10=1.0, full_avg10=0.0) == "some (1.0 %)"
+    # some avg10 == 1 is "some" (threshold is >=).
+    assert pressure_word(some_avg10=1.0, some_avg60=0.0, full_avg10=0.0) == "some (1.0 %)"
     # full avg10 == 5 is not > 5, so it is not "high".
-    assert pressure_word(some_avg10=2.0, full_avg10=5.0) == "some (2.0 %)"
+    assert pressure_word(some_avg10=2.0, some_avg60=0.0, full_avg10=5.0) == "some (2.0 %)"
+    # some avg10 == 20 is not > 20, so it is not "high" via that trigger.
+    assert pressure_word(some_avg10=20.0, some_avg60=0.0, full_avg10=0.0) == "some (20.0 %)"
+
+
+def test_pressure_none_mentions_last_minute_when_avg60_above_one_percent() -> None:
+    assert (
+        pressure_word(some_avg10=0.5, some_avg60=1.5, full_avg10=0.0)
+        == "none (some 1.5 % last min)"
+    )
+
+
+def test_pressure_none_bare_when_avg60_at_or_below_one_percent() -> None:
+    assert pressure_word(some_avg10=0.5, some_avg60=1.0, full_avg10=0.0) == "none"
 
 
 def test_format_delta_zero_is_bare_zero() -> None:

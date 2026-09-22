@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from appmem.collect import CgroupUnavailableError, find_units
+from appmem.collect import CgroupUnavailableError, MemoryStatUnavailableError, find_units
 from helpers import make_unit, user_service_root
 
 
@@ -78,3 +78,50 @@ def test_missing_memory_stat_on_user_root_raises(tmp_path: Path) -> None:
 
     with pytest.raises(CgroupUnavailableError, match=r"memory\.stat"):
         find_units(tmp_path, uid=1000, include_system=False)
+
+
+def test_incomplete_memory_stat_on_user_root_raises(tmp_path: Path) -> None:
+    # The file exists but is missing anon/shmem/file (final review F1): the
+    # pre-start check must parse it, not just check it exists.
+    user_root = user_service_root(tmp_path, uid=1000)
+    user_root.mkdir(parents=True)
+    (user_root / "memory.stat").write_text("kernel 100\n")
+
+    with pytest.raises(CgroupUnavailableError, match=r"memory\.stat"):
+        find_units(tmp_path, uid=1000, include_system=False)
+
+
+def test_memory_stat_missing_kernel_line_still_passes_the_pre_start_check(tmp_path: Path) -> None:
+    # `kernel` is optional (older kernels); anon/shmem/file are enough to start.
+    user_root = user_service_root(tmp_path, uid=1000)
+    user_root.mkdir(parents=True)
+    (user_root / "memory.stat").write_text("anon 1\nshmem 2\nfile 3\n")
+
+    units = find_units(tmp_path, uid=1000, include_system=False)
+
+    assert units == []
+
+
+# --- strict=False: per-tick calls, not the pre-start check ----------------------
+# (final review, slice 4 round 2 item 5)
+
+
+def test_strict_false_still_raises_cgroup_unavailable_when_the_directory_is_gone(
+    tmp_path: Path,
+) -> None:
+    # The user tree directory itself vanishing is fatal even mid-run.
+    with pytest.raises(CgroupUnavailableError, match=r"user@1000\.service"):
+        find_units(tmp_path, uid=1000, include_system=False, strict=False)
+
+
+def test_strict_false_raises_memory_stat_unavailable_not_cgroup_unavailable(
+    tmp_path: Path,
+) -> None:
+    # The directory exists but memory.stat can't be parsed this tick (e.g. a
+    # partial write): transient, not the fatal "session is over" error.
+    user_root = user_service_root(tmp_path, uid=1000)
+    user_root.mkdir(parents=True)
+    (user_root / "memory.stat").write_text("kernel 100\n")  # missing anon/shmem/file
+
+    with pytest.raises(MemoryStatUnavailableError, match=r"memory\.stat"):
+        find_units(tmp_path, uid=1000, include_system=False, strict=False)

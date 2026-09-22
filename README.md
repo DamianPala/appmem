@@ -6,7 +6,7 @@ A live terminal view of RAM and swap **per application** on Linux.
 appmem reads the memory and swap counters the kernel already keeps for every systemd app cgroup, sums them per app, and shows a sortable table that refreshes every second.
 
 ```
-RAM 17.1/30.9 GiB  avail 13.9 GiB   Swap 23.0/32.0 GiB   pressure: none   system 560 MiB (x)
+RAM 17.1/30.9 GiB  avail 13.9 GiB   Swap 23.0/32.0 GiB   pressure 10s: none   system 560 MiB (x)
 Δ since 00:01 (2s)
  APP                        SWAP        RAM         TOTAL ▾     ΔSWAP      ΔRAM       PROCS
  ghostty                      11.1 GiB     6.3 GiB    17.4 GiB     -8 KiB    -11 MiB     278
@@ -57,10 +57,11 @@ appmem [-i SECONDS] [--system]
 
 ## What the numbers mean
 
-- **RAM** is `anon + shmem + kernel` from the app's `memory.stat`: memory the kernel can't just drop. Page cache is left out (press `c` to see it), because it makes an app that read a big file look like a hog.
+- **RAM** is `anon + shmem + kernel` from the app's `memory.stat`: anonymous, shared and charged kernel memory, excluding file cache. Page cache is left out (press `c` to see it), because it makes an app that read a big file look like a hog.
 - **SWAP** is the app's `memory.swap.current`.
-- **pressure** is how much of the last 10 s tasks spent waiting for memory. A lot of swap with pressure `none` means idle pages were paged out: memory is not why the machine is slow right now.
-- In the process view, rows come from `/proc/PID/status` (the same numbers as htop). They don't add up to the app row. Shared pages count in every process, and memory the app holds without any process mapping it (GPU buffers, memfd) belongs to no process. The `other` row shows that gap.
+- **TOTAL** is `SWAP + RAM`: an accounting sum, not a prediction of what closing the app would free.
+- **pressure** is how much of the last 10 s tasks spent waiting for memory. A lot of swap with pressure `none` just means idle pages were paged out; `high` means memory stalls are happening, but not which app is causing them.
+- In the process view, rows come from `/proc/PID/status`, leaving out file-backed pages, so they read smaller than htop's RES. They don't add up to the app row either: shared pages count in every process, and memory the app holds without any process mapping it (GPU buffers, memfd) belongs to no process. The `unattributed` row shows that gap, and `kernel` shows the app's own page tables, slab and stacks.
 - Anything started from a terminal counts as the terminal, because that's the cgroup it lives in. Use `g` in the process view to see what is actually running there.
 
 Press `?` in the app for the full explanation.

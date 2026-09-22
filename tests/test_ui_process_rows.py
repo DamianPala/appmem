@@ -2,20 +2,31 @@
 
 from appmem.collect import AppStats, ProcStats
 from appmem.ui.process_rows import (
+    KERNEL_KEY,
+    UNATTRIBUTED_KEY,
     build_command_rows,
     build_process_rows,
     initial_process_sort,
+    kernel_command_row,
+    kernel_process_row,
     next_sort_state,
-    other_command_row,
-    other_process_row,
     sort_command_rows,
     sort_process_rows,
+    unattributed_command_row,
+    unattributed_process_row,
 )
 
 
-def _app(*, swap: int = 0, ram: int = 0) -> AppStats:
+def _app(*, swap: int = 0, ram: int = 0, kernel: int = 0) -> AppStats:
     return AppStats(
-        name="ghostty", ram=ram, cache=0, swap=swap, total=swap + ram, procs=0, unit_paths=()
+        name="ghostty",
+        ram=ram,
+        cache=0,
+        swap=swap,
+        total=swap + ram,
+        procs=0,
+        unit_paths=(),
+        kernel=kernel,
     )
 
 
@@ -30,38 +41,59 @@ def test_build_process_rows_one_row_per_process() -> None:
     rows = build_process_rows([_proc(1, "a", swap=10, ram=20), _proc(2, "b", swap=5, ram=5)])
 
     assert [(row.pid, row.name, row.total) for row in rows] == [(1, "a", 30), (2, "b", 10)]
+    assert [row.key for row in rows] == ["1", "2"]
+    assert all(not row.dim for row in rows)
 
 
-def test_other_process_row_is_app_minus_processes_clamped_at_zero() -> None:
-    app = _app(swap=500, ram=1000)
+def test_kernel_process_row_is_the_apps_kernel_share_with_zero_swap() -> None:
+    app = _app(swap=500, ram=1000, kernel=200)
+
+    row = kernel_process_row(app)
+
+    assert row.key == KERNEL_KEY
+    assert row.pid is None
+    assert row.age_seconds is None
+    assert row.name == "kernel"
+    assert row.swap == 0
+    assert row.ram == 200
+    assert row.total == 200
+    assert row.dim is True
+
+
+def test_unattributed_process_row_is_app_minus_processes_minus_kernel_clamped_at_zero() -> None:
+    app = _app(swap=500, ram=1000, kernel=100)
     procs = [_proc(1, "a", swap=200, ram=600)]
 
-    other = other_process_row(app, procs)
+    row = unattributed_process_row(app, procs)
 
-    assert other.pid is None
-    assert other.age_seconds is None
-    assert other.name == "other"
-    assert other.swap == 300
-    assert other.ram == 400
-    assert other.total == 700
+    assert row.key == UNATTRIBUTED_KEY
+    assert row.pid is None
+    assert row.age_seconds is None
+    assert row.name == "unattributed"
+    assert row.swap == 300
+    assert row.ram == 300  # 1000 - 600 - 100
+    assert row.total == 600
+    assert row.dim is True
 
 
-def test_other_process_row_clamps_at_zero() -> None:
-    app = _app(swap=10, ram=10)
+def test_unattributed_process_row_clamps_at_zero() -> None:
+    app = _app(swap=10, ram=10, kernel=5)
     procs = [_proc(1, "a", swap=999, ram=999)]
 
-    other = other_process_row(app, procs)
+    row = unattributed_process_row(app, procs)
 
-    assert other.swap == 0
-    assert other.ram == 0
+    assert row.swap == 0
+    assert row.ram == 0
 
 
-def test_other_process_row_is_never_part_of_build_process_rows() -> None:
-    # `other` is a synthetic row built separately and appended last by the
-    # screen; the real-process builder never fabricates one.
-    rows = build_process_rows([_proc(1, "a")])
+def test_synthetic_keys_never_collide_with_a_real_pid_or_command_name() -> None:
+    # A real process/command literally named "kernel" or "unattributed" must
+    # still get its own row key (final review A6).
+    rows = build_process_rows([_proc(1, "kernel"), _proc(2, "unattributed")])
 
-    assert all(row.pid is not None for row in rows)
+    assert KERNEL_KEY not in {row.key for row in rows}
+    assert UNATTRIBUTED_KEY not in {row.key for row in rows}
+    assert {row.key for row in rows} == {"1", "2"}
 
 
 def test_sort_process_rows_ties_break_by_name_then_pid() -> None:
@@ -94,18 +126,33 @@ def test_build_command_rows_sums_by_name() -> None:
     assert rows["node"].ram == 10
     assert rows["node"].procs == 2
     assert rows["claude"].procs == 1
+    assert rows["node"].key == "node"
 
 
-def test_other_command_row_has_no_procs_count() -> None:
-    app = _app(swap=100, ram=100)
+def test_kernel_command_row_has_no_procs_count() -> None:
+    app = _app(swap=100, ram=100, kernel=40)
+
+    row = kernel_command_row(app)
+
+    assert row.key == KERNEL_KEY
+    assert row.name == "kernel"
+    assert row.procs is None
+    assert row.ram == 40
+    assert row.swap == 0
+    assert row.dim is True
+
+
+def test_unattributed_command_row_has_no_procs_count() -> None:
+    app = _app(swap=100, ram=100, kernel=10)
     procs = [_proc(1, "a", swap=40, ram=40)]
 
-    other = other_command_row(app, procs)
+    row = unattributed_command_row(app, procs)
 
-    assert other.name == "other"
-    assert other.procs is None
-    assert other.swap == 60
-    assert other.ram == 60
+    assert row.key == UNATTRIBUTED_KEY
+    assert row.name == "unattributed"
+    assert row.procs is None
+    assert row.swap == 60
+    assert row.ram == 50  # 100 - 40 - 10
 
 
 def test_sort_command_rows_ties_break_by_name() -> None:

@@ -53,9 +53,10 @@ Keys:
   q / Ctrl+C           quit
 
 Memory pressure:
-  none             almost no time spent waiting on memory in the last 10 s
+  none             few memory stalls in the last 10 s
   some (X.X %)     some time spent waiting; shown with the percentage
-  high             a lot of time spent waiting; memory is the bottleneck right now
+  high             a lot of time spent waiting: memory stalls are happening,
+                   but this alone doesn't say which app is causing them
   Big swap with pressure none just means idle pages were paged out.
 
 Example:
@@ -124,12 +125,16 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _fail(kind: str, message: str, code: int, *, action: str | None = None) -> NoReturn:
+def _print_error_json(kind: str, message: str, *, action: str | None = None) -> None:
     print(f"appmem: {message}", file=sys.stderr)
     error: dict[str, object] = {"kind": kind, "message": message}
     if action is not None:
         error["action"] = action
     print(json.dumps({"error": error}), file=sys.stderr)
+
+
+def _fail(kind: str, message: str, code: int, *, action: str | None = None) -> NoReturn:
+    _print_error_json(kind, message, action=action)
     raise SystemExit(code)
 
 
@@ -154,6 +159,12 @@ def _run_app(app: AppMemApp) -> int:
     finally:
         signal.signal(signal.SIGTERM, previous_sigterm)
         signal.signal(signal.SIGINT, previous_sigint)
+    # A screen recorded a vanished cgroup tree (SPEC.md "Errors"): the JSON
+    # line prints here, after Textual has restored the terminal, reusing the
+    # same error-printing path as the pre-start checks.
+    if app.cgroup_error_message is not None:
+        _print_error_json("cgroup_unavailable", app.cgroup_error_message)
+        return 1
     return app.return_code if app.return_code is not None else 0
 
 

@@ -35,6 +35,17 @@ class AppMemApp(App[None]):
         self._uid = uid
         self._interval = interval
         self._include_system = include_system
+        self.cgroup_error_message: str | None = None
+        """Set by a screen when the cgroup tree vanishes mid-tick; `cli._run_app`
+        prints the JSON `cgroup_unavailable` line after Textual restores the
+        terminal (SPEC.md "Errors")."""
+
+    def fail_cgroup_unavailable(self, message: str) -> None:
+        """Record a vanished cgroup tree and exit (SPEC.md "Errors"): no
+        traceback, exit code 1, the JSON error line printed by the caller of
+        `run()` once the terminal is restored."""
+        self.cgroup_error_message = message
+        self.exit(return_code=1)
 
     def get_default_screen(self) -> MainScreen:
         return MainScreen(

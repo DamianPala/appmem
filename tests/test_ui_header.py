@@ -1,32 +1,29 @@
 """Tests for `appmem.ui.header` (SPEC.md "Main view" header lines)."""
 
+from dataclasses import replace
 from datetime import datetime
+from typing import Any
 
 from appmem.collect import SystemStats
 from appmem.ui.header import format_line1, format_line2
 
+_DEFAULT_STATS = SystemStats(
+    mem_total=30_000_000_000,
+    mem_available=11_000_000_000,
+    swap_total=32_000_000_000,
+    swap_free=12_000_000_000,
+    pressure_some_avg10=None,
+    pressure_some_avg60=None,
+    pressure_full_avg10=None,
+    pressure_full_avg60=None,
+    system_ram=0,
+    system_swap=0,
+    elsewhere=None,
+)
 
-def _stats(
-    *,
-    mem_total: int = 30_000_000_000,
-    mem_available: int = 11_000_000_000,
-    swap_total: int = 32_000_000_000,
-    swap_free: int = 12_000_000_000,
-    pressure_some_avg10: float | None = None,
-    pressure_full_avg10: float | None = None,
-    system_ram: int = 0,
-    system_swap: int = 0,
-) -> SystemStats:
-    return SystemStats(
-        mem_total=mem_total,
-        mem_available=mem_available,
-        swap_total=swap_total,
-        swap_free=swap_free,
-        pressure_some_avg10=pressure_some_avg10,
-        pressure_full_avg10=pressure_full_avg10,
-        system_ram=system_ram,
-        system_swap=system_swap,
-    )
+
+def _stats(**overrides: Any) -> SystemStats:
+    return replace(_DEFAULT_STATS, **overrides)
 
 
 def test_line1_includes_ram_avail_swap_and_system_total() -> None:
@@ -46,15 +43,19 @@ def test_line1_swap_off_when_swap_total_zero() -> None:
 
 
 def test_line1_omits_pressure_when_none() -> None:
-    line = format_line1(_stats(pressure_some_avg10=None, pressure_full_avg10=None))
+    line = format_line1(
+        _stats(pressure_some_avg10=None, pressure_some_avg60=None, pressure_full_avg10=None)
+    )
 
     assert "pressure" not in line
 
 
-def test_line1_shows_pressure_word_when_available() -> None:
-    line = format_line1(_stats(pressure_some_avg10=0.5, pressure_full_avg10=0.0))
+def test_line1_shows_pressure_word_with_window_label() -> None:
+    line = format_line1(
+        _stats(pressure_some_avg10=0.5, pressure_some_avg60=0.0, pressure_full_avg10=0.0)
+    )
 
-    assert "pressure: none" in line
+    assert "pressure 10s: none" in line
 
 
 def test_line1_system_total_is_ram_plus_swap_with_no_process_count() -> None:
@@ -71,6 +72,24 @@ def test_line1_shares_unit_between_used_and_total_when_equal() -> None:
     line = format_line1(_stats(mem_total=30_900_000_000, mem_available=12_100_000_000))
 
     assert "RAM 17.5/28.8 GiB" in line
+
+
+def test_line1_shows_elsewhere_after_system_when_above_threshold() -> None:
+    line = format_line1(_stats(elsewhere=2 * 1024**2))
+
+    assert line.endswith("elsewhere 2 MiB")
+
+
+def test_line1_omits_elsewhere_below_1mib() -> None:
+    line = format_line1(_stats(elsewhere=1024**2 - 1))
+
+    assert "elsewhere" not in line
+
+
+def test_line1_omits_elsewhere_when_none() -> None:
+    line = format_line1(_stats(elsewhere=None))
+
+    assert "elsewhere" not in line
 
 
 def test_line2_format() -> None:

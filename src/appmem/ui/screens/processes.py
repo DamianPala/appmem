@@ -2,11 +2,11 @@
 (SPEC.md "Process view").
 
 Mirrors `MainScreen`'s tick/diff/sort patterns (row diffing via row keys,
-`update_cell` only on changed text, cursor restore by key). The app's
-`unit_paths` are captured once, at Enter time, and re-read every tick
-(SPEC.md: "re-read the app's units and processes (`read_procs` on the app's
-`unit_paths`)"); the app is considered gone once every one of them stops
-reading (SPEC.md "If the app disappears").
+`update_cell` only on changed text, cursor restore by key). The app's unit
+list is re-derived every tick from `find_app_units` (same identity/naming
+rules as the main view), not captured once at Enter, so a unit added or
+replaced while the screen is open is picked up (final review A3); the app is
+considered gone only once no unit maps to its identity any more.
 """
 
 from __future__ import annotations
@@ -18,10 +18,12 @@ from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.screen import Screen
+from textual.timer import Timer
 from textual.widgets import DataTable, Static
 from textual.widgets.data_table import ColumnKey, RowKey
 
-from appmem.collect import AppStats, ProcStats
+from appmem.collect import AppStats, CgroupUnavailableError, MemoryStatUnavailableError, ProcStats
+from appmem.collect import find_app_units as collect_find_app_units
 from appmem.collect import read_procs as collect_read_procs
 from appmem.collect import read_unit as collect_read_unit
 from appmem.fmt import format_age, size, truncate_name
@@ -32,13 +34,16 @@ from appmem.ui.process_rows import (
     ProcessSortKey,
     build_command_rows,
     build_process_rows,
+    kernel_command_row,
+    kernel_process_row,
     next_sort_state,
-    other_command_row,
-    other_process_row,
     sort_command_rows,
     sort_process_rows,
+    unattributed_command_row,
+    unattributed_process_row,
 )
 from appmem.ui.screens.help import HelpScreen
+from appmem.ui.table_order import reorder_rows
 
 _PROCESS_COLUMNS: tuple[tuple[str, str, int | None], ...] = (
     ("pid", "PID", 7),  # pid_max 4194304: 7 digits
@@ -57,15 +62,6 @@ _GROUP_COLUMNS: tuple[tuple[str, str, int | None], ...] = (
     ("procs", "PROCS", 6),
 )
 _LEFT_ALIGNED = {"name", "unit"}
-_OTHER_KEY = "other"
-
-
-def _process_row_key(row: ProcessRow) -> str:
-    return _OTHER_KEY if row.pid is None else str(row.pid)
-
-
-def _command_row_key(row: CommandRow) -> str:
-    return _OTHER_KEY if row.procs is None else row.name
 
 
 def _format_process_cell(key: str, row: ProcessRow) -> str:
@@ -96,11 +92,13 @@ def _format_command_cell(key: str, row: CommandRow) -> str:
     return "" if row.procs is None else str(row.procs)  # "procs"
 
 
-def _cell_value(key: str, text: str, *, other: bool = False) -> str | Text:
-    # The `other` row renders dim italic so it reads as a remainder, not a process.
-    style = "dim italic" if other else ""
+def _cell_value(key: str, text: str, *, dim: bool = False) -> Text:
+    # Always a literal `Text`, never a plain `str`: `DataTable` renders a `str`
+    # cell through `Text.from_markup`, which would parse markup-like process
+    # or unit names instead of showing them literally (final review A11).
+    style = "dim italic" if dim else ""
     if key in _LEFT_ALIGNED:
-        return Text(text, style=style) if other else text
+        return Text(text, style=style)
     return Text(text, justify="right", style=style)
 
 
@@ -131,30 +129,36 @@ class ProcessesScreen(Screen[None]):
         self,
         *,
         root: Path,
-        app_stats: AppStats,
+        uid: int,
+        include_system: bool,
+        name: str,
+        scope: str,
         interval: float,
         initial_sort: tuple[ProcessSortKey, bool],
     ) -> None:
         super().__init__()
         self._root = root
-        self._app_name = app_stats.name
-        self._unit_paths = app_stats.unit_paths
+        self._uid = uid
+        self._include_system = include_system
+        self._name = name
+        self._scope = scope  # stored for slice 5's scope-aware action hints
         self._interval = interval
         self._sort_key: ProcessSortKey = initial_sort[0]
         self._sort_reverse = initial_sort[1]
         self._grouped = False
         self._process_rows: dict[str, ProcessRow] = {}
         self._command_rows: dict[str, CommandRow] = {}
+        self._timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
-        yield Static(id="title")
+        yield Static(id="title", markup=False)
         table: DataTable[str | Text] = DataTable(id="table", cursor_type="row")
         self._rebuild_columns(table)
         yield table
 
     def on_mount(self) -> None:
         self.refresh_now()
-        self.set_interval(self._interval, self._tick)
+        self._timer = self.set_interval(self._interval, self._tick)
 
     def _tick(self) -> None:
         # Covered by help: skip the work, `on_screen_resume` catches up.
@@ -196,30 +200,56 @@ class ProcessesScreen(Screen[None]):
     # --- collection tick ----------------------------------------------------
 
     def refresh_now(self) -> None:
+        try:
+            self._refresh_now_unsafe()
+        except CgroupUnavailableError as exc:
+            self._fail_cgroup_unavailable(exc)
+        except MemoryStatUnavailableError:
+            pass  # transient this tick: keep the last data on screen, try again next tick
+
+    def _refresh_now_unsafe(self) -> None:
+        # `strict=False`: a transient `memory.stat` read failure on the user
+        # root raises `MemoryStatUnavailableError` (skip the tick) rather than
+        # `CgroupUnavailableError` (fatal) -- only the directory vanishing is
+        # fatal here (final review, slice 4 round 2 item 5).
+        unit_paths = collect_find_app_units(
+            self._root, self._uid, self._include_system, self._scope, self._name, strict=False
+        )
         unit_stats = [
-            stats for path in self._unit_paths if (stats := collect_read_unit(path)) is not None
+            stats for path in unit_paths if (stats := collect_read_unit(path)) is not None
         ]
         if not unit_stats:
             self._show_gone()
             return
         app = AppStats(
-            name=self._app_name,
+            name=self._name,
+            scope=self._scope,
             ram=sum(s.ram for s in unit_stats),
             cache=sum(s.cache for s in unit_stats),
             swap=sum(s.swap for s in unit_stats),
             total=sum(s.total for s in unit_stats),
             procs=sum(s.procs for s in unit_stats),
-            unit_paths=self._unit_paths,
+            kernel=sum(s.kernel for s in unit_stats),
+            unit_paths=tuple(unit_paths),
         )
-        procs = collect_read_procs(self._unit_paths, self._root)
+        procs = collect_read_procs(unit_paths, self._root)
         self._set_title(app, len(procs))
         if self._grouped:
             self._apply_command_rows(procs, app)
         else:
             self._apply_process_rows(procs, app)
 
+    def _fail_cgroup_unavailable(self, exc: CgroupUnavailableError) -> None:
+        if self._timer is not None:
+            self._timer.stop()
+        # Textual's `Screen.app` is typed from a contextvar pyright can't fully
+        # resolve to `AppMemApp` (SPEC.md "Tech" notes).
+        self.app.fail_cgroup_unavailable(  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType]
+            str(exc)
+        )
+
     def _show_gone(self) -> None:
-        self._set_static("#title", f"{self._app_name}   (app no longer running)   esc  back")
+        self._set_static("#title", f"{self._name}   (app no longer running)   esc  back")
         table = self._table()
         current = self._command_rows if self._grouped else self._process_rows
         for key in current:
@@ -238,15 +268,16 @@ class ProcessesScreen(Screen[None]):
 
     def _process_cells(self, row: ProcessRow) -> list[str | Text]:
         return [
-            _cell_value(key, _format_process_cell(key, row), other=row.pid is None)
+            _cell_value(key, _format_process_cell(key, row), dim=row.dim)
             for key, _label, _width in self._columns()
         ]
 
     def _apply_process_rows(self, procs: list[ProcStats], app: AppStats) -> None:
         table = self._table()
         real_rows = sort_process_rows(build_process_rows(procs), self._sort_key, self._sort_reverse)
-        ordered = [*real_rows, other_process_row(app, procs)]
-        new_by_key = {_process_row_key(row): row for row in ordered}
+        # `kernel` then `unattributed`, always last, both dim (SPEC.md "Definitions").
+        ordered = [*real_rows, kernel_process_row(app), unattributed_process_row(app, procs)]
+        new_by_key = {row.key: row for row in ordered}
         previous_key, previous_index = self._current_selection(table)
 
         for key in self._process_rows.keys() - new_by_key.keys():
@@ -259,7 +290,7 @@ class ProcessesScreen(Screen[None]):
                 table.add_row(*self._process_cells(row), key=key)
         self._process_rows = new_by_key
 
-        self._resort_process(table, ordered)
+        reorder_rows(table, [row.key for row in ordered])
         self._restore_selection(table, previous_key, previous_index)
 
     def _update_process_cells(
@@ -269,22 +300,21 @@ class ProcessesScreen(Screen[None]):
             old_text = _format_process_cell(col_key, old)
             new_text = _format_process_cell(col_key, row)
             if old_text != new_text:
-                value = _cell_value(col_key, new_text, other=row.pid is None)
-                table.update_cell(key, col_key, value)
+                table.update_cell(key, col_key, _cell_value(col_key, new_text, dim=row.dim))
 
     # --- row diffing: grouped (command) rows -----------------------------------
 
     def _command_cells(self, row: CommandRow) -> list[str | Text]:
         return [
-            _cell_value(key, _format_command_cell(key, row), other=row.procs is None)
+            _cell_value(key, _format_command_cell(key, row), dim=row.dim)
             for key, _label, _width in self._columns()
         ]
 
     def _apply_command_rows(self, procs: list[ProcStats], app: AppStats) -> None:
         table = self._table()
         real_rows = sort_command_rows(build_command_rows(procs), self._sort_key, self._sort_reverse)
-        ordered = [*real_rows, other_command_row(app, procs)]
-        new_by_key = {_command_row_key(row): row for row in ordered}
+        ordered = [*real_rows, kernel_command_row(app), unattributed_command_row(app, procs)]
+        new_by_key = {row.key: row for row in ordered}
         previous_key, previous_index = self._current_selection(table)
 
         for key in self._command_rows.keys() - new_by_key.keys():
@@ -297,7 +327,7 @@ class ProcessesScreen(Screen[None]):
                 table.add_row(*self._command_cells(row), key=key)
         self._command_rows = new_by_key
 
-        self._resort_command(table, ordered)
+        reorder_rows(table, [row.key for row in ordered])
         self._restore_selection(table, previous_key, previous_index)
 
     def _update_command_cells(
@@ -307,10 +337,9 @@ class ProcessesScreen(Screen[None]):
             old_text = _format_command_cell(col_key, old)
             new_text = _format_command_cell(col_key, row)
             if old_text != new_text:
-                value = _cell_value(col_key, new_text, other=row.procs is None)
-                table.update_cell(key, col_key, value)
+                table.update_cell(key, col_key, _cell_value(col_key, new_text, dim=row.dim))
 
-    # --- selection / resort, shared by both modes -------------------------------
+    # --- selection, shared by both modes -----------------------------------------
 
     def _current_selection(self, table: DataTable[str | Text]) -> tuple[str | None, int]:
         index = table.cursor_row
@@ -329,23 +358,6 @@ class ProcessesScreen(Screen[None]):
             table.move_cursor(row=table.get_row_index(previous_key))
         else:
             table.move_cursor(row=min(previous_index, table.row_count - 1))
-
-    def _resort_process(self, table: DataTable[str | Text], ordered: list[ProcessRow]) -> None:
-        ordered_keys = [_process_row_key(row) for row in ordered]
-        if ordered_keys == [_key_str(row.key) for row in table.ordered_rows]:
-            return  # same order: `table.sort` would only force a full repaint
-        # PID is the first (leftmost) column: its rendered text is what `table.sort`'s
-        # key function sees as `values[0]`, and "" is unique to the `other` row.
-        rank = {_format_process_cell("pid", row): index for index, row in enumerate(ordered)}
-        table.sort(key=lambda values: rank[str(values[0])])
-
-    def _resort_command(self, table: DataTable[str | Text], ordered: list[CommandRow]) -> None:
-        ordered_keys = [_command_row_key(row) for row in ordered]
-        if ordered_keys == [_key_str(row.key) for row in table.ordered_rows]:
-            return
-        # NAME is the first column in grouped mode; command names are unique per tick.
-        rank = {_format_command_cell("name", row): index for index, row in enumerate(ordered)}
-        table.sort(key=lambda values: rank[str(values[0])])
 
     # --- actions ----------------------------------------------------------------
 

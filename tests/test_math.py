@@ -10,20 +10,43 @@ from appmem.collect import (
     filter_visible_apps,
     group_apps,
     group_by_command,
-    other_row,
+    unattributed_row,
 )
 
 
-def _unit(name: str, **stats_kwargs: int) -> Unit:
-    defaults: dict[str, int] = {"ram": 0, "cache": 0, "swap": 0, "total": 0, "procs": 0}
+def _unit(name: str, *, scope: str = "user", **stats_kwargs: int) -> Unit:
+    defaults: dict[str, int] = {
+        "ram": 0,
+        "cache": 0,
+        "swap": 0,
+        "total": 0,
+        "procs": 0,
+        "kernel": 0,
+    }
     defaults.update(stats_kwargs)
-    return Unit(path=Path(f"/fake/{name}"), stats=UnitStats(**defaults))
+    return Unit(path=Path(f"/fake/{name}"), stats=UnitStats(**defaults), scope=scope)
 
 
 def test_group_apps_merges_units_by_app_name_and_sums_counters() -> None:
     units = [
-        _unit("app-com.mitchellh.ghostty.service", ram=100, cache=10, swap=5, total=105, procs=3),
-        _unit("app-ghostty-surface-transient-1.scope", ram=50, cache=5, swap=1, total=51, procs=2),
+        _unit(
+            "app-com.mitchellh.ghostty.service",
+            ram=100,
+            cache=10,
+            swap=5,
+            total=105,
+            procs=3,
+            kernel=7,
+        ),
+        _unit(
+            "app-ghostty-surface-transient-1.scope",
+            ram=50,
+            cache=5,
+            swap=1,
+            total=51,
+            procs=2,
+            kernel=3,
+        ),
         _unit("pipewire.service", ram=20, cache=0, swap=0, total=20, procs=1),
     ]
 
@@ -36,7 +59,26 @@ def test_group_apps_merges_units_by_app_name_and_sums_counters() -> None:
     assert ghostty.swap == 6
     assert ghostty.total == 156
     assert ghostty.procs == 5
+    assert ghostty.kernel == 10
+    assert ghostty.scope == "user"
     assert len(ghostty.unit_paths) == 2
+
+
+def test_group_apps_keeps_user_and_system_same_name_as_separate_rows() -> None:
+    # SPEC.md "Grouping": app identity is (scope, name), so a user dbus and a
+    # system dbus stay two rows instead of merging (final review A7).
+    units = [
+        _unit("dbus.service", scope="user", ram=10),
+        _unit("dbus.service", scope="system", ram=20),
+    ]
+
+    apps = group_apps(units)
+
+    assert len(apps) == 2
+    by_scope = {app.scope: app for app in apps}
+    assert by_scope["user"].ram == 10
+    assert by_scope["system"].ram == 20
+    assert all(app.name == "dbus" for app in apps)
 
 
 def test_filter_visible_apps_hides_rows_under_1mib_total() -> None:
@@ -56,25 +98,29 @@ def _proc(name: str, swap: int, ram: int) -> ProcStats:
     return ProcStats(pid=1, name=name, swap=swap, ram=ram, age_seconds=0.0, unit="u")
 
 
-def test_other_row_is_app_minus_process_sum_clamped_at_zero() -> None:
-    app = AppStats(name="ghostty", ram=1000, cache=0, swap=500, total=1500, procs=2, unit_paths=())
+def test_unattributed_row_is_app_minus_process_sum_and_kernel_clamped_at_zero() -> None:
+    app = AppStats(
+        name="ghostty", ram=1000, cache=0, swap=500, total=1500, procs=2, unit_paths=(), kernel=200
+    )
     procs = [_proc("a", swap=100, ram=300), _proc("b", swap=50, ram=200)]
 
-    other_swap, other_ram = other_row(app, procs)
+    swap, ram = unattributed_row(app, procs)
 
-    assert other_swap == 500 - 150
-    assert other_ram == 1000 - 500
+    assert swap == 500 - 150
+    assert ram == 1000 - 500 - 200
 
 
-def test_other_row_clamps_at_zero_when_processes_exceed_app_total() -> None:
-    # Shared pages can make process rows sum to more than the app row.
-    app = AppStats(name="ghostty", ram=100, cache=0, swap=50, total=150, procs=1, unit_paths=())
+def test_unattributed_row_clamps_at_zero_when_processes_and_kernel_exceed_app_total() -> None:
+    # Shared pages can make process rows sum to more than the app.
+    app = AppStats(
+        name="ghostty", ram=100, cache=0, swap=50, total=150, procs=1, unit_paths=(), kernel=50
+    )
     procs = [_proc("a", swap=200, ram=500)]
 
-    other_swap, other_ram = other_row(app, procs)
+    swap, ram = unattributed_row(app, procs)
 
-    assert other_swap == 0
-    assert other_ram == 0
+    assert swap == 0
+    assert ram == 0
 
 
 def test_group_by_command_sums_swap_ram_and_count_per_name() -> None:

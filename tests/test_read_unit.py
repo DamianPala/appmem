@@ -28,6 +28,36 @@ def test_ram_cache_swap_total_math(tmp_path: Path) -> None:
     assert stats.swap == 30
     assert stats.total == 30 + (100 + 20 + 5)  # swap + RAM
     assert stats.procs == 3
+    assert stats.kernel == 5
+
+
+def test_kernel_missing_falls_back_to_slab_stack_pagetables_percpu(tmp_path: Path) -> None:
+    # Linux < 5.18 has no `kernel` line in memory.stat (final review F1).
+    unit_dir = tmp_path / "unit.service"
+    unit_dir.mkdir()
+    (unit_dir / "memory.stat").write_text(
+        "anon 100\nshmem 20\nfile 50\nslab 3\nkernel_stack 2\npagetables 4\npercpu 1\n"
+    )
+    write_cgroup_procs(unit_dir, [])
+
+    stats = read_unit(unit_dir)
+
+    assert stats is not None
+    assert stats.kernel == 3 + 2 + 4 + 1
+    assert stats.ram == 100 + 20 + (3 + 2 + 4 + 1)
+
+
+def test_kernel_missing_and_no_fallback_parts_defaults_to_zero(tmp_path: Path) -> None:
+    unit_dir = tmp_path / "unit.service"
+    unit_dir.mkdir()
+    (unit_dir / "memory.stat").write_text("anon 100\nshmem 0\nfile 0\n")
+    write_cgroup_procs(unit_dir, [])
+
+    stats = read_unit(unit_dir)
+
+    assert stats is not None
+    assert stats.kernel == 0
+    assert stats.ram == 100
 
 
 def test_missing_swap_current_defaults_to_zero(tmp_path: Path) -> None:

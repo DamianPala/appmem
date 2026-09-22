@@ -17,10 +17,21 @@ from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.screen import Screen
+from textual.timer import Timer
 from textual.widgets import DataTable, Static
 from textual.widgets.data_table import ColumnKey, RowKey
 
-from appmem.collect import AppStats, SystemStats, Unit, filter_visible_apps, group_apps, read_system
+from appmem.collect import (
+    AppStats,
+    CgroupUnavailableError,
+    MemoryStatUnavailableError,
+    SystemStats,
+    Unit,
+    filter_visible_apps,
+    group_apps,
+    read_system,
+    unit_scope,
+)
 from appmem.collect import find_units as collect_find_units
 from appmem.collect import read_unit as collect_read_unit
 from appmem.fmt import format_delta, size, truncate_name
@@ -34,11 +45,13 @@ from appmem.ui.rows import (
     build_rows,
     next_sort_state,
     reset_baseline,
+    row_key,
     sort_rows,
     update_baseline,
 )
 from appmem.ui.screens.help import HelpScreen
 from appmem.ui.screens.processes import ProcessesScreen
+from appmem.ui.table_order import reorder_rows
 
 FOOTER_TEXT = " s r t d sort  enter procs  x system  c cache  z reset Δ  ? help  q quit"
 
@@ -60,7 +73,8 @@ _TAIL_COLUMNS: tuple[tuple[SortKey, str, int | None], ...] = (
 
 def _format_cell(key: SortKey, row: Row) -> str:
     if key == "app":
-        return truncate_name(row.name)
+        label = row.name if row.scope == "user" else f"{row.name} [sys]"
+        return truncate_name(label)
     if key == "swap":
         return size(row.swap)
     if key == "ram":
@@ -76,9 +90,13 @@ def _format_cell(key: SortKey, row: Row) -> str:
     return str(row.procs)  # "procs"
 
 
-def _cell_value(key: SortKey, row: Row) -> str | Text:
+def _cell_value(key: SortKey, row: Row) -> Text:
+    # Always a literal `Text`, never a plain `str`: `DataTable` renders a `str`
+    # cell through `Text.from_markup`, so an app name containing `[bold]`-style
+    # brackets would otherwise be parsed as markup instead of shown literally
+    # (SPEC.md "Behaviour details"; final review A11).
     text = _format_cell(key, row)
-    return text if key == "app" else Text(text, justify="right")
+    return Text(text) if key == "app" else Text(text, justify="right")
 
 
 def _key_str(key: RowKey | ColumnKey) -> str:
@@ -116,10 +134,11 @@ class MainScreen(Screen[None]):
         self._show_cache = False
         self._sort_key: SortKey = DEFAULT_SORT_KEY
         self._sort_reverse = DEFAULT_SORT_REVERSE
-        self._baseline: dict[str, AppStats] = {}
+        self._baseline: dict[tuple[str, str], AppStats] = {}
         self._baseline_time = datetime.now()
         self._rows: dict[str, Row] = {}
         self._last_apps: list[AppStats] = []
+        self._timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
         yield Static(id="header1")
@@ -131,7 +150,7 @@ class MainScreen(Screen[None]):
 
     def on_mount(self) -> None:
         self.refresh_now()
-        self.set_interval(self._interval, self._tick)
+        self._timer = self.set_interval(self._interval, self._tick)
 
     def _tick(self) -> None:
         # Covered by the process view or help: skip the work, `on_screen_resume` catches up.
@@ -148,6 +167,23 @@ class MainScreen(Screen[None]):
 
     # --- collection tick ----------------------------------------------------
 
+    def _collect_apps(self) -> list[AppStats]:
+        # `strict=False`: this runs every tick, not just at start-up, so a
+        # transient `memory.stat` read failure on the user root raises
+        # `MemoryStatUnavailableError` (skip the tick) rather than
+        # `CgroupUnavailableError` (fatal) -- only the directory vanishing is
+        # fatal here (final review, slice 4 round 2 item 5). The pre-start
+        # check in `cli.py` calls `find_units` directly, `strict=True`.
+        unit_paths = collect_find_units(
+            self._root, self._uid, include_system=self._show_system, strict=False
+        )
+        units = [
+            Unit(path=path, stats=unit_stats, scope=unit_scope(self._root, path))
+            for path in unit_paths
+            if (unit_stats := collect_read_unit(path)) is not None
+        ]
+        return filter_visible_apps(group_apps(units))
+
     def refresh_now(self) -> None:
         """Collect and redraw immediately, instead of waiting for the next tick.
 
@@ -156,18 +192,31 @@ class MainScreen(Screen[None]):
         interval. Also the deterministic re-tick hook the Textual pilot tests
         use instead of racing the real timer (SPEC.md "Tests").
         """
-        stats = read_system(self._root)
-        unit_paths = collect_find_units(self._root, self._uid, include_system=self._show_system)
-        units = [
-            Unit(path=path, stats=unit_stats)
-            for path in unit_paths
-            if (unit_stats := collect_read_unit(path)) is not None
-        ]
-        apps = filter_visible_apps(group_apps(units))
+        try:
+            self._refresh_now_unsafe()
+        except CgroupUnavailableError as exc:
+            self._fail_cgroup_unavailable(exc)
+        except MemoryStatUnavailableError:
+            pass  # transient this tick: keep the last data on screen, try again next tick
+
+    def _refresh_now_unsafe(self) -> None:
+        stats = read_system(self._root, self._uid)
+        apps = self._collect_apps()
         self._last_apps = apps
         self._baseline = update_baseline(apps, self._baseline)
         self._apply_rows(build_rows(apps, self._baseline))
         self._update_header(stats)
+
+    def _fail_cgroup_unavailable(self, exc: CgroupUnavailableError) -> None:
+        # No traceback, exit 1, JSON line after the terminal is restored
+        # (SPEC.md "Errors"; final review F10).
+        if self._timer is not None:
+            self._timer.stop()
+        # Textual's `Screen.app` is typed from a contextvar pyright can't fully
+        # resolve to `AppMemApp` (SPEC.md "Tech" notes).
+        self.app.fail_cgroup_unavailable(  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType]
+            str(exc)
+        )
 
     def _update_header(self, stats: SystemStats) -> None:
         self._set_static("#header1", format_line1(stats))
@@ -217,14 +266,14 @@ class MainScreen(Screen[None]):
         # DataTable render cache, so a no-op update still repaints every row.
         for key, _label, _width in self._column_specs():
             if _format_cell(key, old) != _format_cell(key, row):
-                table.update_cell(row.name, key, _cell_value(key, row))
+                table.update_cell(row_key(row.name, row.scope), key, _cell_value(key, row))
 
     def _current_selection(self, table: DataTable[str | Text]) -> tuple[str | None, int]:
         index = table.cursor_row
         if table.row_count == 0:
             return None, index
-        row_key, _column_key = table.coordinate_to_cell_key(table.cursor_coordinate)
-        return _key_str(row_key), index
+        row_key_obj, _column_key = table.coordinate_to_cell_key(table.cursor_coordinate)
+        return _key_str(row_key_obj), index
 
     def _restore_selection(
         self, table: DataTable[str | Text], previous_key: str | None, previous_index: int
@@ -238,27 +287,22 @@ class MainScreen(Screen[None]):
 
     def _resort(self, table: DataTable[str | Text]) -> None:
         ordered = sort_rows(self._rows.values(), self._sort_key, self._sort_reverse)
-        if [row.name for row in ordered] == [_key_str(row.key) for row in table.ordered_rows]:
-            return  # same order: `table.sort` would only force a full repaint
-        # Rank by the APP column's rendered (possibly truncated) text, since that
-        # is what `table.sort`'s key function sees as `values[0]`, not `row.name`.
-        rank = {_format_cell("app", row): index for index, row in enumerate(ordered)}
-        table.sort(key=lambda values: rank[str(values[0])])
+        reorder_rows(table, [row_key(row.name, row.scope) for row in ordered])
 
     def _apply_rows(self, rows: list[Row]) -> None:
         table = self._table()
-        new_by_name = {row.name: row for row in rows}
+        new_by_key = {row_key(row.name, row.scope): row for row in rows}
         previous_key, previous_index = self._current_selection(table)
 
-        for name in self._rows.keys() - new_by_name.keys():
-            table.remove_row(name)
-        for row in rows:
-            old = self._rows.get(row.name)
+        for key in self._rows.keys() - new_by_key.keys():
+            table.remove_row(key)
+        for key, row in new_by_key.items():
+            old = self._rows.get(key)
             if old is not None:
                 self._update_row_cells(table, old, row)
             else:
-                table.add_row(*self._row_cells(row), key=row.name)
-        self._rows = new_by_name
+                table.add_row(*self._row_cells(row), key=key)
+        self._rows = new_by_key
 
         self._resort(table)
         self._restore_selection(table, previous_key, previous_index)
@@ -270,8 +314,10 @@ class MainScreen(Screen[None]):
             self._sort_key, self._sort_reverse, column
         )
         table = self._table()
+        previous_key, previous_index = self._current_selection(table)
         self._resort(table)
         self._refresh_column_labels(table)
+        self._restore_selection(table, previous_key, previous_index)
 
     def action_sort(self, column: str) -> None:
         self._set_sort(column)
@@ -281,11 +327,16 @@ class MainScreen(Screen[None]):
 
     def action_toggle_cache(self) -> None:
         self._show_cache = not self._show_cache
+        # The active sort column can go away with the CACHE column: fall back
+        # to the default sort instead of an invisible one (SPEC.md "Main
+        # view"; final review A5).
+        if not self._show_cache and self._sort_key == "cache":
+            self._sort_key, self._sort_reverse = DEFAULT_SORT_KEY, DEFAULT_SORT_REVERSE
         table = self._table()
         previous_key, previous_index = self._current_selection(table)
         self._rebuild_columns(table)
-        for row in self._rows.values():
-            table.add_row(*self._row_cells(row), key=row.name)
+        for key, row in self._rows.items():
+            table.add_row(*self._row_cells(row), key=key)
         self._resort(table)
         self._restore_selection(table, previous_key, previous_index)
 
@@ -294,9 +345,20 @@ class MainScreen(Screen[None]):
         self.refresh_now()
 
     def action_reset_delta(self) -> None:
-        self._baseline = reset_baseline(self._last_apps)
+        # `z` takes a fresh sample before resetting, so the baseline and its
+        # timestamp describe the same instant (SPEC.md "Definitions"; final
+        # review A13).
+        try:
+            apps = self._collect_apps()
+        except CgroupUnavailableError as exc:
+            self._fail_cgroup_unavailable(exc)
+            return
+        except MemoryStatUnavailableError:
+            return  # transient this tick: leave the baseline untouched, try again next tick
+        self._last_apps = apps
+        self._baseline = reset_baseline(apps)
         self._baseline_time = datetime.now()
-        self._apply_rows(build_rows(self._last_apps, self._baseline))
+        self._apply_rows(build_rows(apps, self._baseline))
         self._update_header_line2()
 
     def action_help(self) -> None:
@@ -305,14 +367,17 @@ class MainScreen(Screen[None]):
         self.app.push_screen(HelpScreen())  # pyright: ignore[reportUnknownMemberType]
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        app_name = _key_str(event.row_key)
-        app = next((app for app in self._last_apps if app.name == app_name), None)
+        key = _key_str(event.row_key)
+        app = next((app for app in self._last_apps if row_key(app.name, app.scope) == key), None)
         if app is None:  # row vanished between the click and the event
             return
         self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
             ProcessesScreen(
                 root=self._root,
-                app_stats=app,
+                uid=self._uid,
+                include_system=self._show_system,
+                name=app.name,
+                scope=app.scope,
                 interval=self._interval,
                 initial_sort=initial_process_sort(self._sort_key, self._sort_reverse),
             )

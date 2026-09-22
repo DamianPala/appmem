@@ -1,8 +1,9 @@
 """Process-view row model and sorting (SPEC.md "Process view").
 
-Pure functions with no Textual imports, so the `other`-row math, grouping and
-sort-state transitions are unit-testable without a running app (SPEC.md
-"Tests": "Process view math"). Mirrors `ui/rows.py`'s shape for the main view.
+Pure functions with no Textual imports, so the `kernel`/`unattributed`-row
+math, grouping and sort-state transitions are unit-testable without a running
+app (SPEC.md "Tests": "Process view math"). Mirrors `ui/rows.py`'s shape for
+the main view.
 """
 
 from __future__ import annotations
@@ -10,9 +11,15 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
-from appmem.collect import AppStats, CommandStats, ProcStats, group_by_command, other_row
+from appmem.collect import AppStats, CommandStats, ProcStats, group_by_command, unattributed_row
 
-OTHER_UNIT_TEXT = "(held by the app, not by any process)"
+# `\0` can't appear in a process/command name (`_read_proc_name` splits on it),
+# so these keys never collide with a real PID string or command name -- even
+# one literally named "kernel" or "unattributed" (final review A6).
+KERNEL_KEY = "\0kernel"
+UNATTRIBUTED_KEY = "\0unattributed"
+KERNEL_UNIT_TEXT = "charged kernel memory: page tables, slab, stacks"
+UNATTRIBUTED_UNIT_TEXT = "accounting difference, not a process"
 
 ProcessSortKey = str
 """One of: ``pid``, ``name``, ``swap``, ``ram``, ``total``, ``age``, ``unit``."""
@@ -55,9 +62,12 @@ _MAIN_TO_PROCESS_SORT: dict[str, ProcessSortKey] = {
 
 @dataclass(frozen=True)
 class ProcessRow:
-    """One process-view row. `pid`/`age_seconds` are `None` only for the
-    synthetic `other` row built by `other_process_row`."""
+    """One process-view row. `key` is the `DataTable` row key: `str(pid)` for a
+    real process, `KERNEL_KEY`/`UNATTRIBUTED_KEY` for the two synthetic rows
+    built by `kernel_process_row`/`unattributed_process_row` (`pid`/
+    `age_seconds` are `None` only for those)."""
 
+    key: str
     pid: int | None
     name: str
     swap: int
@@ -65,24 +75,31 @@ class ProcessRow:
     total: int
     age_seconds: float | None
     unit: str
+    dim: bool = False
+    """Render dim/italic: true for the `kernel` and `unattributed` rows, which
+    are an accounting split, not a process (SPEC.md "Definitions")."""
 
 
 @dataclass(frozen=True)
 class CommandRow:
     """One grouped-by-command row (SPEC.md "Process view", `g`). `procs` is
-    `None` only for the synthetic `other` row built by `other_command_row`."""
+    `None` only for the two synthetic rows built by `kernel_command_row`/
+    `unattributed_command_row`."""
 
+    key: str
     name: str
     swap: int
     ram: int
     total: int
     procs: int | None
+    dim: bool = False
 
 
 def build_process_rows(procs: Iterable[ProcStats]) -> list[ProcessRow]:
-    """Build one row per process. Does not include the `other` row."""
+    """Build one row per process. Does not include the `kernel`/`unattributed` rows."""
     return [
         ProcessRow(
+            key=str(proc.pid),
             pid=proc.pid,
             name=proc.name,
             swap=proc.swap,
@@ -95,17 +112,35 @@ def build_process_rows(procs: Iterable[ProcStats]) -> list[ProcessRow]:
     ]
 
 
-def other_process_row(app: AppStats, procs: Iterable[ProcStats]) -> ProcessRow:
-    """The synthetic `other` row: app total minus its processes, clamped at 0."""
-    other_swap, other_ram = other_row(app, procs)
+def kernel_process_row(app: AppStats) -> ProcessRow:
+    """The app's charged kernel memory, exact (no process holds it directly)."""
     return ProcessRow(
+        key=KERNEL_KEY,
         pid=None,
-        name="other",
-        swap=other_swap,
-        ram=other_ram,
-        total=other_swap + other_ram,
+        name="kernel",
+        swap=0,
+        ram=app.kernel,
+        total=app.kernel,
         age_seconds=None,
-        unit=OTHER_UNIT_TEXT,
+        unit=KERNEL_UNIT_TEXT,
+        dim=True,
+    )
+
+
+def unattributed_process_row(app: AppStats, procs: Iterable[ProcStats]) -> ProcessRow:
+    """The synthetic `unattributed` row: app total minus its processes minus its
+    kernel share, clamped at 0."""
+    swap, ram = unattributed_row(app, procs)
+    return ProcessRow(
+        key=UNATTRIBUTED_KEY,
+        pid=None,
+        name="unattributed",
+        swap=swap,
+        ram=ram,
+        total=swap + ram,
+        age_seconds=None,
+        unit=UNATTRIBUTED_UNIT_TEXT,
+        dim=True,
     )
 
 
@@ -116,6 +151,7 @@ def build_command_rows(procs: Iterable[ProcStats]) -> list[CommandRow]:
 
 def _command_row(group: CommandStats) -> CommandRow:
     return CommandRow(
+        key=group.name,
         name=group.name,
         swap=group.swap,
         ram=group.ram,
@@ -124,11 +160,32 @@ def _command_row(group: CommandStats) -> CommandRow:
     )
 
 
-def other_command_row(app: AppStats, procs: Iterable[ProcStats]) -> CommandRow:
-    """The synthetic `other` row for the grouped view: same math, no PROCS count."""
-    other_swap, other_ram = other_row(app, procs)
+def kernel_command_row(app: AppStats) -> CommandRow:
+    """The grouped view's `kernel` row: same value as `kernel_process_row`, no
+    PROCS count."""
     return CommandRow(
-        name="other", swap=other_swap, ram=other_ram, total=other_swap + other_ram, procs=None
+        key=KERNEL_KEY,
+        name="kernel",
+        swap=0,
+        ram=app.kernel,
+        total=app.kernel,
+        procs=None,
+        dim=True,
+    )
+
+
+def unattributed_command_row(app: AppStats, procs: Iterable[ProcStats]) -> CommandRow:
+    """The grouped view's `unattributed` row: same math as
+    `unattributed_process_row`, no PROCS count."""
+    swap, ram = unattributed_row(app, procs)
+    return CommandRow(
+        key=UNATTRIBUTED_KEY,
+        name="unattributed",
+        swap=swap,
+        ram=ram,
+        total=swap + ram,
+        procs=None,
+        dim=True,
     )
 
 
@@ -154,7 +211,7 @@ _GROUP_SORT_GETTERS: dict[GroupSortKey, Callable[[CommandRow], int | str]] = {
 def sort_process_rows(
     rows: Iterable[ProcessRow], key: ProcessSortKey, reverse: bool
 ) -> list[ProcessRow]:
-    """Sort real process rows (never the `other` row) by `key`.
+    """Sort real process rows (never the `kernel`/`unattributed` rows) by `key`.
 
     Ties break by name then PID, both directions (SPEC.md "Process view").
     """
@@ -167,7 +224,8 @@ def sort_process_rows(
 def sort_command_rows(
     rows: Iterable[CommandRow], key: GroupSortKey, reverse: bool
 ) -> list[CommandRow]:
-    """Sort real command rows (never the `other` row) by `key`. Ties break by name."""
+    """Sort real command rows (never the `kernel`/`unattributed` rows) by `key`.
+    Ties break by name."""
     getter = _GROUP_SORT_GETTERS[key]
     by_name = sorted(rows, key=lambda row: row.name)
     return sorted(by_name, key=getter, reverse=reverse)

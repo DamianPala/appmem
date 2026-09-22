@@ -15,16 +15,28 @@ from pathlib import Path
 
 from appmem.naming import app_name
 
-_MEMORY_STAT_KEYS = ("anon", "shmem", "kernel", "file")
+_REQUIRED_MEMORY_STAT_KEYS = ("anon", "shmem", "file")
+_KERNEL_FALLBACK_KEYS = ("slab", "kernel_stack", "pagetables", "percpu")
+_MEMORY_STAT_KEYS = frozenset({"anon", "shmem", "kernel", "file", *_KERNEL_FALLBACK_KEYS})
 _USER_SLICES = ("app.slice", "session.slice", "background.slice")
 _STATUS_KEYS = ("VmSwap", "RssAnon", "RssShmem")
 
 
 class CgroupUnavailableError(Exception):
-    """Raised when the user's cgroup v2 tree, or its memory.stat, is missing.
+    """Raised when the user's cgroup v2 tree directory itself is missing (or,
+    in `strict` mode, when its `memory.stat` can't be parsed either).
 
     The message names the specific missing path, so the CLI slice can map
     it to the `cgroup_unavailable` error kind.
+    """
+
+
+class MemoryStatUnavailableError(Exception):
+    """Raised by a non-`strict` `find_units`/`find_app_units` call when the
+    user's tree directory exists but its `memory.stat` couldn't be parsed
+    this tick (e.g. read mid-write). Transient, unlike `CgroupUnavailableError`:
+    callers should skip the tick and keep the last data on screen, not treat
+    the session as over (final review, slice 4 round 2 item 5).
     """
 
 
@@ -37,9 +49,16 @@ class SystemStats:
     swap_total: int
     swap_free: int
     pressure_some_avg10: float | None
+    pressure_some_avg60: float | None
     pressure_full_avg10: float | None
+    pressure_full_avg60: float | None
     system_ram: int
     system_swap: int
+    elsewhere: int | None
+    """Charged memory outside the walked trees (header `elsewhere` token).
+    `None` when the root cgroup's `memory.stat` is missing (SPEC.md "Behaviour
+    details"); the header omits the token below 1 MiB too, on the formatted
+    value, not here."""
 
 
 @dataclass(frozen=True)
@@ -51,6 +70,10 @@ class UnitStats:
     swap: int
     total: int
     procs: int
+    kernel: int = 0
+    """The app's charged kernel memory (page tables, slab, stacks), already
+    included in `ram`. Carried separately so the process view can show it as
+    its own row (SPEC.md "Definitions": RAM = anon + shmem + kernel)."""
 
 
 @dataclass(frozen=True)
@@ -59,6 +82,9 @@ class Unit:
 
     path: Path
     stats: UnitStats
+    scope: str = "user"
+    """"user" or "system" (SPEC.md "Grouping"): which root `find_units` found
+    this unit under. Part of app identity, alongside the app name."""
 
 
 @dataclass(frozen=True)
@@ -72,6 +98,8 @@ class AppStats:
     total: int
     procs: int
     unit_paths: tuple[Path, ...]
+    kernel: int = 0
+    scope: str = "user"
 
 
 @dataclass(frozen=True)
@@ -99,10 +127,14 @@ class CommandStats:
 # --- system ---------------------------------------------------------------
 
 
-def read_system(root: Path) -> SystemStats:
-    """Read system-wide memory/swap/pressure and the hidden system.slice total."""
+def read_system(root: Path, uid: int) -> SystemStats:
+    """Read system-wide memory/swap/pressure, the hidden system.slice total and
+    the `elsewhere` figure (SPEC.md "Behaviour details"). `uid` locates the
+    user tree for the `elsewhere` subtraction."""
     meminfo = _read_meminfo(root / "proc" / "meminfo")
-    some_avg10, full_avg10 = _read_pressure(root / "proc" / "pressure" / "memory")
+    some_avg10, some_avg60, full_avg10, full_avg60 = _read_pressure(
+        root / "proc" / "pressure" / "memory"
+    )
     # The header never shows a system procs count, so skip the costly recursive count.
     system_slice = os.path.join(str(root), "sys", "fs", "cgroup", "system.slice")
     system_stats = _read_unit_stats(system_slice, count_procs=False)
@@ -112,10 +144,27 @@ def read_system(root: Path) -> SystemStats:
         swap_total=meminfo.get("SwapTotal", 0),
         swap_free=meminfo.get("SwapFree", 0),
         pressure_some_avg10=some_avg10,
+        pressure_some_avg60=some_avg60,
         pressure_full_avg10=full_avg10,
+        pressure_full_avg60=full_avg60,
         system_ram=system_stats.ram if system_stats else 0,
         system_swap=system_stats.swap if system_stats else 0,
+        elsewhere=_read_elsewhere(root, uid, system_stats),
     )
+
+
+def _read_elsewhere(root: Path, uid: int, system_stats: UnitStats | None) -> int | None:
+    """Charged memory outside the walked trees: the root cgroup's total minus
+    the user tree minus `system.slice`, clamped at 0 (SPEC.md "Behaviour
+    details"). `None` when the root `memory.stat` is missing or incomplete."""
+    cgroup_root = os.path.join(str(root), "sys", "fs", "cgroup")
+    root_ram = _read_ram(os.path.join(cgroup_root, "memory.stat"))
+    if root_ram is None:
+        return None
+    user_root = os.path.join(cgroup_root, "user.slice", f"user-{uid}.slice", f"user@{uid}.service")
+    user_ram = _read_ram(os.path.join(user_root, "memory.stat")) or 0
+    system_ram = system_stats.ram if system_stats else 0
+    return max(root_ram - user_ram - system_ram, 0)
 
 
 def _read_meminfo(path: Path) -> dict[str, int]:
@@ -134,37 +183,57 @@ def _read_meminfo(path: Path) -> dict[str, int]:
     return result
 
 
-def _read_pressure(path: Path) -> tuple[float | None, float | None]:
+def _read_pressure(
+    path: Path,
+) -> tuple[float | None, float | None, float | None, float | None]:
+    """Return `(some avg10, some avg60, full avg10, full avg60)`."""
     try:
         content = path.read_text()
     except FileNotFoundError:
-        return None, None
-    values: dict[str, float] = {}
+        return None, None, None, None
+    values: dict[str, dict[str, float]] = {}
     for line in content.splitlines():
         kind, _, rest = line.partition(" ")
+        fields: dict[str, float] = {}
         for field in rest.split():
             key, _, value = field.partition("=")
-            if key == "avg10":
-                values[kind] = float(value)
-    return values.get("some"), values.get("full")
+            if key in ("avg10", "avg60"):
+                fields[key] = float(value)
+        values[kind] = fields
+    some = values.get("some", {})
+    full = values.get("full", {})
+    return some.get("avg10"), some.get("avg60"), full.get("avg10"), full.get("avg60")
 
 
 # --- finding units ----------------------------------------------------------
 
 
-def find_units(root: Path, uid: int, include_system: bool) -> list[Path]:
+def find_units(root: Path, uid: int, include_system: bool, *, strict: bool = True) -> list[Path]:
     """Find unit directories under the user's cgroup tree (SPEC.md "Finding units").
 
-    Raises `CgroupUnavailableError` when the user's `user@$UID.service` tree
-    or its `memory.stat` is missing (memory controller not enabled there).
+    Always raises `CgroupUnavailableError` when the user's `user@$UID.service`
+    tree directory itself is missing.
+
+    `strict` (default `True`, the pre-start check in `cli.py`) also raises
+    `CgroupUnavailableError` when that tree's `memory.stat` can't be parsed
+    (memory controller not enabled there, F1). A per-tick caller passes
+    `strict=False`: the same parse failure there is usually transient (e.g. a
+    read mid-write), so it raises the lighter `MemoryStatUnavailableError`
+    instead, which callers treat as "skip this tick" rather than fatal
+    (final review, slice 4 round 2 item 5).
     """
     cgroup_root = os.path.join(str(root), "sys", "fs", "cgroup")
     user_root = os.path.join(cgroup_root, "user.slice", f"user-{uid}.slice", f"user@{uid}.service")
     if not os.path.isdir(user_root):
         raise CgroupUnavailableError(f"missing cgroup path: {user_root}")
     memory_stat = os.path.join(user_root, "memory.stat")
-    if not os.path.isfile(memory_stat):
-        raise CgroupUnavailableError(f"missing cgroup path: {memory_stat}")
+    # Parses the file rather than just checking it exists, so a controller
+    # enabled without anon/shmem/file (memory accounting not really on) fails
+    # here instead of showing an empty table (F1).
+    if _read_ram(memory_stat) is None:
+        if strict:
+            raise CgroupUnavailableError(f"missing cgroup path: {memory_stat}")
+        raise MemoryStatUnavailableError(f"unreadable this tick: {memory_stat}")
 
     unit_paths: list[str] = []
     for slice_name in _USER_SLICES:
@@ -202,6 +271,32 @@ def _walk_slice(slice_dir: str) -> list[str]:
     return units
 
 
+def unit_scope(root: Path, unit_path: Path) -> str:
+    """ "user" or "system": which root `find_units` found `unit_path` under
+    (SPEC.md "Finding units"). Part of app identity (SPEC.md "Grouping")."""
+    # A string prefix test, not `Path.relative_to`: this runs for every unit on
+    # every tick, and `relative_to` measured ~15x slower (~3 ms per tick on 189 units).
+    system_slice = os.path.join(str(root), "sys", "fs", "cgroup", "system.slice") + os.sep
+    return "system" if str(unit_path).startswith(system_slice) else "user"
+
+
+def find_app_units(
+    root: Path, uid: int, include_system: bool, scope: str, name: str, *, strict: bool = True
+) -> list[Path]:
+    """Unit paths for one app identity, using the same naming/scope rules as
+    `group_apps`. The process view calls this every tick (with `strict=False`,
+    see `find_units`) instead of reusing a unit list captured once at Enter,
+    so units added or replaced while it's open are picked up (SPEC.md
+    "Process view"). Cheap: a directory walk plus pure-string naming; the
+    only `memory.stat` read is `find_units`' check of the user root.
+    """
+    return [
+        path
+        for path in find_units(root, uid, include_system=include_system, strict=strict)
+        if unit_scope(root, path) == scope and app_name(path.name) == name
+    ]
+
+
 # --- unit counters ----------------------------------------------------------
 
 
@@ -228,7 +323,7 @@ def _read_unit_stats(unit_dir: str, *, count_procs: bool = True) -> UnitStats | 
     ram = anon + shmem + kernel
     cache = file_ - shmem
     total = swap + ram
-    return UnitStats(ram=ram, cache=cache, swap=swap, total=total, procs=procs)
+    return UnitStats(ram=ram, cache=cache, swap=swap, total=total, procs=procs, kernel=kernel)
 
 
 def _read_small_file(path: str) -> str:
@@ -249,7 +344,15 @@ def _read_small_file(path: str) -> str:
 
 
 def _read_memory_stat(path: str) -> dict[str, int] | None:
-    """Parse `memory.stat`. Returns `None` on missing/empty/partial content."""
+    """Parse `memory.stat`. `anon`/`shmem`/`file` are required on every kernel;
+    returns `None` if any is missing (unit vanished mid-write, or the memory
+    controller isn't really enabled there).
+
+    `kernel` was added in Linux 5.18; when absent, it falls back to
+    `slab + kernel_stack + pagetables + percpu` (each part optional, 0 if
+    missing), so older kernels (5.15/Ubuntu 22.04, 5.10/Debian 11, 5.14/RHEL 9)
+    still read a usable RAM figure instead of every unit reading as vanished.
+    """
     content = _read_small_file(path)  # OSError propagates: unit vanished.
     values: dict[str, int] = {}
     for line in content.splitlines():
@@ -257,10 +360,25 @@ def _read_memory_stat(path: str) -> dict[str, int] | None:
         if key in _MEMORY_STAT_KEYS and value.strip().lstrip("-").isdigit():
             values[key] = int(value.strip())
             if len(values) == len(_MEMORY_STAT_KEYS):
-                break  # The keys sit near the top of a ~50-line file.
-    if not all(key in values for key in _MEMORY_STAT_KEYS):
+                break  # Found everything we could use; the rest of the file doesn't matter.
+    if not all(key in values for key in _REQUIRED_MEMORY_STAT_KEYS):
         return None
+    if "kernel" not in values:
+        values["kernel"] = sum(values.get(key, 0) for key in _KERNEL_FALLBACK_KEYS)
     return values
+
+
+def _read_ram(path: str) -> int | None:
+    """`anon + shmem + kernel` from a `memory.stat` file, or `None` if missing
+    or incomplete (SPEC.md "Definitions"; used by the pre-start check and the
+    header `elsewhere` token)."""
+    try:
+        stat = _read_memory_stat(path)
+    except OSError:
+        return None
+    if stat is None:
+        return None
+    return stat["anon"] + stat["shmem"] + stat["kernel"]
 
 
 def _read_swap_current(path: str) -> int:
@@ -321,22 +439,26 @@ def _iter_procs_content(cgroup_dir: str) -> Iterator[str]:
 
 
 def group_apps(units: Iterable[Unit]) -> list[AppStats]:
-    """Merge units by `naming.app_name`, summing counters and keeping unit paths."""
-    groups: dict[str, list[Unit]] = {}
+    """Merge units by `(scope, naming.app_name)`, summing counters (SPEC.md
+    "Grouping"). A user and a system unit that normalize to the same name stay
+    two rows (SPEC.md "Grouping": app identity is scope + name)."""
+    groups: dict[tuple[str, str], list[Unit]] = {}
     for unit in units:
         name = app_name(unit.path.name)
-        groups.setdefault(name, []).append(unit)
+        groups.setdefault((unit.scope, name), []).append(unit)
 
     apps: list[AppStats] = []
-    for name, unit_list in groups.items():
+    for (scope, name), unit_list in groups.items():
         apps.append(
             AppStats(
                 name=name,
+                scope=scope,
                 ram=sum(u.stats.ram for u in unit_list),
                 cache=sum(u.stats.cache for u in unit_list),
                 swap=sum(u.stats.swap for u in unit_list),
                 total=sum(u.stats.total for u in unit_list),
                 procs=sum(u.stats.procs for u in unit_list),
+                kernel=sum(u.stats.kernel for u in unit_list),
                 unit_paths=tuple(u.path for u in unit_list),
             )
         )
@@ -423,7 +545,13 @@ def _read_proc_name(proc_dir: Path) -> str:
     # first NUL field with spaces, so keep only its first whitespace token.
     tokens = raw.split(b"\0", 1)[0].decode(errors="replace").split(maxsplit=1)
     if tokens:
-        return Path(tokens[0]).name
+        argv0 = tokens[0]
+        basename = Path(argv0).name
+        # Electron/AppImage-style processes re-exec through /proc/self/exe, so
+        # cmdline[0] is that self-referential path and its basename is just
+        # "exe"; comm still carries the real program name in both cases (F6).
+        if basename != "exe" and not argv0.startswith("/proc/"):
+            return basename
     return (proc_dir / "comm").read_bytes().decode(errors="replace").strip()
 
 
@@ -439,12 +567,14 @@ def _read_starttime(path: Path) -> float:
 # --- process-view math ---------------------------------------------------------
 
 
-def other_row(app: AppStats, procs: Iterable[ProcStats]) -> tuple[int, int]:
-    """SWAP/RAM the app holds without a matching process, clamped at 0."""
+def unattributed_row(app: AppStats, procs: Iterable[ProcStats]) -> tuple[int, int]:
+    """SWAP/RAM the app holds without a matching process or its own kernel
+    share, clamped at 0 each (SPEC.md "Definitions"; the process view's
+    `unattributed` row -- an accounting difference, not a process)."""
     procs = list(procs)
-    other_swap = max(app.swap - sum(p.swap for p in procs), 0)
-    other_ram = max(app.ram - sum(p.ram for p in procs), 0)
-    return other_swap, other_ram
+    swap = max(app.swap - sum(p.swap for p in procs), 0)
+    ram = max(app.ram - sum(p.ram for p in procs) - app.kernel, 0)
+    return swap, ram
 
 
 def group_by_command(procs: Iterable[ProcStats]) -> list[CommandStats]:

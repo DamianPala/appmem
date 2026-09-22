@@ -33,6 +33,7 @@ class Row:
     """One main-view table row: an app's current counters plus its Δ."""
 
     name: str
+    scope: str
     swap: int
     ram: int
     cache: int
@@ -42,27 +43,48 @@ class Row:
     procs: int
 
 
-def update_baseline(
-    apps: Iterable[AppStats], baseline: Mapping[str, AppStats]
-) -> dict[str, AppStats]:
-    """Add apps seen for the first time to the Δ baseline (SPEC.md "Definitions").
+Identity = tuple[str, str]
+"""`(scope, name)`: app identity (SPEC.md "Grouping"). A user and a system
+unit that normalize to the same name are two separate identities."""
 
-    Existing entries are kept untouched: only `reset_baseline` (key `z`, or
-    startup) moves an already-known app's baseline forward.
+
+def _identity(app: AppStats) -> Identity:
+    return (app.scope, app.name)
+
+
+def row_key(name: str, scope: str) -> str:
+    """Unique `DataTable`/dict-safe key for an app identity. `\\0` can't appear
+    in a systemd unit (and therefore app) name, so this never collides across
+    scopes (SPEC.md "Grouping": app identity is scope + name)."""
+    return f"{scope}\0{name}"
+
+
+def update_baseline(
+    apps: Iterable[AppStats], baseline: Mapping[Identity, AppStats]
+) -> dict[Identity, AppStats]:
+    """Add apps seen for the first time to the Δ baseline, and drop entries for
+    apps no longer present (SPEC.md "Definitions"; final review F15): a closed
+    and reopened app starts its Δ at 0 instead of comparing against its old
+    instance.
+
+    Existing (still-present) entries are kept untouched: only `reset_baseline`
+    (key `z`, or startup) moves an already-known app's baseline forward.
     """
-    updated = dict(baseline)
+    current = {_identity(app) for app in apps}
+    updated = {identity: base for identity, base in baseline.items() if identity in current}
     for app in apps:
-        if app.name not in updated:
-            updated[app.name] = app
+        identity = _identity(app)
+        if identity not in updated:
+            updated[identity] = app
     return updated
 
 
-def reset_baseline(apps: Iterable[AppStats]) -> dict[str, AppStats]:
+def reset_baseline(apps: Iterable[AppStats]) -> dict[Identity, AppStats]:
     """Baseline reset (`z`): every currently visible app's Δ starts counting from now."""
-    return {app.name: app for app in apps}
+    return {_identity(app): app for app in apps}
 
 
-def build_rows(apps: Iterable[AppStats], baseline: Mapping[str, AppStats]) -> list[Row]:
+def build_rows(apps: Iterable[AppStats], baseline: Mapping[Identity, AppStats]) -> list[Row]:
     """Build display rows with Δ computed against the baseline.
 
     An app missing from `baseline` (first seen after the baseline was taken) gets
@@ -70,10 +92,11 @@ def build_rows(apps: Iterable[AppStats], baseline: Mapping[str, AppStats]) -> li
     """
     rows: list[Row] = []
     for app in apps:
-        base = baseline.get(app.name, app)
+        base = baseline.get(_identity(app), app)
         rows.append(
             Row(
                 name=app.name,
+                scope=app.scope,
                 swap=app.swap,
                 ram=app.ram,
                 cache=app.cache,
@@ -122,12 +145,15 @@ def next_sort_state(
 
 
 def sort_rows(rows: Iterable[Row], key: SortKey, reverse: bool) -> list[Row]:
-    """Sort rows by `key`. Ties always break by app name ascending, both directions.
+    """Sort rows by `key`. Ties always break by `(name, scope)` ascending, both
+    directions -- full identity, not just the name a same-named user/system
+    pair share (SPEC.md "Main view"; final review A6).
 
-    Two stable passes: sort by name first, then by `key` with `reverse`. Python's
-    sort is stable, and `reverse=True` does not reverse the order of equal
-    elements, so equal-`key` rows keep the name-ascending order from the first pass.
+    Two stable passes: sort by identity first, then by `key` with `reverse`.
+    Python's sort is stable, and `reverse=True` does not reverse the order of
+    equal elements, so equal-`key` rows keep the identity-ascending order from
+    the first pass.
     """
     getter = _SORT_GETTERS[key]
-    by_name = sorted(rows, key=lambda row: row.name)
-    return sorted(by_name, key=getter, reverse=reverse)
+    by_identity = sorted(rows, key=lambda row: (row.name, row.scope))
+    return sorted(by_identity, key=getter, reverse=reverse)
