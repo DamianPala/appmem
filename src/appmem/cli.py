@@ -56,6 +56,7 @@ Memory pressure:
   none             almost no time spent waiting on memory in the last 10 s
   some (X.X %)     some time spent waiting; shown with the percentage
   high             a lot of time spent waiting; memory is the bottleneck right now
+  Big swap with pressure none just means idle pages were paged out.
 
 Example:
   appmem -i 2 --system

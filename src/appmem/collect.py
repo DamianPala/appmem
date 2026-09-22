@@ -17,6 +17,7 @@ from appmem.naming import app_name
 
 _MEMORY_STAT_KEYS = ("anon", "shmem", "kernel", "file")
 _USER_SLICES = ("app.slice", "session.slice", "background.slice")
+_STATUS_KEYS = ("VmSwap", "RssAnon", "RssShmem")
 
 
 class CgroupUnavailableError(Exception):
@@ -400,13 +401,18 @@ def _read_proc_stats(
 
 
 def _read_status(path: Path) -> dict[str, int]:
+    # Raw read + `find` on the three keys used: splitting all ~57 status lines was
+    # most of the process view's tick cost (278 PIDs in one app).
+    content = "\n" + _read_small_file(str(path))  # FileNotFoundError: PID vanished.
     result: dict[str, int] = {}
-    for line in path.read_text().splitlines():  # FileNotFoundError: PID vanished.
-        key, _, rest = line.partition(":")
-        rest = rest.strip()
-        if rest.endswith("kB"):
-            rest = rest[:-2].strip()
-        if rest.lstrip("-").isdigit():
+    for key in _STATUS_KEYS:
+        start = content.find(f"\n{key}:")
+        if start == -1:
+            continue  # Kernel threads have no Vm*/Rss* lines.
+        end = content.find("\n", start + 1)
+        rest = content[start + len(key) + 2 : end if end != -1 else None].strip()
+        rest = rest.removesuffix("kB").strip()
+        if rest.isdigit():
             result[key] = int(rest)
     return result
 
@@ -422,7 +428,7 @@ def _read_proc_name(proc_dir: Path) -> str:
 
 
 def _read_starttime(path: Path) -> float:
-    content = path.read_text()  # FileNotFoundError: PID vanished.
+    content = _read_small_file(str(path))  # FileNotFoundError: PID vanished.
     after_paren = content.rsplit(")", 1)[1]
     fields = after_paren.split()
     # After the closing ')', the remaining fields start at field 3 (state),

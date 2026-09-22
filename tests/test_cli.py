@@ -129,4 +129,5 @@ def test_help_lists_flags_keys_and_pressure_and_an_example(
     assert "Enter" in out  # slice-3 key, shipped in the same release, not "coming soon"
     assert "coming soon" not in out.lower()
     assert "memory pressure" in out.lower()
+    assert "idle pages were paged out" in out
     assert "appmem -i 2 --system" in out

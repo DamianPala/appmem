@@ -54,7 +54,7 @@ def test_line1_omits_pressure_when_none() -> None:
 def test_line1_shows_pressure_word_when_available() -> None:
     line = format_line1(_stats(pressure_some_avg10=0.5, pressure_full_avg10=0.0))
 
-    assert "memory pressure: none" in line
+    assert "pressure: none" in line
 
 
 def test_line1_system_total_is_ram_plus_swap_with_no_process_count() -> None:
@@ -64,6 +64,13 @@ def test_line1_system_total_is_ram_plus_swap_with_no_process_count() -> None:
     line = format_line1(_stats(system_ram=300 * 1024**2, system_swap=200 * 1024**2))
 
     assert "system 500 MiB (x)" in line
+
+
+def test_line1_shares_unit_between_used_and_total_when_equal() -> None:
+    # SPEC.md "Main-view polish": `RAM 18.7/30.9 GiB`, not `RAM 18.7 GiB / 30.9 GiB`.
+    line = format_line1(_stats(mem_total=30_900_000_000, mem_available=12_100_000_000))
+
+    assert "RAM 17.5/28.8 GiB" in line
 
 
 def test_line2_format() -> None:

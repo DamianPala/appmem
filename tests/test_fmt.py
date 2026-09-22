@@ -2,7 +2,15 @@
 
 import pytest
 
-from appmem.fmt import format_delta, format_elapsed, pressure_word, size
+from appmem.fmt import (
+    format_age,
+    format_delta,
+    format_elapsed,
+    format_pair,
+    pressure_word,
+    size,
+    truncate_name,
+)
 
 SIZE_CASES = [
     (0, "0 B"),
@@ -72,3 +80,50 @@ def test_format_delta_negative_gets_minus_sign() -> None:
 )
 def test_format_elapsed(seconds: float, expected: str) -> None:
     assert format_elapsed(seconds) == expected
+
+
+@pytest.mark.parametrize(
+    ("seconds", "expected"),
+    [
+        (0, "0s"),
+        (45, "45s"),
+        (59, "59s"),
+        (60, "1m"),
+        (12 * 60, "12m"),
+        (3599, "59m"),
+        (3600, "1h"),
+        (2 * 3600, "2h"),
+        (86399, "23h"),
+        (86400, "1d"),
+        (86 * 86400, "86d"),
+    ],
+)
+def test_format_age(seconds: float, expected: str) -> None:
+    # Unlike format_elapsed, AGE never compounds units (SPEC.md "Process view").
+    assert format_age(seconds) == expected
+
+
+def test_format_pair_shares_unit_when_both_sides_pick_the_same_one() -> None:
+    assert format_pair(int(18.7 * 1024**3), int(30.9 * 1024**3)) == "18.7/30.9 GiB"
+
+
+def test_format_pair_keeps_separate_units_when_they_differ() -> None:
+    assert format_pair(512 * 1024**2, 1024**3) == "512 MiB / 1.0 GiB"
+
+
+def test_truncate_name_keeps_short_names_as_is() -> None:
+    assert truncate_name("ghostty") == "ghostty"
+
+
+def test_truncate_name_caps_at_32_with_an_ellipsis() -> None:
+    name = "x" * 40
+    result = truncate_name(name)
+
+    assert len(result) == 32
+    assert result.endswith("…")
+    assert result == "x" * 31 + "…"
+
+
+def test_truncate_name_exactly_at_cap_is_not_truncated() -> None:
+    name = "x" * 32
+    assert truncate_name(name) == name

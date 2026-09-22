@@ -54,3 +54,46 @@ def format_elapsed(seconds: float) -> str:
         return f"{minutes}m"
     hours, minutes = divmod(minutes, 60)
     return f"{hours}h{minutes}m" if minutes else f"{hours}h"
+
+
+def format_age(seconds: float) -> str:
+    """Compact process age using only its largest unit (SPEC.md "Process view").
+
+    Unlike `format_elapsed`, never compounds units: ``45s``, ``12m``, ``2h``,
+    ``86d``.
+    """
+    total = int(seconds)
+    if total < 60:
+        return f"{total}s"
+    minutes = total // 60
+    if minutes < 60:
+        return f"{minutes}m"
+    hours = total // 3600
+    if hours < 24:
+        return f"{hours}h"
+    return f"{total // 86400}d"
+
+
+def format_pair(used: int, total: int) -> str:
+    """Format a used/total byte pair, sharing the unit when both render to it.
+
+    ``18.7/30.9 GiB`` when `used` and `total` pick the same unit; otherwise
+    each keeps its own, e.g. ``512 MiB / 1.0 GiB`` (SPEC.md main-view header
+    line 1).
+    """
+    used_num, _, used_unit = size(used).rpartition(" ")
+    total_num, _, total_unit = size(total).rpartition(" ")
+    if used_unit == total_unit:
+        return f"{used_num}/{total_num} {used_unit}"
+    return f"{size(used)} / {size(total)}"
+
+
+def truncate_name(name: str, cap: int = 32) -> str:
+    """Cap a display name at `cap` characters, ending a cut name with ``…``.
+
+    Used for the main view's APP column and the process view's NAME column
+    (SPEC.md "Behaviour details": "APP column ... cap at 32 characters").
+    """
+    if len(name) <= cap:
+        return name
+    return name[: cap - 1] + "…"

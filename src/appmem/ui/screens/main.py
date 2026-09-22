@@ -23,8 +23,9 @@ from textual.widgets.data_table import ColumnKey, RowKey
 from appmem.collect import AppStats, SystemStats, Unit, filter_visible_apps, group_apps, read_system
 from appmem.collect import find_units as collect_find_units
 from appmem.collect import read_unit as collect_read_unit
-from appmem.fmt import format_delta, size
+from appmem.fmt import format_delta, size, truncate_name
 from appmem.ui.header import format_line1, format_line2
+from appmem.ui.process_rows import initial_process_sort
 from appmem.ui.rows import (
     DEFAULT_SORT_KEY,
     DEFAULT_SORT_REVERSE,
@@ -36,12 +37,13 @@ from appmem.ui.rows import (
     sort_rows,
     update_baseline,
 )
+from appmem.ui.screens.help import HelpScreen
+from appmem.ui.screens.processes import ProcessesScreen
 
-FOOTER_TEXT = (
-    " click header / s r t d  sort   enter  processes   x  system   z  reset Δ   ?  help   q  quit"
-)
+FOOTER_TEXT = " s r t d sort  enter procs  x system  c cache  z reset Δ  ? help  q quit"
 
-# Width `None` = auto: the APP column grows to the longest name, so names are never cut.
+# Width `None` = auto: the APP column grows to the longest name (capped at 32 by
+# `truncate_name` in `_format_cell`), so short names are never cut short of that.
 _BASE_COLUMNS: tuple[tuple[SortKey, str, int | None], ...] = (
     ("app", "APP", None),
     ("swap", "SWAP", 10),
@@ -58,7 +60,7 @@ _TAIL_COLUMNS: tuple[tuple[SortKey, str, int | None], ...] = (
 
 def _format_cell(key: SortKey, row: Row) -> str:
     if key == "app":
-        return row.name
+        return truncate_name(row.name)
     if key == "swap":
         return size(row.swap)
     if key == "ram":
@@ -102,6 +104,7 @@ class MainScreen(Screen[None]):
         Binding("c", "toggle_cache", "toggle CACHE", show=False),
         Binding("x", "toggle_system", "toggle system", show=False),
         Binding("z", "reset_delta", "reset Δ", show=False),
+        Binding("?", "help", "help", show=False),
     ]
 
     def __init__(self, *, root: Path, uid: int, interval: float, include_system: bool) -> None:
@@ -128,7 +131,15 @@ class MainScreen(Screen[None]):
 
     def on_mount(self) -> None:
         self.refresh_now()
-        self.set_interval(self._interval, self.refresh_now)
+        self.set_interval(self._interval, self._tick)
+
+    def _tick(self) -> None:
+        # Covered by the process view or help: skip the work, `on_screen_resume` catches up.
+        if self.is_active:
+            self.refresh_now()
+
+    def on_screen_resume(self) -> None:
+        self.refresh_now()  # no stale numbers after Esc from the process view
 
     def _table(self) -> DataTable[str | Text]:
         # `isinstance()` (which `query_one` uses) rejects a parameterized generic,
@@ -229,7 +240,9 @@ class MainScreen(Screen[None]):
         ordered = sort_rows(self._rows.values(), self._sort_key, self._sort_reverse)
         if [row.name for row in ordered] == [_key_str(row.key) for row in table.ordered_rows]:
             return  # same order: `table.sort` would only force a full repaint
-        rank = {row.name: index for index, row in enumerate(ordered)}
+        # Rank by the APP column's rendered (possibly truncated) text, since that
+        # is what `table.sort`'s key function sees as `values[0]`, not `row.name`.
+        rank = {_format_cell("app", row): index for index, row in enumerate(ordered)}
         table.sort(key=lambda values: rank[str(values[0])])
 
     def _apply_rows(self, rows: list[Row]) -> None:
@@ -285,3 +298,22 @@ class MainScreen(Screen[None]):
         self._baseline_time = datetime.now()
         self._apply_rows(build_rows(self._last_apps, self._baseline))
         self._update_header_line2()
+
+    def action_help(self) -> None:
+        # Textual's `Screen.app` is typed from a contextvar pyright can't fully
+        # resolve; the call itself is fine (SPEC.md "Tech" notes).
+        self.app.push_screen(HelpScreen())  # pyright: ignore[reportUnknownMemberType]
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        app_name = _key_str(event.row_key)
+        app = next((app for app in self._last_apps if app.name == app_name), None)
+        if app is None:  # row vanished between the click and the event
+            return
+        self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
+            ProcessesScreen(
+                root=self._root,
+                app_stats=app,
+                interval=self._interval,
+                initial_sort=initial_process_sort(self._sort_key, self._sort_reverse),
+            )
+        )
