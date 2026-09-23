@@ -1,4 +1,4 @@
-# appmem: spec v0.8
+# appmem: spec v0.9
 
 A live terminal view of RAM and swap usage **per application**, not per process.
 Think `btm` or `htop`, but rows are apps (Ghostty, Brave, LibreOffice), each summing all of its processes.
@@ -80,6 +80,7 @@ ghostty   281 procs   swap 11.2 GiB   RAM 6.6 GiB
  2026292  claude                   268 MiB     135 MiB     404 MiB      1d  app-ghostty-surface-transient-4172209.scope
  ...
           kernel                   ...                                      (page tables, slab, stacks)
+          zswap pool               ...                                      (compressed swap kept in RAM)
           unattributed             ...                                      (held by the app, not by any process)
 
 systemctl --user stop 'app-com.mitchellh.ghostty.service'   kill 6091
@@ -101,15 +102,16 @@ Enter on a command drills into its member processes (title `ghostty › claude`,
 
 - The process view opens sorted by the same column as the main view (SWAP stays SWAP, TOTAL stays TOTAL).
 - SWAP, RAM and TOTAL are per-process values (see Definitions).
-- Two dim rows are pinned last in the flat and grouped layouts (not in a drill-down, since they belong to the whole app):
-  - `kernel`: the app's charged kernel memory (the `kernel` field of `memory.stat`).
-  - `unattributed`: app SWAP minus the process SWAP sum, and app RAM minus kernel minus the process RAM sum, each clamped at 0. Memory the app holds without any process mapping it. Without that row the gap would look like a bug.
+- Dim rows are pinned last in the flat and grouped layouts (not in a drill-down, since they belong to the whole app):
+  - `kernel`: the app's charged kernel memory (the `kernel` field of `memory.stat`) minus its zswap pool.
+  - `zswap pool`: the RAM the app's compressed swap takes (`memory.stat` `zswap`, charged inside `kernel`); only when above 0.
+  - `unattributed`: app SWAP minus the process SWAP sum, and app RAM minus `kernel` minus `zswap pool` minus the process RAM sum, each clamped at 0. Memory the app holds without any process mapping it. Without that row the gap would look like a bug.
 - The status line above the footer describes the selected row:
   - process row: the full unit name and `systemctl --user stop '<unit>'` (`sudo systemctl stop '<unit>'` for system units) plus `kill <PID>`;
   - grouped command in one unit: the stop command without `kill`; in several units: `N units, Enter lists the processes`;
-  - `kernel`/`unattributed`: a one-line explanation.
+  - `kernel`/`zswap pool`/`unattributed`: a one-line explanation.
   The unit is shortened in the middle only when the line is wider than the terminal.
-- The UNIT column is the last one and may be cut at the screen edge; the status line carries the full name.
+- The UNIT column is the last one and may be cut at the screen edge; the status line carries the full name. NAME takes the width left after the numeric columns at every width (long names get `…`), and re-syncs when a scrollbar appears or goes, so RAM, SWAP, TOTAL and PROCS are never cut.
 - Under 95 columns AGE is hidden. The title drops `procs`, then `swap`, instead of wrapping.
 - `g`, Enter into a drill-down and Esc out of it switch only after the new view's data was read; if that read fails, the current view stays as it was.
 - All layouts refresh with the same interval as the main view.
@@ -148,11 +150,13 @@ All reads are plain, world-readable files. No root needed.
 | RAM per app | `memory.stat` of the unit: `anon + shmem + kernel` (kernels before 5.18 have no `kernel` field: `slab + kernel_stack + pagetables + percpu`) |
 | CACHE per app | `memory.stat` of the unit: `file - shmem` |
 | ZSWAP per app | `memory.stat` of the unit: `zswapped` |
-| zswap | `/sys/module/zswap/parameters/enabled` (`Y`; missing = off), `/proc/meminfo` `Zswap`/`Zswapped`, `/proc/vmstat` `zswpwb` |
+| zswap | `/sys/module/zswap/parameters/enabled` (`Y`; missing = off), `compressor`, `max_pool_percent`; `/proc/meminfo` `Zswap`/`Zswapped`; `/proc/vmstat` `zswpwb` |
+| zswap pool per app | `memory.stat` of the unit: `zswap` (inside `kernel`) |
 | Processes of an app | `cgroup.procs` of the unit and every directory below it |
 | SWAP per process | `/proc/PID/status` → `VmSwap` |
 | RAM per process | `/proc/PID/status` → `RssAnon + RssShmem` |
-| Process name | basename of the first whitespace-separated token of the first `/proc/PID/cmdline` field (never the arguments, which can hold secrets); `/proc/PID/comm` when cmdline is empty, the result is `exe`, or argv[0] starts with `/proc/` |
+| Process name | basename of the first whitespace-separated token of the first `/proc/PID/cmdline` field; `/proc/PID/comm` when cmdline is empty, the result is `exe`, or argv[0] starts with `/proc/`. Interpreters and launchers get a label (see "Process names" below) |
+| Private RAM per process (`app NAME` only) | `/proc/PID/smaps_rollup`: `Private_Clean + Private_Dirty`; null when unreadable |
 | Process age | `/proc/PID/stat` field 22 (`starttime`), parsed after the last `)` because names may contain spaces and parentheses |
 | System totals | `/proc/meminfo`: `MemTotal`, `MemAvailable`, `SwapTotal`, `SwapFree` |
 | Pressure | `/proc/pressure/memory`, `avg10` and `avg60` of `some` and `full` |
@@ -160,6 +164,15 @@ All reads are plain, world-readable files. No root needed.
 | `elsewhere` | root `/sys/fs/cgroup/memory.stat` minus the `user@$UID.service` tree minus `system.slice` |
 
 PROCS is the line count of `cgroup.procs`, not `pids.current`, which counts threads.
+
+### Process names
+
+Arguments can hold secrets, so a name never shows one, except for this allowlist, which fails closed.
+- For `node`, `bun`, `deno`, `npm`, `npx`, `uv`, `uvx` and `python`/`python3`/`python3.N`, with a real NUL-separated argv, the name is `interpreter:target` (`node:mcp-remote`, `npx:@scope/tool`, `python3:http.server`).
+- Walking the arguments skips only known verbs (`npm exec/run/x`, `uv tool/run/install`, `bun`/`deno run`) and known value-less flags (python `-u -B -O -E -s -S -I`; node `--no-warnings --enable-source-maps`; npm/npx `-y --yes`).
+- The target is a script basename, a `-m` module or a package spec with `@version` dropped. A generic script basename (`index.js`, `main.js`, `cli.js`, `__main__.py`) becomes the package: the directory after `node_modules/`, or the nearest meaningful parent.
+- The target must match `[A-Za-z0-9._@/+-]`, at most 40 characters.
+- Any other flag (inline code `-e`/`-c`, options with values), a URL, a query string or a failed check gives the bare interpreter name.
 
 ### Finding units
 
@@ -183,7 +196,7 @@ Login-session scopes (`user-$UID.slice/session-N.scope`: the display manager hel
 - **SWAP = memory.swap.current.** With zswap enabled this includes pages held compressed in RAM.
 - **ZSWAP = zswapped** (shown by default while zswap is enabled, `w` toggles): the part of the app's SWAP held compressed in RAM, not extra memory. The RAM the compressed pool takes is charged to the app as `kernel` memory, so it is already inside its RAM (verified live).
 - **TOTAL = SWAP + RAM.**
-- **Per-process RAM and SWAP** come from `/proc/PID/status`, the same numbers htop uses. They are readable for every process, including sandboxed browser processes and other users' processes.
+- **Per-process RAM and SWAP** come from `/proc/PID/status`, the same numbers htop uses (RAM is RSS, so don't sum processes; use the app totals). They are readable for every process, including sandboxed browser processes and other users' processes.
   They don't add up to the app row, for two reasons. A shared page counts once in every process that maps it, so rows can add up to more than the app. Memory the app holds without any process mapping it (GPU buffers, memfd, tmpfs) belongs to no process, so rows can fall short. The `kernel` and `unattributed` rows show the gap.
 - **Memory pressure** is the share of time tasks waited for memory over the last 10 s:
   - `high`: `full avg10` > 5 % or `some avg10` > 20 %
@@ -305,10 +318,13 @@ The command line conforms to the house CLI Design Standard 0.1.0 (claimed in `ap
   - `zswap_enabled`;
   - `zswap_pool_bytes` and `zswapped_bytes`, both null without zswap;
   - `zswap_writeback_bytes`, cumulative since boot. A one-shot command has no rate, so diff two snapshots. It is null only on kernels without the counter;
+  - `zswap_compressor`, `zswap_max_pool_percent` and `zswap_compression_ratio` (zswapped / pool, null when either is 0), all null without zswap;
   - `zswapped_bytes` per app.
-- **app NAME**: resolves (scope, name) exactly like the process view. `units` (raw names), `processes` and `commands` (each paged by `--limit`, default 100), `kernel_bytes` and `unattributed_*`. No match, or every unit gone before it is read: `not_found`, exit 1.
+
+  Each app item also has `kernel_bytes` (without the zswap pool) and `top_commands`: its 3 largest commands by TOTAL (`name`, `total_bytes`, `procs`, grouped as in `app NAME`), empty for apps with 6 or fewer processes.
+- **app NAME**: resolves (scope, name) exactly like the process view. `units` as `{name, label}` objects (raw name, and the systemd-unescaped label), `processes` (with `private_bytes`) and `commands` (each paged by `--limit`, default 100), `kernel_bytes`, `zswap_pool_bytes` and `unattributed_*`. No match, or every unit gone before it is read: `not_found`, exit 1.
 - **schema**: the index (commands, global flags, format defaults, exit codes, conformance) or one command's detail (flags, args, output schema). Always JSON.
-- Output: text on a terminal, JSON otherwise; `--json` forces JSON. Sizes are integer bytes (`_bytes`), percentages `_percent`, ages `age_seconds`, `taken_at` is RFC 3339 with the local offset. Text reports contain no escape sequences, and names with control characters are shown escaped.
+- Output: text on a terminal, JSON otherwise; `--json` forces JSON. Sizes are integer bytes (`_bytes`), percentages `_percent`, ages integer `age_seconds`, `taken_at` is RFC 3339 with the local offset. Text reports contain no escape sequences, and names with control characters are shown escaped.
 - A closed stdout pipe (`| head`) ends quietly with exit `0`.
 - `--help` is a standalone cheat sheet: purpose, commands, flags, keys, how to read pressure, one example. Unknown flags and invalid values fail with exit `2` and the accepted form.
 - Colour is never the only signal: sort direction uses `▴`/`▾`, deltas use `+`/`-` and `·`, pressure is a word. `NO_COLOR` is honoured.
@@ -358,7 +374,7 @@ Measured with the UI at `-i 1` on the dev machine (2026-09-23, ~310-process app)
 - Grouping: the acceptance table, plus escapes, unknown shapes and empty names.
 - Unit walk: fixture tree with nested sub-cgroups (Konsole tabs, `system-cups.slice/cups.service`) and ignored `*.socket`/`*.mount` directories.
 - Collectors: fixture trees for `memory.stat`, `memory.swap.current`, `/proc/PID/*` (including names with spaces and parentheses), missing files, a process vanishing mid-read.
-- Process view math: the `kernel` and `unattributed` rows, clamping at 0, grouping by command.
+- Process view math: the `kernel`, `zswap pool` and `unattributed` rows, clamping at 0, grouping by command.
 - Formatting: unit boundaries (1023 KiB, 1 MiB, 1023 MiB, 1 GiB) and pressure word thresholds.
 - UI: Textual pilot tests for sorting, the process view, `g`, drill-down, the status line, narrow layouts (80x24, 60 columns) and the help screen.
 - CLI: exit codes and the JSON error line for every kind; the terminal-context rules; parser-versus-descriptor parity; every emitted document validated against its published output schema.

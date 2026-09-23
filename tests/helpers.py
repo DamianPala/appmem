@@ -17,11 +17,17 @@ def write_memory_stat(
     kernel: int = 0,
     file: int = 0,
     zswapped: int | None = None,
+    zswap: int | None = None,
 ) -> None:
     unit_dir.mkdir(parents=True, exist_ok=True)
     lines = [f"anon {anon}", f"shmem {shmem}", f"kernel {kernel}", f"file {file}"]
     if zswapped is not None:
         lines.append(f"zswapped {zswapped}")
+    if zswap is not None:
+        # The pool's own RAM cost, a subset of `kernel` on kernels that
+        # report it there.
+        assert zswap <= kernel, "fixture: zswap pool > kernel"
+        lines.append(f"zswap {zswap}")
     (unit_dir / "memory.stat").write_text("\n".join(lines) + "\n")
 
 
@@ -36,7 +42,7 @@ def write_cgroup_procs(unit_dir: Path, pids: list[int]) -> None:
     (unit_dir / "cgroup.procs").write_text(content + "\n" if pids else "")
 
 
-def make_unit(
+def make_unit(  # noqa: PLR0913 -- one keyword-only field per memory.stat/swap.current line
     unit_dir: Path,
     *,
     anon: int = 0,
@@ -44,13 +50,16 @@ def make_unit(
     kernel: int = 0,
     file: int = 0,
     zswapped: int | None = None,
+    zswap: int | None = None,
     swap: int | None = 0,
     pids: list[int] | None = None,
 ) -> Path:
     """Create a full unit dir: memory.stat, memory.swap.current, cgroup.procs."""
     # zswapped pages are a subset of the unit's swap on a real kernel.
     assert zswapped is None or zswapped <= (swap or 0), "fixture: zswapped > swap"
-    write_memory_stat(unit_dir, anon=anon, shmem=shmem, kernel=kernel, file=file, zswapped=zswapped)
+    write_memory_stat(
+        unit_dir, anon=anon, shmem=shmem, kernel=kernel, file=file, zswapped=zswapped, zswap=zswap
+    )
     if swap is not None:
         write_swap_current(unit_dir, swap)
     write_cgroup_procs(unit_dir, pids or [])
@@ -147,6 +156,31 @@ def write_zswap_enabled(root: Path, enabled: bool) -> None:
     param_dir = root / "sys" / "module" / "zswap" / "parameters"
     param_dir.mkdir(parents=True, exist_ok=True)
     (param_dir / "enabled").write_text(("Y" if enabled else "N") + "\n")
+
+
+def write_zswap_params(
+    root: Path, *, compressor: str | None = None, max_pool_percent: int | None = None
+) -> None:
+    """`/sys/module/zswap/parameters/{compressor,max_pool_percent}`. Either
+    left `None` leaves that one file unwritten, same as an older kernel
+    without that particular knob."""
+    param_dir = root / "sys" / "module" / "zswap" / "parameters"
+    param_dir.mkdir(parents=True, exist_ok=True)
+    if compressor is not None:
+        (param_dir / "compressor").write_text(compressor + "\n")
+    if max_pool_percent is not None:
+        (param_dir / "max_pool_percent").write_text(f"{max_pool_percent}\n")
+
+
+def write_smaps_rollup(
+    root: Path, pid: int, *, private_clean_kb: int, private_dirty_kb: int
+) -> None:
+    """`/proc/PID/smaps_rollup`, with just the two `Private_*` lines this
+    suite cares about."""
+    proc_dir = root / "proc" / str(pid)
+    proc_dir.mkdir(parents=True, exist_ok=True)
+    content = f"Private_Clean:  {private_clean_kb} kB\nPrivate_Dirty:  {private_dirty_kb} kB\n"
+    (proc_dir / "smaps_rollup").write_text(content)
 
 
 def write_vmstat(root: Path, *, zswpwb: int | None = None) -> None:

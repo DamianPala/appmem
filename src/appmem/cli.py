@@ -133,6 +133,9 @@ Flags:
   --json         {schema.JSON_FLAG.description}
   -h, --help     Show this help and exit
 
+Note: a process's ram_bytes is RSS -- shared pages count once in every process
+that maps it, so don't sum processes; use the app's own ram_bytes instead.
+
 Text on a terminal, JSON otherwise. `appmem schema app` describes the JSON shape.
 """
 

@@ -30,7 +30,7 @@ from textual.widgets.data_table import ColumnKey
 from appmem.collect import ProcStats, UnitStats
 from appmem.theme import config_path
 from appmem.ui.app import AppMemApp
-from appmem.ui.process_rows import KERNEL_KEY, UNATTRIBUTED_KEY
+from appmem.ui.process_rows import KERNEL_KEY, UNATTRIBUTED_KEY, ZSWAP_POOL_KEY
 from appmem.ui.rows import row_key
 from appmem.ui.screens import processes as processes_screen
 from appmem.ui.screens.help import HelpScreen
@@ -463,6 +463,39 @@ async def test_kernel_and_unattributed_rows_stay_pinned_last_under_every_sort(
                 DataTable.HeaderSelected(table, ColumnKey(key), 1, Text(key.upper()))
             )
             assert _row_keys(table)[-2:] == [KERNEL_KEY, UNATTRIBUTED_KEY]
+
+
+# --- zswap-pool row split out of kernel ----------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_zswap_pool_row_shown_between_kernel_and_unattributed_when_present(
+    tmp_path: Path,
+) -> None:
+    root = _base_tree(tmp_path)
+    unit_dir = user_service_root(root, UID) / "app.slice" / "app-ghostty.service"
+    make_unit(unit_dir, anon=5 * 1024**2, kernel=2 * 1024**2, zswap=512 * 1024, pids=[100])
+    _proc(root, 100, name="ghostty")
+
+    async with _app(root).run_test(size=SCREEN_SIZE) as pilot:
+        await pilot.pause()
+        await _open_ghostty_process_view(pilot)
+        table = _table(pilot)
+
+        assert _row_keys(table)[-4:] == ["100", KERNEL_KEY, ZSWAP_POOL_KEY, UNATTRIBUTED_KEY]
+
+
+@pytest.mark.asyncio
+async def test_zswap_pool_row_absent_when_the_app_has_no_zswap_pool(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-ghostty.service", ram=1 * 1024**2, swap=0, pids=[100])
+    _proc(root, 100, name="ghostty")
+
+    async with _app(root).run_test(size=SCREEN_SIZE) as pilot:
+        await pilot.pause()
+        await _open_ghostty_process_view(pilot)
+
+        assert ZSWAP_POOL_KEY not in _row_keys(_table(pilot))
 
 
 # --- the unit list is re-derived every tick, not captured once on Enter --------
@@ -1849,6 +1882,116 @@ async def test_name_column_widens_back_after_resizing_from_60_to_90(tmp_path: Pa
         idx = table.get_column_index("name")
         cell = str(table.get_cell_at(Coordinate(0, idx)))
         assert "…" not in cell, "still cropped back at 90 columns"
+
+
+# --- NAME budgeted at every width, not only below a fixed threshold ------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("width", [70, 78, 85, 100])
+async def test_numeric_columns_fit_on_screen_with_a_32_char_name(
+    tmp_path: Path, width: int
+) -> None:
+    # A name at the 32-char truncation cap: every numeric column must stay
+    # fully on screen at every one of these widths instead of being pushed
+    # past the terminal edge (SPEC.md "Process view"). Before this,
+    # `_with_name_width` only shrank NAME below a fixed 70-column threshold,
+    # so TOTAL was pushed off at 70-78 (PID and AGE budgeted the same way).
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-ghostty.service", ram=1 * 1024**2, swap=0, pids=[100])
+    _proc(root, 100, name="x" * 32, ram_kb=12 * 1024**2)
+
+    async with _app(root).run_test(size=(width, 24)) as pilot:
+        await pilot.pause()
+        await _open_ghostty_process_view(pilot)
+        table = _table(pilot)
+        for key in table.columns:
+            assert key.value is not None
+            if key.value in ("name", "unit"):
+                continue
+            idx = table.get_column_index(key.value)
+            region = table._get_column_region(idx)  # pyright: ignore[reportPrivateUsage]
+            assert region.right <= table.size.width, (key, region, table.size.width)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("width", [70, 78, 85, 100])
+async def test_numeric_columns_fit_on_screen_grouped_with_a_32_char_command_name(
+    tmp_path: Path, width: int
+) -> None:
+    # Same as above, grouped-by-command mode: before this, PROCS was pushed
+    # off screen at 70-77.
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-ghostty.service", ram=1 * 1024**2, swap=0, pids=[100])
+    _proc(root, 100, name="x" * 32, ram_kb=12 * 1024**2)
+
+    async with _app(root).run_test(size=(width, 24)) as pilot:
+        await pilot.pause()
+        await _open_ghostty_process_view(pilot)
+        await pilot.press("g")
+        table = _table(pilot)
+        for key in table.columns:
+            assert key.value is not None
+            if key.value == "name":
+                continue
+            idx = table.get_column_index(key.value)
+            region = table._get_column_region(idx)  # pyright: ignore[reportPrivateUsage]
+            assert region.right <= table.size.width, (key, region, table.size.width)
+
+
+@pytest.mark.asyncio
+async def test_numeric_columns_still_fit_when_new_rows_bring_a_scrollbar(tmp_path: Path) -> None:
+    # No resize happens when enough processes appear to need a vertical
+    # scrollbar, yet it narrows the width NAME was budgeted against.
+    root = _base_tree(tmp_path)
+    unit_dir = _app_unit(root, "app-ghostty.service", ram=1 * 1024**2, swap=0, pids=[100])
+    _proc(root, 100, name="x" * 32, ram_kb=1024)
+
+    async with _app(root).run_test(size=(78, 15)) as pilot:
+        await pilot.pause()
+        await _open_ghostty_process_view(pilot)
+        screen = pilot.app.screen
+        assert isinstance(screen, ProcessesScreen)
+        table = _table(pilot)
+
+        pids = list(range(100, 140))
+        write_cgroup_procs(unit_dir, pids)
+        for pid in pids:
+            _proc(root, pid, name="x" * 32, ram_kb=1024)
+        screen.refresh_now()
+        await pilot.pause()
+
+        assert table.scrollbar_size_vertical > 0
+        idx = table.get_column_index("total")
+        region = table._get_column_region(idx)  # pyright: ignore[reportPrivateUsage]
+        assert region.right <= table.scrollable_content_region.width
+
+
+@pytest.mark.asyncio
+async def test_procs_column_still_fits_when_new_groups_bring_a_scrollbar(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    unit_dir = _app_unit(root, "app-ghostty.service", ram=1 * 1024**2, swap=0, pids=[100])
+    _proc(root, 100, name="x" * 32, ram_kb=1024)
+
+    async with _app(root).run_test(size=(78, 15)) as pilot:
+        await pilot.pause()
+        await _open_ghostty_process_view(pilot)
+        await pilot.press("g")
+        screen = pilot.app.screen
+        assert isinstance(screen, ProcessesScreen)
+        table = _table(pilot)
+
+        pids = list(range(100, 140))
+        write_cgroup_procs(unit_dir, pids)
+        for pid in pids:
+            _proc(root, pid, name=f"{pid}" + "x" * 29, ram_kb=1024)  # one group each
+        screen.refresh_now()
+        await pilot.pause()
+
+        assert table.scrollbar_size_vertical > 0
+        idx = table.get_column_index("procs")
+        region = table._get_column_region(idx)  # pyright: ignore[reportPrivateUsage]
+        assert region.right <= table.scrollable_content_region.width
 
 
 # --- slow reads must not freeze input --------------------------------------------

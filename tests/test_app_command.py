@@ -9,7 +9,14 @@ import pytest
 
 from appmem import report
 from appmem.report import AppNotFoundError, app_document
-from helpers import make_unit, user_service_root, write_memory_stat, write_proc, write_uptime
+from helpers import (
+    make_unit,
+    user_service_root,
+    write_memory_stat,
+    write_proc,
+    write_smaps_rollup,
+    write_uptime,
+)
 
 _NOW = datetime(2026, 9, 23, 0, 30, 41, tzinfo=timezone(timedelta(hours=2)))
 _MIB = 1024 * 1024
@@ -111,7 +118,46 @@ def test_units_are_listed_raw_with_escapes_intact(tmp_path: Path) -> None:
 
     document, _, _ = app_document(tmp_path, 1000, "ghostty", "user", limit=100, now=_NOW)
 
-    assert document["units"] == [escaped_name]
+    assert document["units"] == [{"name": escaped_name, "label": "app-ghostty-2@abc.service"}]
+
+
+def test_age_seconds_is_an_integer(tmp_path: Path) -> None:
+    user_root = _base_tree(tmp_path)
+    unit = user_root / "app.slice" / "app-ghostty.service"
+    make_unit(unit, anon=1 * _MIB, pids=[1])
+    write_proc(tmp_path, 1, cmdline="ghostty", comm="ghostty", starttime_ticks=100)
+
+    document, _, _ = app_document(tmp_path, 1000, "ghostty", "user", limit=100, now=_NOW)
+
+    age = document["processes"]["items"][0]["age_seconds"]
+    assert isinstance(age, int)
+
+
+def test_process_private_bytes_present_and_null_when_unreadable(tmp_path: Path) -> None:
+    user_root = _base_tree(tmp_path)
+    unit = user_root / "app.slice" / "app-ghostty.service"
+    make_unit(unit, anon=2 * _MIB, pids=[1, 2])
+    write_proc(tmp_path, 1, cmdline="ghostty", comm="ghostty")
+    write_proc(tmp_path, 2, cmdline="sandboxed", comm="sandboxed")
+    write_smaps_rollup(tmp_path, 1, private_clean_kb=100, private_dirty_kb=50)
+    # PID 2: no smaps_rollup written -- unreadable, same as a sandboxed process.
+
+    document, _, _ = app_document(tmp_path, 1000, "ghostty", "user", limit=100, now=_NOW)
+
+    by_pid = {item["pid"]: item["private_bytes"] for item in document["processes"]["items"]}
+    assert by_pid[1] == (100 + 50) * 1024
+    assert by_pid[2] is None
+
+
+def test_zswap_pool_bytes_is_the_apps_own_share(tmp_path: Path) -> None:
+    user_root = _base_tree(tmp_path)
+    unit = user_root / "app.slice" / "app-ghostty.service"
+    make_unit(unit, anon=1 * _MIB, kernel=3 * _MIB, zswap=1 * _MIB, swap=1 * _MIB, pids=[])
+
+    document, _, _ = app_document(tmp_path, 1000, "ghostty", "user", limit=100, now=_NOW)
+
+    assert document["zswap_pool_bytes"] == 1 * _MIB
+    assert document["kernel_bytes"] == 2 * _MIB  # 3 MiB kernel - 1 MiB pool
 
 
 def test_app_with_zero_processes_succeeds_with_empty_items(tmp_path: Path) -> None:

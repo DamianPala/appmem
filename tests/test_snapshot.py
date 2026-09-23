@@ -14,11 +14,15 @@ from appmem.report import snapshot_document
 from helpers import (
     make_unit,
     user_service_root,
+    write_cgroup_procs,
     write_meminfo,
     write_memory_stat,
     write_pressure,
+    write_proc,
+    write_uptime,
     write_vmstat,
     write_zswap_enabled,
+    write_zswap_params,
 )
 
 _NOW = datetime(2026, 9, 23, 0, 30, 39, tzinfo=timezone(timedelta(hours=2)))
@@ -278,6 +282,128 @@ def test_snapshot_zswap_system_fields_are_null_when_disabled(tmp_path: Path) -> 
     assert system["zswap_pool_bytes"] is None
     assert system["zswapped_bytes"] is None
     assert system["zswap_writeback_bytes"] is None
+
+
+def test_snapshot_item_kernel_bytes_excludes_the_zswap_pool(tmp_path: Path) -> None:
+    user_root = _base_tree(tmp_path)
+    make_unit(
+        user_root / "app.slice" / "app-ghostty.service",
+        anon=1 * _MIB,
+        kernel=3 * _MIB,
+        zswap=1 * _MIB,
+        swap=1 * _MIB,
+    )
+
+    document, _ = snapshot_document(tmp_path, 1000, include_system=False, limit=50, now=_NOW)
+
+    item = document["apps"]["items"][0]
+    assert item["kernel_bytes"] == 2 * _MIB  # 3 MiB kernel - 1 MiB pool
+
+
+def test_snapshot_zswap_params_and_compression_ratio(tmp_path: Path) -> None:
+    user_root = _base_tree(tmp_path)
+    write_memory_stat(user_root, anon=1)
+    write_meminfo(
+        tmp_path,
+        mem_total_kb=32 * 1024 * 1024,
+        mem_available_kb=12 * 1024 * 1024,
+        swap_total_kb=32 * 1024 * 1024,
+        swap_free_kb=10 * 1024 * 1024,
+        zswap_kb=2_000_000,
+        zswapped_kb=6_000_000,
+    )
+    write_zswap_enabled(tmp_path, enabled=True)
+    write_zswap_params(tmp_path, compressor="lzo", max_pool_percent=20)
+
+    document, _ = snapshot_document(tmp_path, 1000, include_system=False, limit=50, now=_NOW)
+
+    system = document["system"]
+    assert system["zswap_compressor"] == "lzo"
+    assert system["zswap_max_pool_percent"] == 20
+    assert system["zswap_compression_ratio"] == 6_000_000 / 2_000_000
+
+
+def test_snapshot_zswap_params_null_when_disabled(tmp_path: Path) -> None:
+    user_root = _base_tree(tmp_path)
+    write_memory_stat(user_root, anon=1)
+    # zswap disabled (no fixtures written): everything zswap-related is null.
+    write_zswap_params(tmp_path, compressor="lzo", max_pool_percent=20)  # ignored: enabled=False
+
+    document, _ = snapshot_document(tmp_path, 1000, include_system=False, limit=50, now=_NOW)
+
+    system = document["system"]
+    assert system["zswap_compressor"] is None
+    assert system["zswap_max_pool_percent"] is None
+    assert system["zswap_compression_ratio"] is None
+
+
+def test_snapshot_compression_ratio_null_when_pool_is_zero(tmp_path: Path) -> None:
+    user_root = _base_tree(tmp_path)
+    write_memory_stat(user_root, anon=1)
+    write_meminfo(
+        tmp_path,
+        mem_total_kb=32 * 1024 * 1024,
+        mem_available_kb=12 * 1024 * 1024,
+        swap_total_kb=32 * 1024 * 1024,
+        swap_free_kb=10 * 1024 * 1024,
+        zswap_kb=0,
+        zswapped_kb=0,
+    )
+    write_zswap_enabled(tmp_path, enabled=True)
+
+    document, _ = snapshot_document(tmp_path, 1000, include_system=False, limit=50, now=_NOW)
+
+    assert document["system"]["zswap_compression_ratio"] is None
+
+
+# --- top_commands ----------------------------------------------------------------
+
+
+def _proc_with_names_and_ram(tmp_path: Path, unit: Path, entries: list[tuple[str, int]]) -> None:
+    """`entries` is `[(command_name, rss_anon_kb), ...]`, one process each."""
+    pids = list(range(1, len(entries) + 1))
+    write_cgroup_procs(unit, pids)
+    for pid, (name, rss_anon_kb) in zip(pids, entries, strict=True):
+        write_proc(tmp_path, pid, cmdline=name, comm=name, rss_anon_kb=rss_anon_kb)
+
+
+def test_top_commands_are_the_three_largest_by_total(tmp_path: Path) -> None:
+    user_root = _base_tree(tmp_path)
+    write_uptime(tmp_path, seconds=1000.0)
+    unit = user_root / "app.slice" / "app-ghostty.service"
+    make_unit(unit, anon=20 * _MIB, swap=0)
+    # 8 processes (above the top_commands threshold), 4 distinct command
+    # names with clearly different, explicit per-process RAM.
+    entries = [
+        ("claude", 3000), ("claude", 3000), ("claude", 3000),  # 9000 kB total -- largest
+        ("bash", 2000), ("bash", 1000),  # 3000 kB total -- second
+        ("node", 500), ("node", 500),  # 1000 kB total -- third
+        ("tiny", 1),  # smallest, must not appear in the top 3
+    ]  # fmt: skip
+    _proc_with_names_and_ram(tmp_path, unit, entries)
+
+    document, _ = snapshot_document(tmp_path, 1000, include_system=False, limit=50, now=_NOW)
+
+    item = document["apps"]["items"][0]
+    top = item["top_commands"]
+    assert len(top) == 3
+    assert [c["name"] for c in top] == ["claude", "bash", "node"]  # largest totals first
+    claude = next(c for c in top if c["name"] == "claude")
+    assert claude["procs"] == 3
+    assert claude["total_bytes"] == 9000 * 1024
+    assert "tiny" not in [c["name"] for c in top]
+
+
+def test_top_commands_empty_at_the_process_threshold(tmp_path: Path) -> None:
+    user_root = _base_tree(tmp_path)
+    unit = user_root / "app.slice" / "app-pipewire.service"
+    make_unit(unit, anon=5 * _MIB, swap=0)
+    _proc_with_names_and_ram(tmp_path, unit, [("pipewire", 100)] * 6)  # exactly 6: still empty
+
+    document, _ = snapshot_document(tmp_path, 1000, include_system=False, limit=50, now=_NOW)
+
+    item = document["apps"]["items"][0]
+    assert item["top_commands"] == []
 
 
 def test_elsewhere_is_null_without_the_root_memory_stat(tmp_path: Path) -> None:

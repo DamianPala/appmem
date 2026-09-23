@@ -114,6 +114,24 @@ def test_unattributed_row_is_app_minus_process_sum_and_kernel_clamped_at_zero() 
     assert ram == 1000 - 500 - 200
 
 
+def test_unattributed_row_leaves_out_the_zswap_pool_row() -> None:
+    app = AppStats(
+        name="ghostty",
+        ram=1000,
+        cache=0,
+        swap=0,
+        total=1000,
+        procs=1,
+        unit_paths=(),
+        kernel=200,
+        zswap_pool=150,
+    )
+
+    _, ram = unattributed_row(app, [_proc("a", swap=0, ram=300)])
+
+    assert ram == 1000 - 300 - 200 - 150
+
+
 def test_unattributed_row_clamps_at_zero_when_processes_and_kernel_exceed_app_total() -> None:
     # Shared pages can make process rows sum to more than the app.
     app = AppStats(

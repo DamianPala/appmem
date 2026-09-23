@@ -3,8 +3,14 @@
 import os
 from pathlib import Path
 
-from appmem.collect import read_procs
-from helpers import write_cgroup_procs, write_proc, write_stat_line, write_uptime
+from appmem.collect import read_private_bytes, read_procs
+from helpers import (
+    write_cgroup_procs,
+    write_proc,
+    write_smaps_rollup,
+    write_stat_line,
+    write_uptime,
+)
 
 
 def test_reads_name_swap_ram_age_and_unit(tmp_path: Path) -> None:
@@ -67,6 +73,18 @@ def test_space_joined_cmdline_keeps_only_program_basename(tmp_path: Path) -> Non
     assert procs[0].name == "scraper"
 
 
+def test_nul_padded_setproctitle_keeps_only_program_basename(tmp_path: Path) -> None:
+    # A title shorter than the original argv: the rest of the area is NULs.
+    write_uptime(tmp_path, seconds=100.0)
+    unit_dir = tmp_path / "sys" / "fs" / "cgroup" / "unit.service"
+    write_cgroup_procs(unit_dir, [779])
+    write_proc(tmp_path, 779, cmdline="npm exec @a/b --key FAKE/TOKEN" + "\x00" * 8)
+
+    procs = read_procs([unit_dir], tmp_path)
+
+    assert procs[0].name == "npm"
+
+
 def test_exe_basename_falls_back_to_comm(tmp_path: Path) -> None:
     # Electron/AppImage-style processes re-exec through /proc/self/exe, so
     # cmdline[0]'s basename is just "exe".
@@ -124,6 +142,94 @@ def test_vanished_pid_is_skipped(tmp_path: Path) -> None:
     procs = read_procs([unit_dir], tmp_path)
 
     assert [p.pid for p in procs] == [555]
+
+
+# --- interpreter/launcher naming -----------------------------------------------
+# Command lines here are made up: process arguments can hold secrets.
+
+
+def test_node_process_name_becomes_interpreter_colon_script(tmp_path: Path) -> None:
+    write_uptime(tmp_path, seconds=100.0)
+    unit_dir = tmp_path / "sys" / "fs" / "cgroup" / "unit.service"
+    write_cgroup_procs(unit_dir, [12])
+    write_proc(tmp_path, 12, cmdline="node\x00/home/user/.ccs/mcp/websearch-server.cjs\x00")
+
+    procs = read_procs([unit_dir], tmp_path)
+
+    assert procs[0].name == "node:websearch-server.cjs"
+
+
+def test_node_process_arguments_never_leak_into_the_name(tmp_path: Path) -> None:
+    unit_dir = tmp_path / "sys" / "fs" / "cgroup" / "unit.service"
+    write_uptime(tmp_path, seconds=100.0)
+    write_cgroup_procs(unit_dir, [13])
+    write_proc(
+        tmp_path,
+        13,
+        cmdline="node\x00/opt/bridge.cjs\x00--token\x00SECRET-LOOKING-VALUE\x00",
+    )
+
+    procs = read_procs([unit_dir], tmp_path)
+
+    assert procs[0].name == "node:bridge.cjs"
+    assert "SECRET" not in procs[0].name
+
+
+def test_python_dash_m_process_name_uses_the_module(tmp_path: Path) -> None:
+    unit_dir = tmp_path / "sys" / "fs" / "cgroup" / "unit.service"
+    write_uptime(tmp_path, seconds=100.0)
+    write_cgroup_procs(unit_dir, [14])
+    write_proc(tmp_path, 14, cmdline="python3\x00-m\x00ccs_websearch\x00")
+
+    procs = read_procs([unit_dir], tmp_path)
+
+    assert procs[0].name == "python3:ccs_websearch"
+
+
+def test_setproctitle_rewritten_cmdline_never_reaches_the_interpreter_naming(
+    tmp_path: Path,
+) -> None:
+    # A single NUL field with an embedded interpreter-shaped first word is
+    # not real argv; only the safe first-token fallback applies, same as any
+    # other setproctitle-style process (never the interpreter/launcher
+    # enrichment, which needs real argv to stay safe).
+    unit_dir = tmp_path / "sys" / "fs" / "cgroup" / "unit.service"
+    write_uptime(tmp_path, seconds=100.0)
+    write_cgroup_procs(unit_dir, [15])
+    write_proc(tmp_path, 15, cmdline="npm exec @scope/tool@latest\x00")
+
+    procs = read_procs([unit_dir], tmp_path)
+
+    assert procs[0].name == "npm"
+
+
+def test_control_character_in_a_node_script_path_gives_the_bare_interpreter(
+    tmp_path: Path,
+) -> None:
+    # Fails closed: a script path that isn't a plain filesystem path (here,
+    # one carrying a raw control byte) never reaches the derived label.
+    unit_dir = tmp_path / "sys" / "fs" / "cgroup" / "unit.service"
+    write_uptime(tmp_path, seconds=100.0)
+    write_cgroup_procs(unit_dir, [16])
+    write_proc(tmp_path, 16, cmdline="node\x00/a/evil\x1b[2Jname.js\x00")
+
+    procs = read_procs([unit_dir], tmp_path)
+
+    assert procs[0].name == "node"
+
+
+# --- read_private_bytes: USS from smaps_rollup ---------------------------------
+
+
+def test_read_private_bytes_sums_private_clean_and_dirty(tmp_path: Path) -> None:
+    write_smaps_rollup(tmp_path, 21, private_clean_kb=1024, private_dirty_kb=512)
+
+    assert read_private_bytes(tmp_path, 21) == (1024 + 512) * 1024
+
+
+def test_read_private_bytes_is_none_when_the_file_is_missing(tmp_path: Path) -> None:
+    # e.g. a sandboxed process denying access, or the PID vanished.
+    assert read_private_bytes(tmp_path, 22) is None
 
 
 def test_pids_collected_recursively_below_the_unit(tmp_path: Path) -> None:

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -24,12 +25,14 @@ from appmem.collect import (
     find_units,
     group_apps,
     group_by_command,
+    read_private_bytes,
     read_procs,
     read_system,
     read_unit,
     unattributed_row,
     unit_scope,
 )
+from appmem.naming import unit_label
 
 
 class AppNotFoundError(Exception):
@@ -97,10 +100,40 @@ def _system_dict(stats: SystemStats) -> dict[str, Any]:
         "zswap_pool_bytes": stats.zswap_pool_bytes,
         "zswapped_bytes": stats.zswapped_bytes,
         "zswap_writeback_bytes": stats.zswap_writeback_bytes,
+        "zswap_compressor": stats.zswap_compressor,
+        "zswap_max_pool_percent": stats.zswap_max_pool_percent,
+        "zswap_compression_ratio": stats.zswap_compression_ratio,
     }
 
 
-def _app_item(app: AppStats) -> dict[str, Any]:
+_TOP_COMMANDS_MIN_PROCS = 6
+"""Skip the extra per-process read behind `top_commands` for an app at or
+below this many processes: reading `/proc` for every process of every app in
+a snapshot page would multiply its cost by the page size, and a handful of
+processes rarely groups into anything more informative than the app's own
+totals anyway (the exact threshold is a judgment call, not a spec)."""
+
+
+def _top_command_item(command: CommandStats) -> dict[str, Any]:
+    return {
+        "name": command.name,
+        "total_bytes": command.swap + command.ram,
+        "procs": command.count,
+    }
+
+
+def _top_commands(root: Path, app: AppStats) -> list[dict[str, Any]]:
+    """The 3 largest commands by total, same grouping as `app NAME`. `[]` for
+    an app at or below `_TOP_COMMANDS_MIN_PROCS` processes, whose
+    `unit_paths` are never read for this."""
+    if app.procs <= _TOP_COMMANDS_MIN_PROCS:
+        return []
+    procs = read_procs(app.unit_paths, root)
+    commands = sorted(group_by_command(procs), key=lambda c: -(c.swap + c.ram))[:3]
+    return [_top_command_item(command) for command in commands]
+
+
+def _app_item(root: Path, app: AppStats) -> dict[str, Any]:
     return {
         "name": app.name,
         "scope": app.scope,
@@ -109,8 +142,10 @@ def _app_item(app: AppStats) -> dict[str, Any]:
         "total_bytes": app.total,
         "cache_bytes": app.cache,
         "zswapped_bytes": app.zswapped,
+        "kernel_bytes": app.kernel,
         "procs": app.procs,
         "units": len(app.unit_paths),
+        "top_commands": _top_commands(root, app),
     }
 
 
@@ -137,7 +172,7 @@ def snapshot_document(
         "taken_at": now.isoformat(timespec="seconds"),
         "system": _system_dict(stats),
         "pressure": _pressure_dict(stats),
-        "apps": {"items": [_app_item(app) for app in page], "has_more": len(apps) > limit},
+        "apps": {"items": [_app_item(root, app) for app in page], "has_more": len(apps) > limit},
     }
     if page:
         first = page[0]
@@ -151,15 +186,16 @@ def snapshot_document(
 # --- app -----------------------------------------------------------------------
 
 
-def _process_item(proc: ProcStats) -> dict[str, Any]:
+def _process_item(proc: ProcStats, *, root: Path) -> dict[str, Any]:
     return {
         "pid": proc.pid,
         "name": proc.name,
         "swap_bytes": proc.swap,
         "ram_bytes": proc.ram,
         "total_bytes": proc.swap + proc.ram,
-        "age_seconds": proc.age_seconds,
+        "age_seconds": int(proc.age_seconds),
         "unit": proc.unit,
+        "private_bytes": read_private_bytes(root, proc.pid),
     }
 
 
@@ -195,6 +231,7 @@ def _build_app_stats(name: str, scope: str, unit_paths: list[Path]) -> AppStats 
         procs=sum(s.procs for s in unit_stats),
         kernel=sum(s.kernel for s in unit_stats),
         zswapped=sum(s.zswapped for s in unit_stats),
+        zswap_pool=sum(s.zswap_pool for s in unit_stats),
         unit_paths=tuple(unit_paths),
     )
 
@@ -242,9 +279,10 @@ def app_document(
         "cache_bytes": app.cache,
         "zswapped_bytes": app.zswapped,
         "kernel_bytes": app.kernel,
+        "zswap_pool_bytes": app.zswap_pool,
         "procs": app.procs,
-        "units": [path.name for path in unit_paths],
-        "processes": _paged(processes_sorted, limit, _process_item),
+        "units": [{"name": path.name, "label": unit_label(path.name)} for path in unit_paths],
+        "processes": _paged(processes_sorted, limit, partial(_process_item, root=root)),
         "commands": _paged(commands_sorted, limit, _command_item),
         "unattributed_ram_bytes": unattributed_ram,
         "unattributed_swap_bytes": unattributed_swap,

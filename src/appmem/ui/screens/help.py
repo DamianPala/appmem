@@ -107,6 +107,11 @@ _KERNEL_UNATTRIBUTED_NOTE = (
     "(exact, part of the RAM total above); unattributed is everything else left "
     "over -- an accounting difference, not a process."
 )
+_ZSWAP_POOL_ROW_NOTE = (
+    "With zswap on, a third dim row, zswap pool, splits out of kernel when it's "
+    "above zero: the RAM this app's own share of the compressed pool costs, still "
+    "part of the RAM total above, not extra memory."
+)
 
 _CLOSED_APP_NOTE = (
     "A closed app can still show a row: helper processes, crash handlers, or a unit "
@@ -173,6 +178,7 @@ def _build_body(width: int, *, zswap_enabled: bool = False) -> str:
         _wrap(_DELTA_NOTE, w),
         _wrap(_PROCESS_ROWS_NOTE, w),
         _wrap(_KERNEL_UNATTRIBUTED_NOTE, w),
+        *([_wrap(_ZSWAP_POOL_ROW_NOTE, w)] if zswap_enabled else []),
         _wrap(_CLOSED_APP_NOTE, w),
         _wrap(_TERMINALS_NOTE, w),
         _wrap(_SYSTEM_ROWS_NOTE, w),

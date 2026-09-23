@@ -144,9 +144,15 @@ SNAPSHOT_OUTPUT_DESCRIPTION = (
     "then name. pressure is null when /proc/pressure/memory is missing; elsewhere_bytes "
     "is null when the root memory.stat is missing. zswapped_bytes (system and per app) "
     "is already inside swap, zswap_pool_bytes already inside ram_used_bytes; both are "
-    "null when zswap_enabled is false. zswap_writeback_bytes is cumulative since boot, "
-    "null without the kernel counter: one sample has no rate, so diff two snapshots. "
-    "next names the first item "
+    "null when zswap_enabled is false, and so are zswap_compressor, "
+    "zswap_max_pool_percent and zswap_compression_ratio (zswapped_bytes / "
+    "zswap_pool_bytes, also null when either side is 0). zswap_writeback_bytes is "
+    "cumulative since boot, null without the kernel counter: one sample has no rate, "
+    "so diff two snapshots. Each app item's kernel_bytes already excludes its own "
+    "zswap pool share (inside ram_bytes either way). top_commands is the app's 3 "
+    "largest commands by total_bytes, same grouping as appmem app NAME's commands; "
+    "empty for an app with 6 or fewer processes, where it would add little over the "
+    "app's own totals. next names the first item "
     "(appmem app NAME [--scope system]) and is omitted when there are no items; it "
     "repeats --json when the call passed it. Failures return no result."
 )
@@ -175,6 +181,9 @@ SNAPSHOT_OUTPUT: dict[str, object] = {
                 "zswap_pool_bytes",
                 "zswapped_bytes",
                 "zswap_writeback_bytes",
+                "zswap_compressor",
+                "zswap_max_pool_percent",
+                "zswap_compression_ratio",
             ],
             "properties": {
                 "ram_total_bytes": {"type": "integer"},
@@ -193,6 +202,9 @@ SNAPSHOT_OUTPUT: dict[str, object] = {
                 "zswap_pool_bytes": {"type": ["integer", "null"]},
                 "zswapped_bytes": {"type": ["integer", "null"]},
                 "zswap_writeback_bytes": {"type": ["integer", "null"]},
+                "zswap_compressor": {"type": ["string", "null"]},
+                "zswap_max_pool_percent": {"type": ["integer", "null"]},
+                "zswap_compression_ratio": {"type": ["number", "null"]},
             },
         },
         "pressure": {
@@ -228,8 +240,10 @@ SNAPSHOT_OUTPUT: dict[str, object] = {
                             "total_bytes",
                             "cache_bytes",
                             "zswapped_bytes",
+                            "kernel_bytes",
                             "procs",
                             "units",
+                            "top_commands",
                         ],
                         "properties": {
                             "name": {"type": "string"},
@@ -239,8 +253,21 @@ SNAPSHOT_OUTPUT: dict[str, object] = {
                             "total_bytes": {"type": "integer"},
                             "cache_bytes": {"type": "integer"},
                             "zswapped_bytes": {"type": "integer"},
+                            "kernel_bytes": {"type": "integer"},
                             "procs": {"type": "integer"},
                             "units": {"type": "integer"},
+                            "top_commands": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["name", "total_bytes", "procs"],
+                                    "properties": {
+                                        "name": {"type": "string"},
+                                        "total_bytes": {"type": "integer"},
+                                        "procs": {"type": "integer"},
+                                    },
+                                },
+                            },
                         },
                     },
                 },
@@ -282,9 +309,15 @@ APP_DESCRIPTION = (
 )
 APP_OUTPUT_DESCRIPTION = (
     "processes.items sorted by total_bytes descending, ties by name then pid; "
+    "processes.items[].ram_bytes is RSS (RssAnon + RssShmem): a shared page counts "
+    "once in every process that maps it, so don't sum it across processes -- use "
+    "the app's own ram_bytes above. private_bytes (USS, from smaps_rollup) is null "
+    "when unreadable, e.g. a sandboxed process. "
     "commands.items computed over all processes, sorted by total_bytes descending, "
-    "ties by name. units lists every unit directory name of the app, raw. "
-    "kernel_bytes is inside ram_bytes; zswapped_bytes is inside swap_bytes. "
+    "ties by name. units lists every unit directory name of the app, raw, alongside "
+    "a label decoded from systemd's own escaping. "
+    "kernel_bytes excludes the app's zswap pool share (zswap_pool_bytes, 0 without "
+    "zswap); both are inside ram_bytes. zswapped_bytes is inside swap_bytes. "
     "unattributed_* are clamped at 0. "
     "Failures return no result."
 )
@@ -301,6 +334,7 @@ APP_OUTPUT: dict[str, object] = {
         "cache_bytes",
         "zswapped_bytes",
         "kernel_bytes",
+        "zswap_pool_bytes",
         "procs",
         "units",
         "processes",
@@ -318,8 +352,16 @@ APP_OUTPUT: dict[str, object] = {
         "cache_bytes": {"type": "integer"},
         "zswapped_bytes": {"type": "integer"},
         "kernel_bytes": {"type": "integer"},
+        "zswap_pool_bytes": {"type": "integer"},
         "procs": {"type": "integer"},
-        "units": {"type": "array", "items": {"type": "string"}},
+        "units": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["name", "label"],
+                "properties": {"name": {"type": "string"}, "label": {"type": "string"}},
+            },
+        },
         "processes": {
             "type": "object",
             "required": ["items", "has_more"],
@@ -336,6 +378,7 @@ APP_OUTPUT: dict[str, object] = {
                             "total_bytes",
                             "age_seconds",
                             "unit",
+                            "private_bytes",
                         ],
                         "properties": {
                             "pid": {"type": "integer"},
@@ -343,8 +386,9 @@ APP_OUTPUT: dict[str, object] = {
                             "swap_bytes": {"type": "integer"},
                             "ram_bytes": {"type": "integer"},
                             "total_bytes": {"type": "integer"},
-                            "age_seconds": {"type": "number"},
+                            "age_seconds": {"type": "integer"},
                             "unit": {"type": "string"},
+                            "private_bytes": {"type": ["integer", "null"]},
                         },
                     },
                 },

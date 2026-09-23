@@ -4,6 +4,7 @@ from appmem.collect import AppStats, ProcStats
 from appmem.ui.process_rows import (
     KERNEL_KEY,
     UNATTRIBUTED_KEY,
+    ZSWAP_POOL_KEY,
     build_command_rows,
     build_process_rows,
     initial_process_sort,
@@ -14,10 +15,12 @@ from appmem.ui.process_rows import (
     sort_process_rows,
     unattributed_command_row,
     unattributed_process_row,
+    zswap_pool_command_row,
+    zswap_pool_process_row,
 )
 
 
-def _app(*, swap: int = 0, ram: int = 0, kernel: int = 0) -> AppStats:
+def _app(*, swap: int = 0, ram: int = 0, kernel: int = 0, zswap_pool: int = 0) -> AppStats:
     return AppStats(
         name="ghostty",
         ram=ram,
@@ -27,6 +30,7 @@ def _app(*, swap: int = 0, ram: int = 0, kernel: int = 0) -> AppStats:
         procs=0,
         unit_paths=(),
         kernel=kernel,
+        zswap_pool=zswap_pool,
     )
 
 
@@ -57,6 +61,21 @@ def test_kernel_process_row_is_the_apps_kernel_share_with_zero_swap() -> None:
     assert row.swap == 0
     assert row.ram == 200
     assert row.total == 200
+    assert row.dim is True
+
+
+def test_zswap_pool_process_row_is_the_apps_zswap_pool_share() -> None:
+    app = _app(swap=500, ram=1000, kernel=200, zswap_pool=60)
+
+    row = zswap_pool_process_row(app)
+
+    assert row.key == ZSWAP_POOL_KEY
+    assert row.pid is None
+    assert row.age_seconds is None
+    assert row.name == "zswap pool"
+    assert row.swap == 0
+    assert row.ram == 60
+    assert row.total == 60
     assert row.dim is True
 
 
@@ -138,6 +157,19 @@ def test_kernel_command_row_has_no_procs_count() -> None:
     assert row.name == "kernel"
     assert row.procs is None
     assert row.ram == 40
+    assert row.swap == 0
+    assert row.dim is True
+
+
+def test_zswap_pool_command_row_has_no_procs_count() -> None:
+    app = _app(swap=100, ram=100, kernel=40, zswap_pool=15)
+
+    row = zswap_pool_command_row(app)
+
+    assert row.key == ZSWAP_POOL_KEY
+    assert row.name == "zswap pool"
+    assert row.procs is None
+    assert row.ram == 15
     assert row.swap == 0
     assert row.dim is True
 

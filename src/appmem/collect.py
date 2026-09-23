@@ -13,12 +13,13 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
+from appmem.command_name import command_display_name
 from appmem.naming import app_name
 
 _REQUIRED_MEMORY_STAT_KEYS = ("anon", "shmem", "file")
 _KERNEL_FALLBACK_KEYS = ("slab", "kernel_stack", "pagetables", "percpu")
 _MEMORY_STAT_KEYS = frozenset(
-    {"anon", "shmem", "kernel", "file", "zswapped", *_KERNEL_FALLBACK_KEYS}
+    {"anon", "shmem", "kernel", "file", "zswapped", "zswap", *_KERNEL_FALLBACK_KEYS}
 )
 _USER_SLICES = ("app.slice", "session.slice", "background.slice")
 _STATUS_KEYS = ("VmSwap", "RssAnon", "RssShmem")
@@ -91,6 +92,16 @@ class SystemStats:
     has no `zswpwb` counter at all. A single snapshot has no rate of its own;
     the live view turns two ticks of this into the `wb` MiB/s token, and an
     agent can do the same by diffing two snapshots."""
+    zswap_compressor: str | None = None
+    """`/sys/module/zswap/parameters/compressor` (e.g. `lzo`, `zstd`). `None`
+    whenever `zswap_enabled` is `False`."""
+    zswap_max_pool_percent: int | None = None
+    """`/sys/module/zswap/parameters/max_pool_percent`: the pool's cap, as a
+    percentage of total RAM. `None` whenever `zswap_enabled` is `False`."""
+    zswap_compression_ratio: float | None = None
+    """`zswapped_bytes / zswap_pool_bytes`: how much the pool shrinks what it
+    holds. `None` whenever `zswap_enabled` is `False`, or either side is 0
+    (nothing compressed yet, or the pool read as empty)."""
 
 
 @dataclass(frozen=True)
@@ -103,16 +114,21 @@ class UnitStats:
     total: int
     procs: int
     kernel: int = 0
-    """The app's charged kernel memory (page tables, slab, stacks), already
-    included in `ram`. Carried separately so the process view can show it as
-    its own row (SPEC.md "Definitions": RAM = anon + shmem + kernel)."""
+    """The app's charged kernel memory (page tables, slab, stacks), **excluding**
+    the zswap pool (`zswap_pool` below); both are already included in `ram`.
+    Carried separately so the process view can show it as its own row
+    (SPEC.md "Definitions": RAM = anon + shmem + kernel)."""
     zswapped: int = 0
     """`memory.stat` `zswapped`: this unit's swapped data held compressed in
     the pool, already included in `swap` -- not extra memory (SPEC.md
-    "Definitions"). The pool's own RAM cost (`memory.stat` `zswap`) already
-    sits inside this unit's `kernel` on kernels that report it there
-    (confirmed by live measurement), so it is already inside `ram` too -- no
-    separate per-app figure is needed or shown here."""
+    "Definitions")."""
+    zswap_pool: int = 0
+    """`memory.stat` `zswap`: the RAM this unit's own share of the compressed
+    pool costs. On kernels that report it, this is charged inside
+    `memory.stat`'s own `kernel` field (confirmed by live measurement), so
+    it has already been split back out of
+    `kernel` above -- `kernel + zswap_pool` equals that raw figure, and `ram`
+    (computed from the raw, unsplit figure) is unchanged either way."""
 
 
 @dataclass(frozen=True)
@@ -138,10 +154,15 @@ class AppStats:
     procs: int
     unit_paths: tuple[Path, ...]
     kernel: int = 0
+    """Sum of the merged units' `kernel` (already excludes `zswap_pool`, see
+    `UnitStats.kernel`)."""
     scope: str = "user"
     zswapped: int = 0
     """Sum of the merged units' `zswapped` (SPEC.md "Definitions"), already
     included in `swap`."""
+    zswap_pool: int = 0
+    """Sum of the merged units' `zswap_pool` (see `UnitStats.zswap_pool`),
+    already included in `ram`."""
 
 
 @dataclass(frozen=True)
@@ -193,6 +214,9 @@ def read_system(root: Path, uid: int) -> SystemStats:
         and "Zswapped" in meminfo
     )
     zswpwb = _read_vmstat_zswpwb(root / "proc" / "vmstat")
+    zswap_params_dir = root / "sys" / "module" / "zswap" / "parameters"
+    zswap_pool_bytes = meminfo.get("Zswap") if zswap_enabled else None
+    zswapped_bytes = meminfo.get("Zswapped") if zswap_enabled else None
     return SystemStats(
         mem_total=meminfo.get("MemTotal", 0),
         mem_available=meminfo.get("MemAvailable", 0),
@@ -210,10 +234,23 @@ def read_system(root: Path, uid: int) -> SystemStats:
         mem_cache=max(cached - shmem, 0),
         mem_slab=meminfo.get("SReclaimable", 0),
         zswap_enabled=zswap_enabled,
-        zswap_pool_bytes=meminfo.get("Zswap") if zswap_enabled else None,
-        zswapped_bytes=meminfo.get("Zswapped") if zswap_enabled else None,
+        zswap_pool_bytes=zswap_pool_bytes,
+        zswapped_bytes=zswapped_bytes,
         zswap_writeback_bytes=(zswpwb * os.sysconf("SC_PAGE_SIZE") if zswpwb is not None else None),
+        zswap_compressor=(
+            _read_zswap_str_param(zswap_params_dir / "compressor") if zswap_enabled else None
+        ),
+        zswap_max_pool_percent=(
+            _read_zswap_int_param(zswap_params_dir / "max_pool_percent") if zswap_enabled else None
+        ),
+        zswap_compression_ratio=_zswap_compression_ratio(zswap_pool_bytes, zswapped_bytes),
     )
+
+
+def _zswap_compression_ratio(pool_bytes: int | None, zswapped_bytes: int | None) -> float | None:
+    if not pool_bytes or not zswapped_bytes:  # None or 0 either side: nothing to divide
+        return None
+    return zswapped_bytes / pool_bytes
 
 
 def _read_elsewhere(root: Path, uid: int, system_stats: UnitStats | None) -> int | None:
@@ -276,6 +313,27 @@ def _read_zswap_enabled(path: Path) -> bool:
         return path.read_text().strip() == "Y"
     except FileNotFoundError:
         return False
+
+
+def _read_zswap_str_param(path: Path) -> str | None:
+    """A plain-text `/sys/module/zswap/parameters/*` value (e.g. `compressor`),
+    or `None` if the file doesn't exist (SPEC.md "Data sources")."""
+    try:
+        value = path.read_text().strip()
+    except FileNotFoundError:
+        return None
+    return value or None
+
+
+def _read_zswap_int_param(path: Path) -> int | None:
+    """An integer `/sys/module/zswap/parameters/*` value (e.g.
+    `max_pool_percent`), or `None` if the file is missing or not a plain
+    integer."""
+    try:
+        value = path.read_text().strip()
+    except FileNotFoundError:
+        return None
+    return int(value) if value.lstrip("-").isdigit() else None
 
 
 def _read_vmstat_zswpwb(path: Path) -> int | None:
@@ -405,14 +463,27 @@ def _read_unit_stats(unit_dir: str, *, count_procs: bool = True) -> UnitStats | 
         return None
     anon = stat["anon"]
     shmem = stat["shmem"]
-    kernel = stat["kernel"]
+    kernel_raw = stat["kernel"]  # may already include the zswap pool, see zswap_pool below
     file_ = stat["file"]
-    ram = anon + shmem + kernel
+    ram = anon + shmem + kernel_raw
     cache = file_ - shmem
     total = swap + ram
     zswapped = stat.get("zswapped", 0)  # absent on a kernel/cgroup without zswap accounting
+    # `zswap` (the pool's own RAM cost) is charged inside `kernel` on kernels
+    # that report it there (confirmed by live measurement); split it back out so
+    # the process view can show it as its own row. `ram` above stays computed
+    # from the raw, unsplit `kernel_raw`, so RAM itself never changes.
+    zswap_pool = min(stat.get("zswap", 0), kernel_raw)
+    kernel = kernel_raw - zswap_pool
     return UnitStats(
-        ram=ram, cache=cache, swap=swap, total=total, procs=procs, kernel=kernel, zswapped=zswapped
+        ram=ram,
+        cache=cache,
+        swap=swap,
+        total=total,
+        procs=procs,
+        kernel=kernel,
+        zswapped=zswapped,
+        zswap_pool=zswap_pool,
     )
 
 
@@ -550,6 +621,7 @@ def group_apps(units: Iterable[Unit]) -> list[AppStats]:
                 procs=sum(u.stats.procs for u in unit_list),
                 kernel=sum(u.stats.kernel for u in unit_list),
                 zswapped=sum(u.stats.zswapped for u in unit_list),
+                zswap_pool=sum(u.stats.zswap_pool for u in unit_list),
                 unit_paths=tuple(u.path for u in unit_list),
             )
         )
@@ -576,6 +648,34 @@ def read_procs(unit_paths: Iterable[Path], root: Path) -> list[ProcStats]:
             if proc is not None:
                 procs.append(proc)
     return procs
+
+
+_PRIVATE_KEYS = ("Private_Clean", "Private_Dirty")
+
+
+def read_private_bytes(root: Path, pid: int) -> int | None:
+    """USS (`Private_Clean + Private_Dirty`) from `/proc/PID/smaps_rollup`,
+    in bytes. `None` when the file is missing, empty, or unreadable -- a
+    sandboxed process can deny this even though its `/proc/PID/status` reads
+    fine. Used by `appmem app NAME` only: it's one
+    extra file read per process shown, too costly to also do for every
+    process of every app in a `snapshot`."""
+    path = os.path.join(str(root), "proc", str(pid), "smaps_rollup")
+    try:
+        content = _read_small_file(path)
+    except OSError:
+        return None
+    total_kb = 0
+    found = False
+    for line in content.splitlines():
+        key, _, rest = line.partition(":")
+        if key not in _PRIVATE_KEYS:
+            continue
+        value = rest.strip().removesuffix("kB").strip()
+        if value.isdigit():
+            total_kb += int(value)
+            found = True
+    return total_kb * 1024 if found else None
 
 
 def _pids_under(unit_dir: str) -> list[int]:
@@ -637,20 +737,45 @@ def _read_status(path: Path) -> dict[str, int]:
     return result
 
 
+def _read_comm(proc_dir: Path) -> str:
+    return (proc_dir / "comm").read_bytes().decode(errors="replace").strip()
+
+
+def _first_token_name(field: bytes) -> str | None:
+    """The safe fallback shared by a truly empty cmdline and a
+    setproctitle-style rewrite (the whole argv, secrets included, collapsed
+    into one NUL field with spaces): only the first whitespace token is ever
+    looked at. `None` means "fall back to comm" (an `exe`/`/proc/`-prefixed
+    argv0, same as a re-exec through `/proc/self/exe`)."""
+    tokens = field.decode(errors="replace").split(maxsplit=1)
+    if not tokens:
+        return None
+    argv0 = tokens[0]
+    basename = Path(argv0).name
+    if basename == "exe" or argv0.startswith("/proc/"):
+        return None
+    return basename
+
+
 def _read_proc_name(proc_dir: Path) -> str:
     raw = (proc_dir / "cmdline").read_bytes()  # FileNotFoundError: PID vanished.
-    # setproctitle-style processes put the whole argv, secrets included, into the
-    # first NUL field with spaces, so keep only its first whitespace token.
-    tokens = raw.split(b"\0", 1)[0].decode(errors="replace").split(maxsplit=1)
-    if tokens:
-        argv0 = tokens[0]
-        basename = Path(argv0).name
-        # Electron/AppImage-style processes re-exec through /proc/self/exe, so
-        # cmdline[0] is that self-referential path and its basename is just
-        # "exe"; comm still carries the real program name in both cases.
-        if basename != "exe" and not argv0.startswith("/proc/"):
-            return basename
-    return (proc_dir / "comm").read_bytes().decode(errors="replace").strip()
+    # A setproctitle rewrite shorter than the original argv leaves the rest
+    # NUL-padded (or holding leftovers of the old argv), so trailing empty
+    # fields and a whitespace-holding argv0 both mean "title, not argv".
+    fields = raw.rstrip(b"\0").split(b"\0")
+    if len(fields) <= 1 or len(fields[0].split(maxsplit=1)) > 1:
+        name = _first_token_name(fields[0])
+        return name if name is not None else _read_comm(proc_dir)
+    # Real, NUL-delimited argv: safe to look at more than argv0, since each
+    # argument is its own field rather than text an attacker-controlled
+    # process chose to put after a space.
+    argv0 = fields[0].decode(errors="replace")
+    basename = Path(argv0).name
+    if basename == "exe" or argv0.startswith("/proc/"):
+        return _read_comm(proc_dir)
+    args = [field.decode(errors="replace") for field in fields[1:]]
+    enriched = command_display_name(basename, args)
+    return enriched if enriched is not None else basename
 
 
 def _read_starttime(path: Path) -> float:
@@ -666,12 +791,13 @@ def _read_starttime(path: Path) -> float:
 
 
 def unattributed_row(app: AppStats, procs: Iterable[ProcStats]) -> tuple[int, int]:
-    """SWAP/RAM the app holds without a matching process or its own kernel
-    share, clamped at 0 each (SPEC.md "Definitions"; the process view's
-    `unattributed` row -- an accounting difference, not a process)."""
+    """SWAP/RAM the app holds without a matching process, its own kernel
+    share or its zswap pool share, clamped at 0 each (SPEC.md "Definitions";
+    the process view's `unattributed` row -- an accounting difference, not a
+    process)."""
     procs = list(procs)
     swap = max(app.swap - sum(p.swap for p in procs), 0)
-    ram = max(app.ram - sum(p.ram for p in procs) - app.kernel, 0)
+    ram = max(app.ram - sum(p.ram for p in procs) - app.kernel - app.zswap_pool, 0)
     return swap, ram
 
 

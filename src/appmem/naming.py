@@ -96,6 +96,15 @@ def _apply_alias(name: str) -> str:
     return name
 
 
+def unit_label(unit_dirname: str) -> str:
+    """Decode a unit directory name for display, without the rest of the app
+    normalization pipeline: just the systemd ``\\xNN`` unescape and UTF-8
+    decode `app_name` also starts from. Callers
+    that print this to a terminal still need `render.escape_control_chars`,
+    same as any other name read straight off the system."""
+    return _unescape(unit_dirname)
+
+
 def app_name(unit_dirname: str) -> str:
     """Normalize a unit directory name into an app name.
 

@@ -48,8 +48,11 @@ from appmem.ui.process_rows import (
     KERNEL_KEY,
     KERNEL_UNIT_TEXT,
     SHARED_SORT_KEYS,
+    SYNTHETIC_KEYS,
     UNATTRIBUTED_KEY,
     UNATTRIBUTED_UNIT_TEXT,
+    ZSWAP_POOL_KEY,
+    ZSWAP_POOL_UNIT_TEXT,
     CommandRow,
     GroupSortKey,
     ProcessRow,
@@ -64,6 +67,8 @@ from appmem.ui.process_rows import (
     sort_process_rows,
     unattributed_command_row,
     unattributed_process_row,
+    zswap_pool_command_row,
+    zswap_pool_process_row,
 )
 from appmem.ui.screens.help import HelpScreen
 from appmem.ui.table_order import reorder_rows
@@ -92,10 +97,11 @@ _LEFT_ALIGNED = {"name", "unit"}
 
 _NARROW_WIDTH = 95
 
-# Below this width, the NAME column shrinks (with truncation) so RAM, SWAP
-# and TOTAL stay whole on screen (SPEC.md "Process view"). UNIT is
-# excluded from the budget: it already scrolls sideways rather than shrinking.
-_NUMERIC_FIT_WIDTH = 70
+# `_with_name_width` shrinks the NAME column (with truncation, toward
+# `_NAME_MIN_WIDTH` if needed) at every width, so RAM, SWAP and TOTAL/PROCS
+# stay whole on screen instead of being pushed past the terminal edge by a
+# long name (SPEC.md "Process view"). UNIT is excluded from the budget: it
+# already scrolls sideways rather than shrinking.
 _NAME_MIN_WIDTH = 8
 _NAME_MAX_WIDTH = 32
 # `DataTable`'s default `cell_padding` (1 cell each side of every column).
@@ -111,6 +117,12 @@ _FOOTER_DROP_ORDER = ("theme", "members", "group", "sort")
 # Process-view title drop order -- procs count first, then swap; the
 # app/breadcrumb name and RAM are always kept.
 _TITLE_DROP_ORDER = ("procs", "swap")
+
+_SYNTHETIC_UNIT_TEXT: dict[str, str] = {
+    KERNEL_KEY: KERNEL_UNIT_TEXT,
+    ZSWAP_POOL_KEY: ZSWAP_POOL_UNIT_TEXT,
+    UNATTRIBUTED_KEY: UNATTRIBUTED_UNIT_TEXT,
+}
 
 
 def _format_process_cell(key: str, row: ProcessRow, *, name_cap: int = _NAME_MAX_WIDTH) -> str:
@@ -387,11 +399,11 @@ class ProcessesScreen(Screen[None]):
     def _sync_columns(self) -> None:
         """Rebuild the table whenever a resize actually changes the computed
         column widths, not just when AGE crosses its own visibility
-        threshold: NAME's shrink width (`_with_name_width`) can change at a
-        different width (`_NUMERIC_FIT_WIDTH`) than that, and a resize that
-        crosses only the NAME threshold used to leave the table built for
-        the old width, pushing TOTAL past the terminal edge or leaving NAME
-        narrower than it needs to be (SPEC.md "Process view")."""
+        threshold: `_with_name_width` recomputes NAME's width on every
+        resize, independent of AGE's own threshold, and a resize that only
+        moved NAME used to leave the table built for the old width, pushing
+        TOTAL/PROCS past the terminal edge or leaving NAME narrower than it
+        needs to be (SPEC.md "Process view")."""
         show = self._show_age_column()
         if show != self._age_shown:
             self._age_shown = show
@@ -418,24 +430,30 @@ class ProcessesScreen(Screen[None]):
     def _with_name_width(
         self, columns: tuple[tuple[str, str, int | None], ...], table: DataTable[str | Text]
     ) -> tuple[tuple[str, str, int | None], ...]:
-        """Below `_NUMERIC_FIT_WIDTH`, shrink the (otherwise auto-sized) NAME
-        column so RAM, SWAP and TOTAL stay fully on screen instead of being
-        pushed past the terminal edge by a long name (SPEC.md "Process
-        view"). UNIT is excluded from the reserved budget: it already
-        scrolls sideways rather than shrinking. The table's own vertical
-        scrollbar (when shown) narrows its usable width too, so it comes out
-        of the same budget as the numeric columns."""
+        """Shrink the (otherwise auto-sized) NAME column, toward
+        `_NAME_MIN_WIDTH` if needed, at every width -- not only below a
+        fixed threshold -- so RAM, SWAP and TOTAL/PROCS stay fully on screen
+        instead of being pushed past the terminal edge by a long name
+        (SPEC.md "Process view"): a single "narrow mode" cutoff doesn't
+        survive the column set changing (flat vs grouped, AGE shown or
+        hidden), so a resize (or a mode switch) above the old fixed
+        threshold could still leave a numeric column off screen. UNIT is
+        excluded from the reserved budget: it already scrolls sideways
+        rather than shrinking. The table's own vertical scrollbar (when
+        shown) narrows its usable width too, so it comes out of the same
+        budget as the numeric columns."""
         total_width = (
             self.app.size.width - table.scrollbar_size_vertical  # pyright: ignore[reportUnknownMemberType]
         )
-        if total_width >= _NUMERIC_FIT_WIDTH:
-            return columns
         reserved = sum(
             _CELL_PADDING + (width or 0)
             for key, _label, width in columns
             if key not in ("name", "unit")
         )
-        name_width = max(total_width - reserved - _CELL_PADDING, _NAME_MIN_WIDTH)
+        budget = total_width - reserved - _CELL_PADDING
+        if budget >= _NAME_MAX_WIDTH:
+            return columns
+        name_width = max(budget, _NAME_MIN_WIDTH)
         return tuple(
             (key, label, name_width) if key == "name" else (key, label, width)
             for key, label, width in columns
@@ -555,6 +573,7 @@ class ProcessesScreen(Screen[None]):
             total=sum(s.total for s in unit_stats),
             procs=sum(s.procs for s in unit_stats),
             kernel=sum(s.kernel for s in unit_stats),
+            zswap_pool=sum(s.zswap_pool for s in unit_stats),
             unit_paths=tuple(unit_paths),
         )
         if self._drill_command is not None:
@@ -674,8 +693,8 @@ class ProcessesScreen(Screen[None]):
         row = self._command_rows.get(key) if key is not None else None
         if row is None:
             return Text("")
-        if key in (KERNEL_KEY, UNATTRIBUTED_KEY):
-            text = KERNEL_UNIT_TEXT if key == KERNEL_KEY else UNATTRIBUTED_UNIT_TEXT
+        if key in SYNTHETIC_KEYS:
+            text = _SYNTHETIC_UNIT_TEXT[key]
             return Text(text, style="dim italic")
         width = self.app.size.width  # pyright: ignore[reportUnknownMemberType]
         if len(row.units) == 1:
@@ -704,16 +723,18 @@ class ProcessesScreen(Screen[None]):
         table = self._table()
         process_key = cast("ProcessSortKey", self._sort_key)
         real_rows = sort_process_rows(build_process_rows(procs), process_key, self._sort_reverse)
-        # `kernel` then `unattributed`, always last, both dim (SPEC.md
-        # "Definitions"). Omitted while drilled into one command: they cover
-        # the whole app's residual memory, not that command's share of it.
-        ordered = (
-            [*real_rows, kernel_process_row(app), unattributed_process_row(app, procs)]
-            if include_synthetic
-            else real_rows
-        )
+        # `kernel`, then `zswap pool` when the app has one, then
+        # `unattributed`, always last, all dim (SPEC.md "Definitions").
+        # Omitted while drilled into one command: they cover the whole app's
+        # residual memory, not that command's share of it.
+        synthetic = [kernel_process_row(app)]
+        if app.zswap_pool > 0:
+            synthetic.append(zswap_pool_process_row(app))
+        synthetic.append(unattributed_process_row(app, procs))
+        ordered = [*real_rows, *synthetic] if include_synthetic else real_rows
         new_by_key = {row.key: row for row in ordered}
         previous_key, previous_index = self._current_selection(table)
+        row_count_changed = len(new_by_key) != len(self._process_rows)
 
         for key in self._process_rows.keys() - new_by_key.keys():
             table.remove_row(key)
@@ -728,6 +749,11 @@ class ProcessesScreen(Screen[None]):
         reorder_rows(table, [row.key for row in ordered])
         self._restore_selection(table, previous_key, previous_index, scroll=scroll)
         self._update_status_line()
+        if row_count_changed:
+            # More or fewer rows can show or hide the vertical scrollbar,
+            # which narrows the NAME budget without any resize event; its
+            # size is only known after the next layout.
+            self.call_after_refresh(self._sync_columns)
 
     def _update_process_cells(
         self, table: DataTable[str | Text], key: str, old: ProcessRow, row: ProcessRow
@@ -754,9 +780,14 @@ class ProcessesScreen(Screen[None]):
         table = self._table()
         group_key = cast("GroupSortKey", self._sort_key)
         real_rows = sort_command_rows(build_command_rows(procs), group_key, self._sort_reverse)
-        ordered = [*real_rows, kernel_command_row(app), unattributed_command_row(app, procs)]
+        synthetic = [kernel_command_row(app)]
+        if app.zswap_pool > 0:
+            synthetic.append(zswap_pool_command_row(app))
+        synthetic.append(unattributed_command_row(app, procs))
+        ordered = [*real_rows, *synthetic]
         new_by_key = {row.key: row for row in ordered}
         previous_key, previous_index = self._current_selection(table)
+        row_count_changed = len(new_by_key) != len(self._command_rows)
 
         for key in self._command_rows.keys() - new_by_key.keys():
             table.remove_row(key)
@@ -771,6 +802,10 @@ class ProcessesScreen(Screen[None]):
         reorder_rows(table, [row.key for row in ordered])
         self._restore_selection(table, previous_key, previous_index, scroll=scroll)
         self._update_status_line()
+        if row_count_changed:
+            # Same reasoning as `_apply_process_rows`: a scrollbar appearing
+            # or disappearing narrows/widens the NAME budget with no resize.
+            self.call_after_refresh(self._sync_columns)
 
     def _update_command_cells(
         self, table: DataTable[str | Text], key: str, old: CommandRow, row: CommandRow
@@ -837,7 +872,7 @@ class ProcessesScreen(Screen[None]):
         if not self._showing_group_table:
             return
         key = _key_str(event.row_key)
-        if key in (KERNEL_KEY, UNATTRIBUTED_KEY):
+        if key in SYNTHETIC_KEYS:
             return
         self._enter_drill(key)
 

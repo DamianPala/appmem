@@ -51,6 +51,53 @@ def test_zswapped_defaults_to_zero_when_the_field_is_absent(tmp_path: Path) -> N
     assert stats.zswapped == 0
 
 
+# --- zswap pool split out of kernel (the pool's RAM cost is charged inside
+# `memory.stat`'s own `kernel` field, confirmed by live measurement) -----------
+
+
+def test_zswap_pool_is_split_out_of_kernel_and_the_sum_is_unchanged(tmp_path: Path) -> None:
+    unit_dir = make_unit(
+        tmp_path / "unit.service", anon=100, kernel=50, zswap=30, swap=10, zswapped=5
+    )
+
+    stats = read_unit(unit_dir)
+
+    assert stats is not None
+    assert stats.zswap_pool == 30
+    assert stats.kernel == 20  # 50 - 30
+    assert stats.kernel + stats.zswap_pool == 50  # the old, unsplit kernel figure
+    assert stats.ram == 100 + 50  # RAM itself never changes: anon + shmem + the raw kernel
+
+
+def test_zswap_pool_defaults_to_zero_when_the_field_is_absent(tmp_path: Path) -> None:
+    unit_dir = make_unit(tmp_path / "unit.service", anon=100, kernel=50)
+
+    stats = read_unit(unit_dir)
+
+    assert stats is not None
+    assert stats.zswap_pool == 0
+    assert stats.kernel == 50
+
+
+def test_zswap_pool_clamped_so_kernel_never_goes_negative(tmp_path: Path) -> None:
+    # A defensive clamp only: on a kernel where `zswap` isn't actually inside
+    # `kernel`, this keeps the split's own kernel_bytes at 0 instead of
+    # negative. RAM (computed from the raw, unclamped figure) is unaffected.
+    # Bypasses `make_unit`'s own realism guard (real kernels never report
+    # `zswap` above `kernel`) to exercise the clamp itself.
+    unit_dir = tmp_path / "unit.service"
+    unit_dir.mkdir()
+    (unit_dir / "memory.stat").write_text("anon 100\nshmem 0\nfile 0\nkernel 10\nzswap 999\n")
+    write_cgroup_procs(unit_dir, [])
+
+    stats = read_unit(unit_dir)
+
+    assert stats is not None
+    assert stats.kernel == 0
+    assert stats.zswap_pool == 10
+    assert stats.ram == 110
+
+
 def test_kernel_missing_falls_back_to_slab_stack_pagetables_percpu(tmp_path: Path) -> None:
     # Linux < 5.18 has no `kernel` line in memory.stat.
     unit_dir = tmp_path / "unit.service"

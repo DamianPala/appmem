@@ -26,6 +26,7 @@ You use its non-interactive commands; the live TUI is for the human.
 1. `appmem snapshot --json`.
    Read `pressure`, `system.ram_available_bytes`, `system.swap_used_bytes`, then the top `apps.items` by `total_bytes` and by `swap_bytes`.
    Add `--system` when user apps don't explain the numbers.
+   A busy app's own `top_commands` (its 3 biggest commands by `total_bytes`) is often enough to name what's inside it without a second call; it's empty for an app with 6 or fewer processes.
 2. Decide whether memory is the problem right now (next section) before naming a culprit.
 3. Drill into the top 1-3 apps: `appmem app NAME --json`, adding `--scope system` when the item's `scope` is `system`.
    The snapshot's `next` field already holds the command for the biggest one.
@@ -47,14 +48,16 @@ You use its non-interactive commands; the live TUI is for the human.
 - Act when `ram_available_bytes` is low (under ~10 % of `ram_total_bytes`) together with `some` or `high`.
 - `ram_bytes` is anonymous + shared + charged kernel memory, without page cache (`cache_bytes`, reclaimable).
   `total_bytes` is RAM + swap, an accounting sum, not what closing the app frees.
+- A process's `ram_bytes` is its own RSS: a shared page counts once in every process that maps it, so never sum it across processes to estimate an app -- read the app's own `ram_bytes` instead. `private_bytes` (USS) is the process's own unshared memory, `null` when unreadable (e.g. a sandboxed process).
 - In `snapshot`'s `system`, `ram_shared_bytes` is tmpfs, shared memory and GPU buffers: part of `ram_used_bytes`, swappable but not droppable.
   `ram_free_bytes` (truly free), `ram_cache_bytes` (droppable file cache) and `ram_slab_bytes` (kernel caches of file names and inodes, dropped on demand) are the main parts of `ram_available_bytes`, which is a kernel estimate, not their exact sum -- they come close to it, but the kernel reserves some headroom.
 - Apps don't add up to the `system` totals: `system_services_*` and `elsewhere_bytes` (VMs, containers, other users, login sessions) cover the rest.
 - Terminals: everything started from a terminal counts as the terminal app.
   A terminal with 17 GiB is usually not the terminal itself; `commands.items` shows the agent sessions, node processes and builds inside it.
   Name those, not the terminal.
-- `kernel_bytes` (page tables, slab, stacks) and `unattributed_*` (shared pages, memfd, GPU buffers) explain why processes don't add up to the app.
-  Neither is a leak by itself.
+- `kernel_bytes` (page tables, slab, stacks; excludes the app's own zswap pool share, `zswap_pool_bytes`, 0 without zswap) and `unattributed_*` (shared pages, memfd, GPU buffers) explain why processes don't add up to the app.
+  Neither is a leak by itself. Both are still inside the app's `ram_bytes`.
+- `units` pairs each raw unit name with a decoded `label` (systemd's own `\xNN` escaping undone), for a name that's otherwise unreadable at a glance.
 - Per-process values leave out file-backed pages, so they are smaller than htop's RES.
   Compare within appmem, not across tools.
 - A process with large `swap_bytes`, small `ram_bytes` and an `age_seconds` of days is an idle sleeper that was paged out.
@@ -75,7 +78,7 @@ You use its non-interactive commands; the live TUI is for the human.
   `swapoff` needs free RAM for everything paged out, and under `none` swap is doing its job.
 - `high` with most swap in one app: free that app.
   `high` with swap spread thin and `ram_available_bytes` near zero: the machine needs fewer things running or more RAM.
-- With zswap enabled (`zswap_enabled`), swap includes pages kept compressed in RAM: `zswapped_bytes` (system and per app) is the part of swap held that way, and `zswap_pool_bytes` is the RAM this costs, already inside RAM used. `zswap_writeback_bytes` is cumulative since boot. If it grows between two snapshots, the pool is overflowing to the disk swap, which is slow.
+- With zswap enabled (`zswap_enabled`), swap includes pages kept compressed in RAM: `zswapped_bytes` (system and per app) is the part of swap held that way, and `zswap_pool_bytes` is the RAM this costs, already inside RAM used. `zswap_writeback_bytes` is cumulative since boot. If it grows between two snapshots, the pool is overflowing to the disk swap, which is slow. `zswap_compressor` and `zswap_max_pool_percent` name the kernel's own knobs; `zswap_compression_ratio` (`zswapped_bytes / zswap_pool_bytes`) says how well the pool is compressing right now. All three are `null` when zswap is off.
 
 ## Errors
 

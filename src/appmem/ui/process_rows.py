@@ -19,8 +19,14 @@ from appmem.collect import AppStats, CommandStats, ProcStats, group_by_command, 
 # one literally named "kernel" or "unattributed".
 KERNEL_KEY = "\0kernel"
 UNATTRIBUTED_KEY = "\0unattributed"
+ZSWAP_POOL_KEY = "\0zswap_pool"
 KERNEL_UNIT_TEXT = "charged kernel memory: page tables, slab, stacks"
 UNATTRIBUTED_UNIT_TEXT = "accounting difference, not a process"
+ZSWAP_POOL_UNIT_TEXT = "the app's share of the compressed zswap pool, part of RAM"
+SYNTHETIC_KEYS = frozenset({KERNEL_KEY, UNATTRIBUTED_KEY, ZSWAP_POOL_KEY})
+"""Every non-process/command row key: never a real
+PID or command name (`\\0` can't appear in either), and never a drill-down
+target."""
 
 ProcessSortKey = Literal["pid", "name", "swap", "ram", "total", "age", "unit"]
 
@@ -136,9 +142,26 @@ def kernel_process_row(app: AppStats) -> ProcessRow:
     )
 
 
+def zswap_pool_process_row(app: AppStats) -> ProcessRow:
+    """The app's share of the compressed zswap pool, split out of `kernel`
+    (SPEC.md "Definitions"). The caller only adds
+    this row when `app.zswap_pool > 0`."""
+    return ProcessRow(
+        key=ZSWAP_POOL_KEY,
+        pid=None,
+        name="zswap pool",
+        swap=0,
+        ram=app.zswap_pool,
+        total=app.zswap_pool,
+        age_seconds=None,
+        unit=ZSWAP_POOL_UNIT_TEXT,
+        dim=True,
+    )
+
+
 def unattributed_process_row(app: AppStats, procs: Iterable[ProcStats]) -> ProcessRow:
     """The synthetic `unattributed` row: app total minus its processes minus its
-    kernel share, clamped at 0."""
+    kernel and zswap pool shares, clamped at 0."""
     swap, ram = unattributed_row(app, procs)
     return ProcessRow(
         key=UNATTRIBUTED_KEY,
@@ -179,6 +202,20 @@ def kernel_command_row(app: AppStats) -> CommandRow:
         swap=0,
         ram=app.kernel,
         total=app.kernel,
+        procs=None,
+        dim=True,
+    )
+
+
+def zswap_pool_command_row(app: AppStats) -> CommandRow:
+    """The grouped view's `zswap pool` row: same value as
+    `zswap_pool_process_row`, no PROCS count."""
+    return CommandRow(
+        key=ZSWAP_POOL_KEY,
+        name="zswap pool",
+        swap=0,
+        ram=app.zswap_pool,
+        total=app.zswap_pool,
         procs=None,
         dim=True,
     )

@@ -94,12 +94,12 @@ A broken or unreadable config file, or an unknown name in `APPMEM_THEME`/`TEXTUA
   With zswap it also includes pages kept compressed in RAM.
   The header shows that machine-wide as `X zswap in Y`: X is kept compressed, already part of Swap used; Y is the RAM the pool costs, already part of RAM used.
   A `wb` marker next to it means the pool is overflowing to the disk swap, which is slow.
-  Per app, the compressed part of SWAP has its own column (`w`), not extra memory.
+  Per app, the compressed part of SWAP has its own column (`w`), not extra memory; in the process view, the app's own share of that pool shows as its own dim `zswap pool` row, split out of `kernel`.
 - **TOTAL** is SWAP + RAM: an accounting sum, not a promise of what closing the app frees.
 - **pressure** is the share of the last 10 s that programs spent waiting for memory.
   It tells you whether memory stalls are happening, not which app causes them.
 - Rows don't add up to the header: system services (`x`) and memory outside your session (VMs, containers, other users: `elsewhere`) cover the rest.
-- Process rows leave out file-backed pages, so they read smaller than htop's RES.
+- Process rows are each process's own RSS: a shared page counts once per process that maps it, so summing them can overcount the app -- use the app's own row for that, not a sum of its processes. They also leave out file-backed pages, so they read smaller than htop's RES.
 
 Press `?` in the app for the full explanation.
 
