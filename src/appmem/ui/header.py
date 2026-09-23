@@ -8,13 +8,13 @@ from rich.text import Text
 
 from appmem.collect import SystemStats
 from appmem.fmt import format_elapsed, format_pair, pressure_word, size
-from appmem.ui.layout import fit_line
 
 _ELSEWHERE_THRESHOLD = 1024 * 1024
 
-# Main header drop order when the line doesn't fit -- elsewhere first,
-# then system, then avail; RAM, Swap and pressure are never dropped.
-_DROP_ORDER = ("elsewhere", "system", "avail")
+# Main header drop order when the line doesn't fit. `shared` goes last of the
+# droppable parts (RAM/Swap/pressure never drop), so it stays visible at
+# typical widths even once the bare `avail` figure is gone.
+_DROP_STEPS = ("elsewhere", "system", "avail_breakdown", "avail", "shared")
 
 _PRESSURE_COLOR = {"none": "green", "some": "yellow", "high": "red"}
 
@@ -59,14 +59,58 @@ def _swap_part(stats: SystemStats) -> Text:
     return Text("Swap ") + Text(pair, style=style or "")
 
 
+def _ram_part(stats: SystemStats, *, show_shared: bool) -> Text:
+    ram_used = stats.mem_total - stats.mem_available
+    text = Text(f"RAM {format_pair(ram_used, stats.mem_total)}")
+    if show_shared:
+        text = text + Text(f" ({size(stats.mem_shared)} shared)")
+    return text
+
+
+def _avail_part(stats: SystemStats, *, show_breakdown: bool) -> Text:
+    text = Text(f"avail {size(stats.mem_available)}")
+    if show_breakdown:
+        text = text + Text(f" ({size(stats.mem_free)} free, {size(stats.mem_cache)} cache)")
+    return text
+
+
+def _assemble_line1(stats: SystemStats, disabled: frozenset[str]) -> Text:
+    parts: list[Text] = [_ram_part(stats, show_shared="shared" not in disabled)]
+    if "avail" not in disabled:
+        parts.append(_avail_part(stats, show_breakdown="avail_breakdown" not in disabled))
+    parts.append(_swap_part(stats))
+    pressure_part = _pressure_part(stats)
+    if pressure_part is not None:
+        parts.append(pressure_part)
+    if "system" not in disabled:
+        system_total = stats.system_ram + stats.system_swap
+        parts.append(Text(f"system {size(system_total)} [x]"))
+    elsewhere = stats.elsewhere
+    if "elsewhere" not in disabled and elsewhere is not None and elsewhere >= _ELSEWHERE_THRESHOLD:
+        parts.append(Text(f"elsewhere {size(elsewhere)}"))
+    return Text("  ").join(parts)
+
+
 def format_line1(stats: SystemStats, width: int) -> Text:
-    """RAM/avail, swap, pressure (when readable), the hidden system.slice total
-    and memory charged outside the walked trees.
+    """RAM (used/total, with a shared-memory breakdown), avail (with a
+    free/cache breakdown), swap, pressure (when readable), the hidden
+    system.slice total and memory charged outside the walked trees.
 
     Never wraps: built from parts with a priority, dropping the lowest below
-    `width` and recomputed on every resize (SPEC.md "Main-view polish").
-    Used/total share a unit when they render to the same one
-    (`format_pair`), and the pressure label drops the redundant "memory" word.
+    `width` and recomputed on every resize (SPEC.md "Main view"). Parts are
+    joined with two spaces. Used/total share a unit when they render to the
+    same one (`format_pair`), and the pressure label drops the redundant
+    "memory" word.
+
+    `shared` (tmpfs, shared memory, GPU buffers -- swappable but not
+    reclaimable) is always shown, no threshold. `avail`'s own breakdown into
+    `free` (truly free) and `cache` (reclaimable page cache) sits inside it,
+    the same idea: parts grouped so they sit inside the totals they belong to.
+    Below `width`, parts drop in this order: `elsewhere`, `system`, avail's
+    own breakdown, `avail` itself, then RAM's `shared` last (`_DROP_STEPS`)
+    -- `shared` is the stickiest droppable part, so it
+    stays visible at typical widths even once `avail` is gone entirely. RAM,
+    Swap and pressure never drop.
 
     The system.slice total is shown regardless of whether system rows are
     currently displayed (`x`): it is a summary hint, not a duplicate of the
@@ -78,24 +122,20 @@ def format_line1(stats: SystemStats, width: int) -> Text:
     outside the walked trees (other users, VMs, containers), omitted below
     1 MiB or when the root `memory.stat` couldn't be read.
     """
-    ram_used = stats.mem_total - stats.mem_available
-    ram_part = Text(f"RAM {format_pair(ram_used, stats.mem_total)}")
-    avail_part = Text(f"avail {size(stats.mem_available)}")
-    system_total = stats.system_ram + stats.system_swap
-    system_part = Text(f"system {size(system_total)} [x]")
-    elsewhere_part = None
-    if stats.elsewhere is not None and stats.elsewhere >= _ELSEWHERE_THRESHOLD:
-        elsewhere_part = Text(f"elsewhere {size(stats.elsewhere)}")
-
-    parts: list[tuple[str, Text | None]] = [
-        ("ram", ram_part),
-        ("avail", avail_part),
-        ("swap", _swap_part(stats)),
-        ("pressure", _pressure_part(stats)),
-        ("system", system_part),
-        ("elsewhere", elsewhere_part),
-    ]
-    return fit_line(parts, _DROP_ORDER, width)
+    disabled: set[str] = set()
+    text = _assemble_line1(stats, frozenset(disabled))
+    while text.cell_len > width:
+        remaining = [step for step in _DROP_STEPS if step not in disabled]
+        if not remaining:
+            break
+        disabled.add(remaining[0])
+        text = _assemble_line1(stats, frozenset(disabled))
+    # Belt and braces: even the never-dropped parts could still overflow an
+    # extreme width. Never wrap; crop with an ellipsis instead (SPEC.md "Main
+    # view": the line must never wrap).
+    text.no_wrap = True
+    text.overflow = "ellipsis"
+    return text
 
 
 def format_line2(baseline_time: datetime, now: datetime) -> str:

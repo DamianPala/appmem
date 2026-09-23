@@ -9,20 +9,24 @@ pattern as `test_ui_main_screen.py`.
 from __future__ import annotations
 
 import shutil
+from collections.abc import Iterable
 from pathlib import Path
 from typing import cast
 
 import pytest
 from rich.text import Text
+from textual import events
 from textual.containers import VerticalScroll
 from textual.content import Content
 from textual.pilot import Pilot
 from textual.widgets import DataTable, Static
 from textual.widgets.data_table import ColumnKey
 
+from appmem.collect import ProcStats
 from appmem.ui.app import AppMemApp
 from appmem.ui.process_rows import KERNEL_KEY, UNATTRIBUTED_KEY
 from appmem.ui.rows import row_key
+from appmem.ui.screens import processes as processes_screen
 from appmem.ui.screens.help import HelpScreen
 from appmem.ui.screens.main import MainScreen
 from appmem.ui.screens.processes import ProcessesScreen
@@ -607,10 +611,452 @@ async def test_transient_memory_stat_failure_skips_the_process_view_tick(tmp_pat
         assert "(app no longer running)" not in str(title.content)
         assert "100" in _row_keys(_table(pilot))
 
+
+@pytest.mark.asyncio
+async def test_transient_os_error_skips_the_process_view_tick_and_shows_fresh_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A transient OS-level read failure elsewhere in the collector (SPEC.md
+    # "Behaviour details") must be treated the same as
+    # `MemoryStatUnavailableError`: skip this tick, keep the last rows, and
+    # let the next tick recover. The fixture changes before the failing
+    # tick, so a passing test can't be explained by the tick doing nothing
+    # either way: the failing tick must still show the *old* value, and only
+    # the next tick shows the new one.
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-ghostty.service", ram=1 * 1024**2, swap=0, pids=[100])
+    _proc(root, 100, name="ghostty", ram_kb=1024)
+    app = _app(root)
+
+    real_read_procs = processes_screen.collect_read_procs
+    calls = {"n": 0}
+
+    def _flaky_read_procs(unit_paths: Iterable[Path], root: Path) -> list[ProcStats]:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("transient read failure")
+        return real_read_procs(unit_paths, root)
+
+    async with app.run_test(size=SCREEN_SIZE) as pilot:
+        await pilot.pause()
+        await _open_ghostty_process_view(pilot)
+        screen = pilot.app.screen
+        assert isinstance(screen, ProcessesScreen)
+        table = _table(pilot)
+        assert "100" in _row_keys(table)
+
+        _proc(root, 100, name="ghostty", ram_kb=4096)  # changes before tick 1
+        monkeypatch.setattr(processes_screen, "collect_read_procs", _flaky_read_procs)
+        screen.refresh_now()  # tick 1: raises OSError internally, must not propagate
+        ram_cell = table.get_cell("100", "ram")
+        assert isinstance(ram_cell, Text)
+        assert ram_cell.plain == "1 MiB"  # the failing tick kept the old frame
+        assert app.return_code is None
+
+        screen.refresh_now()  # tick 2: recovers, reads the already-changed fixture
+        ram_cell = table.get_cell("100", "ram")
+        assert isinstance(ram_cell, Text)
+        assert ram_cell.plain == "4 MiB"  # fresh data, not the stale 1 MiB
+
+    assert app.return_code is None  # the session ran to completion, not exited
+
+
+@pytest.mark.asyncio
+async def test_a_programming_error_in_a_process_view_tick_still_propagates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Only OSError/ValueError (transient reads) are swallowed. A programming
+    # error (e.g. TypeError) must still surface.
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-ghostty.service", ram=1 * 1024**2, swap=0, pids=[100])
+    _proc(root, 100, name="ghostty")
+    app = _app(root)
+
+    def _broken_read_procs(unit_paths: Iterable[Path], root: Path) -> list[ProcStats]:
+        raise TypeError("not a transient read failure")
+
+    async with app.run_test(size=SCREEN_SIZE) as pilot:
+        await pilot.pause()
+        await _open_ghostty_process_view(pilot)
+        screen = pilot.app.screen
+        assert isinstance(screen, ProcessesScreen)
+
+        monkeypatch.setattr(processes_screen, "collect_read_procs", _broken_read_procs)
+        with pytest.raises(TypeError):
+            screen.refresh_now()
+
     assert app.return_code is None
 
 
-# --- footer present in the process view and the help screen --------------------
+@pytest.mark.asyncio
+async def test_a_value_error_from_the_process_view_apply_path_still_propagates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `ValueError` is only swallowed when it comes from the collector reads
+    # inside the `try`. `reorder_rows`'s own invariant check
+    # (`src/appmem/ui/table_order.py`) also raises `ValueError`, but from the
+    # apply step outside the `try` -- a broken invariant there is a
+    # programming error and must still surface, not freeze the table.
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-ghostty.service", ram=1 * 1024**2, swap=0, pids=[100])
+    _proc(root, 100, name="ghostty")
+    app = _app(root)
+
+    def _broken_reorder_rows(table: object, ordered_keys: object) -> None:
+        raise ValueError("broken invariant")
+
+    async with app.run_test(size=SCREEN_SIZE) as pilot:
+        await pilot.pause()
+        await _open_ghostty_process_view(pilot)
+        screen = pilot.app.screen
+        assert isinstance(screen, ProcessesScreen)
+
+        monkeypatch.setattr(processes_screen, "reorder_rows", _broken_reorder_rows)
+        with pytest.raises(ValueError, match="broken invariant"):
+            screen.refresh_now()
+
+
+# --- column order: RAM before SWAP everywhere ----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_flat_and_drilled_column_order_is_pid_name_ram_swap_total(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-ghostty.service", ram=1 * 1024**2, swap=0, pids=[100])
+    _proc(root, 100, name="node", ram_kb=1024)
+
+    async with _app(root).run_test(size=SCREEN_SIZE) as pilot:
+        await pilot.pause()
+        await _open_ghostty_process_view(pilot)
+        table = _table(pilot)
+        keys = [column.key.value for column in table.ordered_columns]
+
+        assert keys == ["pid", "name", "ram", "swap", "total", "age", "unit"]
+
+        table.move_cursor(row=table.get_row_index("100"))
+        await pilot.press("enter")  # a no-op here (not grouped), stays flat
+        await pilot.pause()
+        keys = [column.key.value for column in table.ordered_columns]
+        assert keys == ["pid", "name", "ram", "swap", "total", "age", "unit"]
+
+
+@pytest.mark.asyncio
+async def test_grouped_column_order_is_name_ram_swap_total_procs(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-ghostty.service", ram=1 * 1024**2, swap=0, pids=[100])
+    _proc(root, 100, name="node", ram_kb=1024)
+
+    async with _app(root).run_test(size=SCREEN_SIZE) as pilot:
+        await pilot.pause()
+        await _open_ghostty_process_view(pilot)
+        await pilot.press("g")
+        await pilot.pause()
+        table = _table(pilot)
+        keys = [column.key.value for column in table.ordered_columns]
+
+        assert keys == ["name", "ram", "swap", "total", "procs"]
+
+
+@pytest.mark.asyncio
+async def test_drill_down_column_order_is_pid_name_ram_swap_total(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-ghostty.service", ram=1 * 1024**2, swap=0, pids=[100, 101])
+    _proc(root, 100, name="node", ram_kb=1024)
+    _proc(root, 101, name="node", ram_kb=1024)
+
+    async with _app(root).run_test(size=SCREEN_SIZE) as pilot:
+        await pilot.pause()
+        await _open_ghostty_process_view(pilot)
+        await pilot.press("g")
+        await pilot.pause()
+        table = _table(pilot)
+        table.move_cursor(row=table.get_row_index("node"))
+        await pilot.press("enter")
+        await pilot.pause()
+
+        table = _table(pilot)
+        keys = [column.key.value for column in table.ordered_columns]
+        assert keys == ["pid", "name", "ram", "swap", "total", "age", "unit"]
+
+
+# --- mouse-wheel scroll survives a refresh tick --------------------------------
+
+
+async def _scroll_and_assert_stable(pilot: Pilot[None], screen: ProcessesScreen) -> None:
+    table = _table(pilot)
+    table.post_message(events.MouseScrollDown(table, 10, 10, 0, 0, 0, False, False, False))
+    await pilot.pause()
+    assert table.scroll_y > 0  # the wheel actually scrolled the table
+    scrolled_y = table.scroll_y
+
+    for _ in range(3):  # simulate three refresh ticks
+        screen.refresh_now()
+    await pilot.pause()
+
+    assert table.scroll_y == scrolled_y  # no snap-back to the cursor's row
+
+
+@pytest.mark.asyncio
+async def test_wheel_scroll_does_not_snap_back_flat(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    pids = list(range(100, 160))
+    _app_unit(root, "app-ghostty.service", ram=2 * 1024**2, swap=0, pids=pids)
+    for pid in pids:
+        _proc(root, pid, name=f"proc{pid}", ram_kb=1024)
+
+    async with _app(root).run_test(size=(120, 20)) as pilot:
+        await pilot.pause()
+        await _open_ghostty_process_view(pilot)
+        screen = pilot.app.screen
+        assert isinstance(screen, ProcessesScreen)
+
+        await _scroll_and_assert_stable(pilot, screen)
+
+
+@pytest.mark.asyncio
+async def test_wheel_scroll_does_not_snap_back_grouped(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    pids = list(range(100, 160))
+    _app_unit(root, "app-ghostty.service", ram=2 * 1024**2, swap=0, pids=pids)
+    for pid in pids:
+        _proc(root, pid, name=f"cmd{pid}", ram_kb=1024)  # every process its own command
+
+    async with _app(root).run_test(size=(120, 20)) as pilot:
+        await pilot.pause()
+        await _open_ghostty_process_view(pilot)
+        await pilot.press("g")
+        await pilot.pause()
+        screen = pilot.app.screen
+        assert isinstance(screen, ProcessesScreen)
+
+        await _scroll_and_assert_stable(pilot, screen)
+
+
+@pytest.mark.asyncio
+async def test_wheel_scroll_does_not_snap_back_drilled(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    pids = list(range(100, 160))
+    _app_unit(root, "app-ghostty.service", ram=2 * 1024**2, swap=0, pids=pids)
+    for pid in pids:
+        _proc(root, pid, name="node", ram_kb=1024)  # one command, 60 members
+
+    async with _app(root).run_test(size=(120, 20)) as pilot:
+        await pilot.pause()
+        await _open_ghostty_process_view(pilot)
+        await pilot.press("g")
+        await pilot.pause()
+        table = _table(pilot)
+        table.move_cursor(row=table.get_row_index("node"))
+        await pilot.press("enter")
+        await pilot.pause()
+        screen = pilot.app.screen
+        assert isinstance(screen, ProcessesScreen)
+
+        await _scroll_and_assert_stable(pilot, screen)
+
+
+# --- contextual footer: only keys that act in the current mode -----------------
+
+
+@pytest.mark.asyncio
+async def test_footer_hides_members_and_says_back_in_flat_mode(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-ghostty.service", ram=1 * 1024**2, swap=0, pids=[100])
+    _proc(root, 100, name="ghostty")
+
+    async with _app(root).run_test(size=SCREEN_SIZE) as pilot:
+        await pilot.pause()
+        await _open_ghostty_process_view(pilot)
+        footer = pilot.app.screen.query_one("#footer", Static)
+        content = footer.content
+        assert isinstance(content, Text)
+        assert content.plain == " r s t sort  g group  ? help  esc back  q quit"
+
+
+@pytest.mark.asyncio
+async def test_footer_shows_members_and_back_in_grouped_non_drilled_mode(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-ghostty.service", ram=1 * 1024**2, swap=0, pids=[100])
+    _proc(root, 100, name="node")
+
+    async with _app(root).run_test(size=SCREEN_SIZE) as pilot:
+        await pilot.pause()
+        await _open_ghostty_process_view(pilot)
+        await pilot.press("g")
+        await pilot.pause()
+
+        footer = pilot.app.screen.query_one("#footer", Static)
+        content = footer.content
+        assert isinstance(content, Text)
+        assert content.plain == (" r s t sort  g group  enter members  ? help  esc back  q quit")
+
+
+@pytest.mark.asyncio
+async def test_footer_hides_members_and_relabels_esc_to_groups_when_drilled(
+    tmp_path: Path,
+) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-ghostty.service", ram=1 * 1024**2, swap=0, pids=[100])
+    _proc(root, 100, name="node")
+
+    async with _app(root).run_test(size=SCREEN_SIZE) as pilot:
+        await pilot.pause()
+        await _open_ghostty_process_view(pilot)
+        await pilot.press("g")
+        await pilot.pause()
+        table = _table(pilot)
+        table.move_cursor(row=table.get_row_index("node"))
+        await pilot.press("enter")
+        await pilot.pause()
+
+        footer = pilot.app.screen.query_one("#footer", Static)
+        content = footer.content
+        assert isinstance(content, Text)
+        assert content.plain == " r s t sort  g group  ? help  esc groups  q quit"
+
+
+@pytest.mark.asyncio
+async def test_footer_recomputes_on_resize_in_grouped_mode(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-ghostty.service", ram=1 * 1024**2, swap=0, pids=[100])
+    _proc(root, 100, name="node")
+
+    async with _app(root).run_test(size=SCREEN_SIZE) as pilot:
+        await pilot.pause()
+        await _open_ghostty_process_view(pilot)
+        await pilot.press("g")
+        await pilot.pause()
+
+        await pilot.resize_terminal(60, 24)
+        footer = pilot.app.screen.query_one("#footer", Static)
+        content = footer.content
+        assert isinstance(content, Text)
+        assert content.no_wrap is True
+        assert content.cell_len <= 60
+
+
+# --- every rendered footer key does something in its mode ----------------------
+
+
+@pytest.mark.asyncio
+async def test_every_rendered_footer_key_acts_in_flat_mode(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-ghostty.service", ram=1 * 1024**2, swap=0, pids=[100, 101])
+    _proc(root, 100, name="a", swap_kb=1024)
+    _proc(root, 101, name="b", swap_kb=2048)
+
+    async with _app(root).run_test(size=SCREEN_SIZE) as pilot:
+        await pilot.pause()
+        await _open_ghostty_process_view(pilot)
+        table = _table(pilot)
+
+        for key, column in (("r", "ram"), ("s", "swap"), ("t", "total")):
+            await pilot.press(key)
+            label = str(table.columns[ColumnKey(column)].label)
+            assert "▴" in label or "▾" in label  # sort acted: this column is now marked
+
+        await pilot.press("g")  # group: the table's column shape changes
+        assert "procs" in table.columns
+        await pilot.press("g")  # back to flat, for the remaining checks
+        await pilot.pause()
+
+        await pilot.press("?")  # help: the screen changes
+        assert isinstance(pilot.app.screen, HelpScreen)
+        await pilot.press("escape")
+        await pilot.pause()
+
+        await pilot.press("escape")  # back: the screen changes
+        await pilot.pause()
+        assert isinstance(pilot.app.screen, MainScreen)
+
+
+@pytest.mark.asyncio
+async def test_every_rendered_footer_key_acts_in_grouped_mode(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-ghostty.service", ram=1 * 1024**2, swap=0, pids=[100, 101])
+    _proc(root, 100, name="a", swap_kb=1024)
+    _proc(root, 101, name="b", swap_kb=2048)
+
+    async with _app(root).run_test(size=SCREEN_SIZE) as pilot:
+        await pilot.pause()
+        await _open_ghostty_process_view(pilot)
+        await pilot.press("g")
+        await pilot.pause()
+        table = _table(pilot)
+
+        for key, column in (("r", "ram"), ("s", "swap"), ("t", "total")):
+            await pilot.press(key)
+            label = str(table.columns[ColumnKey(column)].label)
+            assert "▴" in label or "▾" in label
+
+        table.move_cursor(row=table.get_row_index("a"))
+        await pilot.press("enter")  # enter: drills in, the screen's table shape changes
+        await pilot.pause()
+        screen = pilot.app.screen
+        assert isinstance(screen, ProcessesScreen)
+        assert "pid" in _table(pilot).columns
+
+        await pilot.press("escape")  # back to the grouped list
+        await pilot.pause()
+        await pilot.press("g")  # group: back to flat, the column shape changes
+        assert "pid" in _table(pilot).columns
+
+        await pilot.press("?")
+        assert isinstance(pilot.app.screen, HelpScreen)
+        await pilot.press("escape")
+        await pilot.pause()
+
+        await pilot.press("escape")  # back: the screen changes
+        await pilot.pause()
+        assert isinstance(pilot.app.screen, MainScreen)
+
+
+@pytest.mark.asyncio
+async def test_every_rendered_footer_key_acts_in_drilled_mode(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-ghostty.service", ram=1 * 1024**2, swap=0, pids=[100, 101])
+    _proc(root, 100, name="node", swap_kb=1024)
+    _proc(root, 101, name="node", swap_kb=2048)
+
+    async with _app(root).run_test(size=SCREEN_SIZE) as pilot:
+        await pilot.pause()
+        await _open_ghostty_process_view(pilot)
+        await pilot.press("g")
+        await pilot.pause()
+        table = _table(pilot)
+        table.move_cursor(row=table.get_row_index("node"))
+        await pilot.press("enter")
+        await pilot.pause()
+        table = _table(pilot)
+
+        for key, column in (("r", "ram"), ("s", "swap"), ("t", "total")):
+            await pilot.press(key)
+            label = str(table.columns[ColumnKey(column)].label)
+            assert "▴" in label or "▾" in label
+
+        await pilot.press("g")  # group: exits the drill-down entirely, to flat
+        await pilot.pause()
+        screen = pilot.app.screen
+        assert isinstance(screen, ProcessesScreen)
+        assert not screen._showing_group_table  # pyright: ignore[reportPrivateUsage]
+        assert screen._drill_command is None  # pyright: ignore[reportPrivateUsage]
+
+        # Re-enter the drill-down to check `esc` (labelled "groups") and `?`.
+        await pilot.press("g")
+        await pilot.pause()
+        table = _table(pilot)
+        table.move_cursor(row=table.get_row_index("node"))
+        await pilot.press("enter")
+        await pilot.pause()
+
+        await pilot.press("?")
+        assert isinstance(pilot.app.screen, HelpScreen)
+        await pilot.press("escape")
+        await pilot.pause()
+
+        await pilot.press("escape")  # groups: back to the grouped list, table shape changes
+        await pilot.pause()
+        assert "procs" in _table(pilot).columns
 
 
 @pytest.mark.asyncio
@@ -634,9 +1080,10 @@ async def test_footer_present_in_process_view(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_footer_drops_lowest_priority_items_at_60_columns(tmp_path: Path) -> None:
-    # The footer never wraps. Below its natural
-    # width (72 cols) it drops items lowest priority first, keeping help,
-    # back and quit no matter how narrow.
+    # The footer never wraps. Below its natural width, in grouped mode where
+    # "members" is a candidate item at all, it drops lowest priority first
+    # (SPEC.md "Process view" drop order: members, group, sort), keeping
+    # help, back and quit no matter how narrow.
     root = _base_tree(tmp_path)
     _app_unit(root, "app-ghostty.service", ram=1 * 1024**2, swap=0, pids=[100])
     _proc(root, 100, name="ghostty")
@@ -644,6 +1091,8 @@ async def test_footer_drops_lowest_priority_items_at_60_columns(tmp_path: Path) 
     async with _app(root).run_test(size=(60, 24)) as pilot:
         await pilot.pause()
         await _open_ghostty_process_view(pilot)
+        await pilot.press("g")
+        await pilot.pause()
         footer = pilot.app.screen.query_one("#footer", Static)
         content = footer.content
         assert isinstance(content, Text)
@@ -653,7 +1102,7 @@ async def test_footer_drops_lowest_priority_items_at_60_columns(tmp_path: Path) 
         assert "? help" in content.plain
         assert "esc back" in content.plain
         assert "q quit" in content.plain
-        assert "(grouped: members)" not in content.plain  # lowest priority: dropped first
+        assert "members" not in content.plain  # lowest priority: dropped first
 
 
 @pytest.mark.asyncio
@@ -983,6 +1432,54 @@ async def test_app_gone_while_drilled_clears_the_table(tmp_path: Path) -> None:
 
         assert _row_keys(_table(pilot)) == []
         assert "no longer running" in str(screen.query_one("#title", Static).content)
+        footer = screen.query_one("#footer", Static).content
+        assert isinstance(footer, Text)
+        assert "esc back" in footer.plain  # the drill-down ended: esc leaves the view now
+
+
+@pytest.mark.asyncio
+async def test_app_reappearing_after_vanishing_while_drilled_shows_grouped_rows_cleanly(
+    tmp_path: Path,
+) -> None:
+    # Ending a drill-down (the
+    # app vanished) leaves `_grouped` true and `_drill_command` cleared, so
+    # `_showing_group_table` flips back to true. If the table's columns
+    # aren't rebuilt for that, a later reappearance adds command-shaped cells
+    # (NAME, RAM, SWAP, TOTAL, PROCS) into a table still built for the
+    # drill-down's process columns (PID, NAME, RAM, SWAP, TOTAL, AGE, UNIT):
+    # every cell lands one column off, silently wrong, not a crash.
+    root = _base_tree(tmp_path)
+    unit_dir = _app_unit(root, "app-ghostty.service", ram=3 * 1024**2, swap=0, pids=[100])
+    _proc(root, 100, name="claude", ram_kb=1024)
+
+    async with _app(root).run_test(size=SCREEN_SIZE) as pilot:
+        await pilot.pause()
+        await _open_ghostty_process_view(pilot)
+        await pilot.press("g")
+        await pilot.pause()
+        table = _table(pilot)
+        table.move_cursor(row=table.get_row_index("claude"))
+        await pilot.press("enter")
+        await pilot.pause()
+
+        shutil.rmtree(unit_dir)
+        screen = pilot.app.screen
+        assert isinstance(screen, ProcessesScreen)
+        screen.refresh_now()  # tick: app gone, drill-down ends
+
+        _app_unit(root, "app-ghostty.service", ram=3 * 1024**2, swap=0, pids=[100])
+        _proc(root, 100, name="claude", ram_kb=1024)
+        screen.refresh_now()  # tick: app back, now in grouped (not drilled) mode
+
+        table = _table(pilot)
+        assert set(table.columns) == {"name", "ram", "swap", "total", "procs"}  # grouped shape
+        assert _row_keys(table) == ["claude", KERNEL_KEY, UNATTRIBUTED_KEY]
+        ram_cell = table.get_cell("claude", "ram")
+        assert isinstance(ram_cell, Text)
+        assert ram_cell.plain == "1 MiB"  # the command's own column, not shifted
+        procs_cell = table.get_cell("claude", "procs")
+        assert isinstance(procs_cell, Text)
+        assert procs_cell.plain == "1"
 
 
 # --- AGE hidden below 95 columns, process-view title never wraps ---------------

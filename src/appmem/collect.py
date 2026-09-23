@@ -59,6 +59,14 @@ class SystemStats:
     `None` when the root cgroup's `memory.stat` is missing (SPEC.md "Behaviour
     details"); the header omits the token below 1 MiB too, on the formatted
     value, not here."""
+    mem_free: int = 0
+    """`/proc/meminfo` `MemFree`: truly free RAM, no cache or shared memory in it."""
+    mem_shared: int = 0
+    """`/proc/meminfo` `Shmem`: tmpfs, shared memory segments and GPU buffers --
+    memory the kernel can only swap out, never just drop."""
+    mem_cache: int = 0
+    """Reclaimable page cache: `Cached - Shmem`, clamped at 0 -- the same
+    definition as the per-app CACHE column (`file - shmem`)."""
 
 
 @dataclass(frozen=True)
@@ -143,6 +151,8 @@ def read_system(root: Path, uid: int) -> SystemStats:
     # The header never shows a system procs count, so skip the costly recursive count.
     system_slice = os.path.join(str(root), "sys", "fs", "cgroup", "system.slice")
     system_stats = _read_unit_stats(system_slice, count_procs=False)
+    shmem = meminfo.get("Shmem", 0)
+    cached = meminfo.get("Cached", 0)
     return SystemStats(
         mem_total=meminfo.get("MemTotal", 0),
         mem_available=meminfo.get("MemAvailable", 0),
@@ -155,6 +165,9 @@ def read_system(root: Path, uid: int) -> SystemStats:
         system_ram=system_stats.ram if system_stats else 0,
         system_swap=system_stats.swap if system_stats else 0,
         elsewhere=_read_elsewhere(root, uid, system_stats),
+        mem_free=meminfo.get("MemFree", 0),
+        mem_shared=shmem,
+        mem_cache=max(cached - shmem, 0),
     )
 
 
@@ -502,7 +515,14 @@ def _pids_under(unit_dir: str) -> list[int]:
 
 
 def _read_uptime(path: Path) -> float:
-    return float(path.read_text().split()[0])
+    # `IndexError` (an empty or half-written file, no fields to split) is
+    # folded into `ValueError` here so a transient read during a tick reads
+    # as one of the two error types the screens already treat as "skip this
+    # tick" (SPEC.md "Behaviour details").
+    try:
+        return float(path.read_text().split()[0])
+    except IndexError as exc:
+        raise ValueError(f"empty or malformed uptime file: {path}") from exc
 
 
 def _read_proc_stats(

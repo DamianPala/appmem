@@ -15,12 +15,14 @@ from typing import cast
 
 import pytest
 from rich.text import Text
+from textual import events
 from textual.pilot import Pilot
 from textual.widgets import DataTable, Static
 from textual.widgets.data_table import ColumnKey
 
 from appmem.ui.app import AppMemApp
 from appmem.ui.rows import row_key
+from appmem.ui.screens import main as main_screen
 from appmem.ui.screens.main import MainScreen
 from helpers import make_unit, user_service_root, write_meminfo, write_memory_stat
 
@@ -343,6 +345,72 @@ async def test_ctrl_c_quits_with_exit_code_zero(tmp_path: Path) -> None:
     assert app.return_code == 0
 
 
+# --- column order: RAM before SWAP everywhere ----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_column_order_is_app_ram_swap_total_procs(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(120, 35)) as pilot:
+        await pilot.pause()
+        table = _table(pilot)
+        keys = [column.key.value for column in table.ordered_columns]
+
+        assert keys == ["app", "ram", "swap", "total", "delta_ram", "delta_swap", "procs"]
+
+
+@pytest.mark.asyncio
+async def test_column_order_with_cache_shown_is_ram_swap_cache_total(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(120, 35)) as pilot:
+        await pilot.pause()
+        await pilot.press("c")
+        table = _table(pilot)
+        keys = [column.key.value for column in table.ordered_columns]
+
+        assert keys == [
+            "app",
+            "ram",
+            "swap",
+            "cache",
+            "total",
+            "delta_ram",
+            "delta_swap",
+            "procs",
+        ]
+
+
+# --- mouse-wheel scroll survives a refresh tick --------------------------------
+
+
+@pytest.mark.asyncio
+async def test_wheel_scroll_does_not_snap_back_on_refresh_ticks(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    for index in range(60):  # more rows than a 20-line terminal can show
+        _app_unit(root, f"app-app{index:02d}.service", ram=(index + 2) * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(120, 20)) as pilot:
+        await pilot.pause()
+        table = _table(pilot)
+        screen = pilot.app.screen
+        assert isinstance(screen, MainScreen)
+
+        table.post_message(events.MouseScrollDown(table, 10, 10, 0, 0, 0, False, False, False))
+        await pilot.pause()
+        assert table.scroll_y > 0  # the wheel actually scrolled the table
+        scrolled_y = table.scroll_y
+
+        for _ in range(3):  # simulate three refresh ticks
+            screen.refresh_now()
+        await pilot.pause()
+
+        assert table.scroll_y == scrolled_y  # no snap-back to the cursor's row
+
+
 # --- cursor follows the selected app across an explicit sort -------------------
 
 
@@ -500,6 +568,104 @@ async def test_transient_memory_stat_failure_skips_the_tick_and_keeps_last_data(
         assert _row_names(table) == ["alpha"]  # last known data stays on screen
 
     assert app.return_code is None  # the session is still running, not exited
+
+
+@pytest.mark.asyncio
+async def test_transient_os_error_skips_the_tick_and_next_tick_shows_fresh_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A transient OS-level read failure elsewhere in the collector (SPEC.md
+    # "Behaviour details") must be treated the same as
+    # `MemoryStatUnavailableError`: skip this tick, keep the last frame, and
+    # let the next tick recover -- not a fatal, session-ending exception. The
+    # fixture changes before the failing tick, so a passing test can't be
+    # explained by the tick doing nothing either way: the failing tick must
+    # still show the *old* value, and only the next tick shows the new one.
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+    app = _app(root)
+
+    real_read_system = main_screen.read_system
+    calls = {"n": 0}
+
+    def _flaky_read_system(root: Path, uid: int) -> object:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("transient read failure")
+        return real_read_system(root, uid)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = _table(pilot)
+        screen = pilot.app.screen
+        assert isinstance(screen, MainScreen)
+        assert _row_names(table) == ["alpha"]
+
+        _app_unit(root, "app-alpha.service", ram=5 * 1024**2, swap=0)  # changes before tick 1
+        monkeypatch.setattr(main_screen, "read_system", _flaky_read_system)
+        screen.refresh_now()  # tick 1: raises OSError internally, must not propagate
+        ram_cell = table.get_cell(row_key("alpha", "user"), "ram")
+        assert isinstance(ram_cell, Text)
+        assert ram_cell.plain == "1 MiB"  # the failing tick kept the old frame
+        assert app.return_code is None  # still running
+
+        screen.refresh_now()  # tick 2: recovers, reads the already-changed fixture
+        ram_cell = table.get_cell(row_key("alpha", "user"), "ram")
+        assert isinstance(ram_cell, Text)
+        assert ram_cell.plain == "5 MiB"  # fresh data, not the stale 1 MiB
+
+    assert app.return_code is None  # the session ran to completion, not exited
+
+
+@pytest.mark.asyncio
+async def test_a_programming_error_in_a_tick_still_propagates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Only OSError/ValueError (transient reads) are swallowed. A programming
+    # error (e.g. TypeError) is not "one bad tick" -- it must still surface,
+    # not be silently eaten like a transient read failure.
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+    app = _app(root)
+
+    def _broken_read_system(root: Path, uid: int) -> object:
+        raise TypeError("not a transient read failure")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = pilot.app.screen
+        assert isinstance(screen, MainScreen)
+
+        monkeypatch.setattr(main_screen, "read_system", _broken_read_system)
+        with pytest.raises(TypeError):
+            screen.refresh_now()
+
+
+@pytest.mark.asyncio
+async def test_a_value_error_from_the_apply_path_still_propagates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `ValueError` is only swallowed when it comes from the collector reads
+    # inside the `try`. `reorder_rows`'s own invariant check
+    # (`src/appmem/ui/table_order.py`) also raises `ValueError`, but from the
+    # apply step outside the `try` -- a broken invariant there is a
+    # programming error, not a transient read failure, and must still
+    # surface instead of silently freezing the table.
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+    app = _app(root)
+
+    def _broken_reorder_rows(table: object, ordered_keys: object) -> None:
+        raise ValueError("broken invariant")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = pilot.app.screen
+        assert isinstance(screen, MainScreen)
+
+        monkeypatch.setattr(main_screen, "reorder_rows", _broken_reorder_rows)
+        with pytest.raises(ValueError, match="broken invariant"):
+            screen.refresh_now()
 
 
 # --- narrow terminals hide ΔSWAP/ΔRAM below 95 columns ---------------------------
@@ -715,14 +881,16 @@ async def test_footer_shows_key_caps(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_footer_drops_lowest_priority_items_at_60_columns(tmp_path: Path) -> None:
-    # The footer never wraps. Below its natural
-    # width (72 cols) it drops items lowest priority first, keeping help and
-    # quit no matter how narrow.
+async def test_footer_drops_lowest_priority_items_at_55_columns(tmp_path: Path) -> None:
+    # The footer never wraps. Below its natural width it drops items lowest
+    # priority first, keeping help and quit no matter how narrow. `d` (sort
+    # by ΔSWAP) already drops out of the "sort" item's own key caps below 95
+    # columns (SPEC.md "Main view"), which shortens the line enough that
+    # width 60 no longer forces any further drop -- 55 does.
     root = _base_tree(tmp_path)
     _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
 
-    async with _app(root).run_test(size=(60, 24)) as pilot:
+    async with _app(root).run_test(size=(55, 24)) as pilot:
         await pilot.pause()
         screen = pilot.app.screen
         assert isinstance(screen, MainScreen)
@@ -731,8 +899,32 @@ async def test_footer_drops_lowest_priority_items_at_60_columns(tmp_path: Path) 
         assert isinstance(content, Text)
 
         assert content.no_wrap is True
-        assert content.cell_len <= 60
+        assert content.cell_len <= 55
         assert "? help" in content.plain
         assert "q quit" in content.plain
         assert "reset Δ" not in content.plain  # lowest priority: dropped first
         assert "cache" not in content.plain
+
+
+@pytest.mark.asyncio
+async def test_sort_footer_item_drops_d_key_below_95_columns(tmp_path: Path) -> None:
+    # `d` is a no-op while the Δ columns are hidden by width (`action_sort`
+    # refuses it), so its key cap doesn't appear at all, rather than sitting
+    # there doing nothing (SPEC.md "Main view").
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        footer = pilot.app.screen.query_one("#footer", Static)
+        content = footer.content
+        assert isinstance(content, Text)
+        assert "r s t sort" in content.plain
+        assert "d" not in content.plain.split("sort")[0]
+
+    async with _app(root).run_test(size=(120, 35)) as pilot:
+        await pilot.pause()
+        footer = pilot.app.screen.query_one("#footer", Static)
+        content = footer.content
+        assert isinstance(content, Text)
+        assert "r s t d sort" in content.plain

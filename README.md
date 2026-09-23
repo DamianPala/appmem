@@ -7,14 +7,14 @@ A browser or a terminal is dozens of them, so "what is eating my swap?" turns in
 appmem reads the memory counters the kernel already keeps for every app (systemd puts each one in its own cgroup), adds them up per app, and shows one sortable row per app, refreshed every second.
 
 ```
-RAM 16.7/30.9 GiB   avail 14.2 GiB   Swap 24.0/32.0 GiB   pressure 10s: none   system 652 MiB [x]   elsewhere 116 MiB
+RAM 16.7/30.9 GiB (3.0 GiB shared)  avail 14.2 GiB (8.2 GiB free, 6.0 GiB cache)  Swap 24.0/32.0 GiB  pressure 10s: none  system 652 MiB [x]  elsewhere 116 MiB
 Δ since 02:13 (3s)
- APP                        SWAP        RAM         TOTAL ▾     ΔSWAP      ΔRAM       PROCS
- ghostty                      11.2 GiB     6.6 GiB    17.8 GiB          ·     -3 MiB     281
- plasma                        2.3 GiB     1.6 GiB     3.9 GiB          ·          ·      17
- chrome                        2.2 GiB     1.6 GiB     3.7 GiB          ·     -1 MiB      35
- code                          1.5 GiB     1.4 GiB     2.9 GiB          ·          ·      32
- s r t d sort  enter procs  x system  c cache  z reset Δ  ? help  q quit
+ APP                         RAM        SWAP        TOTAL ▾     ΔRAM       ΔSWAP      PROCS
+ ghostty                       6.6 GiB    11.2 GiB    17.8 GiB     -3 MiB          ·     281
+ plasma                        1.6 GiB     2.3 GiB     3.9 GiB          ·          ·      17
+ chrome                        1.6 GiB     2.2 GiB     3.7 GiB          ·     -1 MiB      35
+ code                          1.4 GiB     1.5 GiB     2.9 GiB          ·          ·      32
+ r s t d sort  enter procs  x system  c cache  z reset Δ  ? help  q quit
 ```
 
 ## Quick start
@@ -34,10 +34,11 @@ Plus [uv](https://docs.astral.sh/uv/), which fetches Python 3.12+ if needed.
 ## What you can do with it
 
 **Find the app.**
-The main view lists apps by TOTAL (swap + RAM).
-Click a column header or press `s` (swap), `r` (RAM), `t` (total), `d` (swap change) to sort; press again to reverse.
+The main view lists apps by TOTAL (RAM + swap).
+Click a column header or press `r` (RAM), `s` (swap), `t` (total), `d` (swap change) to sort; press again to reverse.
 The header tells you whether memory is a problem right now.
 `pressure 10s: none` with a full swap just means idle pages were moved out of the way; `some` or `high` means programs are waiting for memory.
+`shared` is tmpfs, shared memory and GPU buffers the kernel can only swap out, never drop; `cache` (inside `avail`) is file pages it can drop on demand.
 
 **Look inside it.**
 Press `Enter` on an app to see its processes, with their age and the systemd unit each one lives in.
@@ -61,7 +62,7 @@ The `kernel` and `unattributed` rows at the bottom of the process view explain w
 | Key | Where | Action |
 |---|---|---|
 | click a header | main, processes | sort by that column; click again to reverse |
-| `s` `r` `t` | main, processes | sort by SWAP / RAM / TOTAL; press again to reverse |
+| `r` `s` `t` | main, processes | sort by RAM / SWAP / TOTAL; press again to reverse |
 | `d` | main | sort by ΔSWAP |
 | ↑ ↓ PgUp PgDn | all | move or scroll |
 | `Enter` | main, processes | main: processes of the app; grouped process view: processes of the command |

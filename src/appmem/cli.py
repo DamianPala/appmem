@@ -69,7 +69,7 @@ Run `appmem schema` for the full machine-readable interface, or
 
 Keys:
   click header         sort by that column, click again to reverse
-  s / r / t / d        sort by SWAP / RAM / TOTAL / ΔSWAP (repeat to reverse);
+  r / s / t / d        sort by RAM / SWAP / TOTAL / ΔSWAP (repeat to reverse);
                        other columns sort by click
   up/down PgUp PgDn    move
   Enter                open the process view for the selected app;

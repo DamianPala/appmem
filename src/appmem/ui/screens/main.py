@@ -56,18 +56,10 @@ from appmem.ui.screens.processes import ProcessesScreen
 from appmem.ui.table_order import reorder_rows
 
 # Key caps (reverse video); at full width the plain text is exactly
-# " s r t d sort  enter procs  x system  c cache  z reset Δ  ? help  q quit".
-_FOOTER_ITEMS: tuple[tuple[tuple[str, ...], str], ...] = (
-    (("s", "r", "t", "d"), "sort"),
-    (("enter",), "procs"),
-    (("x",), "system"),
-    (("c",), "cache"),
-    (("z",), "reset Δ"),
-    (("?",), "help"),
-    (("q",), "quit"),
-)
-# Below the footer's natural width, drop items lowest priority first; `help`
-# and `quit` are never in this list, so they always stay.
+# " r s t d sort  enter procs  x system  c cache  z reset Δ  ? help  q quit".
+# `d` (sort by ΔSWAP) drops out of the "sort" item's own key caps -- not the
+# whole item -- while the Δ columns are hidden by width (SPEC.md "Main view":
+# a key that does nothing in the current view doesn't appear).
 _FOOTER_DROP_ORDER = ("reset Δ", "cache", "system", "procs", "sort")
 
 # Below this width, ΔSWAP/ΔRAM are hidden (SPEC.md "Main view"). Re-shown
@@ -78,14 +70,14 @@ _NARROW_WIDTH = 95
 # `truncate_name` in `_format_cell`), so short names are never cut short of that.
 _BASE_COLUMNS: tuple[tuple[SortKey, str, int | None], ...] = (
     ("app", "APP", None),
-    ("swap", "SWAP", 10),
     ("ram", "RAM", 10),
+    ("swap", "SWAP", 10),
 )
 _CACHE_COLUMN: tuple[SortKey, str, int | None] = ("cache", "CACHE", 10)
 _TOTAL_COLUMN: tuple[SortKey, str, int | None] = ("total", "TOTAL", 10)
 _DELTA_COLUMNS: tuple[tuple[SortKey, str, int | None], ...] = (
-    ("delta_swap", "ΔSWAP", 9),
     ("delta_ram", "ΔRAM", 9),
+    ("delta_swap", "ΔSWAP", 9),
 )
 _PROCS_COLUMN: tuple[SortKey, str, int | None] = ("procs", "PROCS", 6)
 _DELTA_KEYS = frozenset({"delta_swap", "delta_ram"})
@@ -164,9 +156,25 @@ class MainScreen(Screen[None]):
         yield table
         yield Static(self._footer_text(), id="footer")
 
+    def _footer_items(self) -> tuple[tuple[tuple[str, ...], str], ...]:
+        # `d` (sort by ΔSWAP) is a no-op while the Δ columns are hidden by
+        # width (`action_sort` refuses it), so it drops out of the "sort"
+        # item's own key caps rather than staying as dead text (SPEC.md
+        # "Main view").
+        sort_keys = ("r", "s", "t", "d") if self._delta_columns_shown else ("r", "s", "t")
+        return (
+            (sort_keys, "sort"),
+            (("enter",), "procs"),
+            (("x",), "system"),
+            (("c",), "cache"),
+            (("z",), "reset Δ"),
+            (("?",), "help"),
+            (("q",), "quit"),
+        )
+
     def _footer_text(self) -> Text:
         width = self.app.size.width  # pyright: ignore[reportUnknownMemberType]
-        return build_footer(_FOOTER_ITEMS, width=width, drop_order=_FOOTER_DROP_ORDER)
+        return build_footer(self._footer_items(), width=width, drop_order=_FOOTER_DROP_ORDER)
 
     def on_mount(self) -> None:
         self.refresh_now()
@@ -211,31 +219,49 @@ class MainScreen(Screen[None]):
         ]
         return filter_visible_apps(group_apps(units))
 
-    def refresh_now(self) -> None:
+    def refresh_now(self, *, scroll: bool = False) -> None:
         """Collect and redraw immediately, instead of waiting for the next tick.
 
         Called on mount, on the refresh timer, and by the actions (`x`, `z`)
         that need their effect to show up right away rather than after a full
         interval. Also the deterministic re-tick hook the Textual pilot tests
         use instead of racing the real timer (SPEC.md "Tests").
+
+        `scroll` (default `False`, a tick) says whether restoring the
+        cursor's row is also allowed to scroll the viewport: a periodic tick
+        must not, or mouse-wheel scrolling would snap back to the cursor on
+        every refresh; an explicit user action (a sort) passes `True` so the
+        selected row stays visible after it moves (SPEC.md "Main view").
+
+        Only the collector reads are guarded: a transient OS-level read
+        failure or a parse error from a half-written `/proc`/`/sys` file
+        (`OSError`/`ValueError`, same treatment as `MemoryStatUnavailableError`)
+        skips this tick and keeps the last frame, the next tick recovers
+        (SPEC.md "Behaviour details"). Applying the result to the screen runs
+        outside the `try`, so a programming error there (e.g. `reorder_rows`'s
+        `ValueError` invariant check) still propagates and ends the session,
+        instead of being swallowed alongside a transient read failure.
         """
         try:
-            self._refresh_now_unsafe()
+            stats = read_system(self._root, self._uid)
+            apps = self._collect_apps()
         except CgroupUnavailableError as exc:
             self._fail_cgroup_unavailable(exc)
+            return
         except MemoryStatUnavailableError:
-            pass  # transient this tick: keep the last data on screen, try again next tick
+            return  # transient this tick: keep the last data on screen, try again next tick
+        except (OSError, ValueError):
+            return  # transient read/parse failure: same treatment, try again next tick
+        self._apply_refresh(stats, apps, scroll=scroll)
 
-    def _refresh_now_unsafe(self) -> None:
-        stats = read_system(self._root, self._uid)
-        apps = self._collect_apps()
+    def _apply_refresh(self, stats: SystemStats, apps: list[AppStats], *, scroll: bool) -> None:
         self._last_apps = apps
         self._baseline = update_baseline(apps, self._baseline)
         young_now = self._baseline_age() < 60
         if young_now != self._young_baseline:
             self._delta_restyle_pending = True
         self._young_baseline = young_now
-        self._apply_rows(build_rows(apps, self._baseline))
+        self._apply_rows(build_rows(apps, self._baseline), scroll=scroll)
         self._update_header(stats)
 
     def _fail_cgroup_unavailable(self, exc: CgroupUnavailableError) -> None:
@@ -298,7 +324,7 @@ class MainScreen(Screen[None]):
         # extended here to the width-based hiding above.
         if not show and self._sort_key in _DELTA_KEYS:
             self._sort_key, self._sort_reverse = DEFAULT_SORT_KEY, DEFAULT_SORT_REVERSE
-        self._rebuild_table()
+        self._rebuild_table(scroll=False)  # a resize, not an explicit selection action
 
     def _column_specs(self) -> list[tuple[SortKey, str, int | None]]:
         specs = list(_BASE_COLUMNS)
@@ -364,20 +390,25 @@ class MainScreen(Screen[None]):
         return _key_str(row_key_obj), index
 
     def _restore_selection(
-        self, table: DataTable[str | Text], previous_key: str | None, previous_index: int
+        self,
+        table: DataTable[str | Text],
+        previous_key: str | None,
+        previous_index: int,
+        *,
+        scroll: bool,
     ) -> None:
         if table.row_count == 0:
             return
         if previous_key is not None and previous_key in self._rows:
-            table.move_cursor(row=table.get_row_index(previous_key))
+            table.move_cursor(row=table.get_row_index(previous_key), scroll=scroll)
         else:
-            table.move_cursor(row=min(previous_index, table.row_count - 1))
+            table.move_cursor(row=min(previous_index, table.row_count - 1), scroll=scroll)
 
     def _resort(self, table: DataTable[str | Text]) -> None:
         ordered = sort_rows(self._rows.values(), self._sort_key, self._sort_reverse)
         reorder_rows(table, [row_key(row.name, row.scope) for row in ordered])
 
-    def _apply_rows(self, rows: list[Row]) -> None:
+    def _apply_rows(self, rows: list[Row], *, scroll: bool) -> None:
         table = self._table()
         new_by_key = {row_key(row.name, row.scope): row for row in rows}
         previous_key, previous_index = self._current_selection(table)
@@ -395,11 +426,11 @@ class MainScreen(Screen[None]):
         self._rows = new_by_key
 
         self._resort(table)
-        self._restore_selection(table, previous_key, previous_index)
+        self._restore_selection(table, previous_key, previous_index, scroll=scroll)
 
     # --- table rebuilds -----------------------------------------------------------
 
-    def _rebuild_table(self) -> None:
+    def _rebuild_table(self, *, scroll: bool) -> None:
         """Rebuild the DataTable's columns and repopulate its rows after a
         change to which columns are visible (CACHE toggle, Δ columns hidden or
         shown by width), preserving sort and selection."""
@@ -409,7 +440,7 @@ class MainScreen(Screen[None]):
         for key, row in self._rows.items():
             table.add_row(*self._row_cells(row), key=key)
         self._resort(table)
-        self._restore_selection(table, previous_key, previous_index)
+        self._restore_selection(table, previous_key, previous_index, scroll=scroll)
 
     # --- actions ----------------------------------------------------------------
 
@@ -421,7 +452,10 @@ class MainScreen(Screen[None]):
         previous_key, previous_index = self._current_selection(table)
         self._resort(table)
         self._refresh_column_labels(table)
-        self._restore_selection(table, previous_key, previous_index)
+        # Explicit user action (key or header click): keep the selected row
+        # visible even though the resort may have moved it far from where it
+        # was on screen (SPEC.md "Main view").
+        self._restore_selection(table, previous_key, previous_index, scroll=True)
 
     def action_sort(self, column: str) -> None:
         if column in _DELTA_KEYS and not self._delta_columns_shown:
@@ -438,11 +472,11 @@ class MainScreen(Screen[None]):
         # view").
         if not self._show_cache and self._sort_key == "cache":
             self._sort_key, self._sort_reverse = DEFAULT_SORT_KEY, DEFAULT_SORT_REVERSE
-        self._rebuild_table()
+        self._rebuild_table(scroll=True)  # explicit `c` key press
 
     def action_toggle_system(self) -> None:
         self._show_system = not self._show_system
-        self.refresh_now()
+        self.refresh_now(scroll=True)  # explicit `x` key press
 
     def action_reset_delta(self) -> None:
         # `z` takes a fresh sample before resetting, so the baseline and its
@@ -454,13 +488,15 @@ class MainScreen(Screen[None]):
             return
         except MemoryStatUnavailableError:
             return  # transient this tick: leave the baseline untouched, try again next tick
+        except (OSError, ValueError):
+            return  # transient read/parse failure: same treatment, try again next tick
         self._last_apps = apps
         self._baseline = reset_baseline(apps)
         self._baseline_time = datetime.now()
         if not self._young_baseline:
             self._delta_restyle_pending = True
         self._young_baseline = True
-        self._apply_rows(build_rows(apps, self._baseline))
+        self._apply_rows(build_rows(apps, self._baseline), scroll=True)  # explicit `z` key press
         self._update_header_line2()
 
     def action_help(self) -> None:

@@ -93,15 +93,26 @@ def write_uptime(root: Path, seconds: float) -> None:
 
 
 def write_meminfo(
-    root: Path, *, mem_total_kb: int, mem_available_kb: int, swap_total_kb: int, swap_free_kb: int
+    root: Path,
+    *,
+    mem_total_kb: int,
+    mem_available_kb: int,
+    swap_total_kb: int,
+    swap_free_kb: int,
+    mem_free_kb: int = 0,
+    cached_kb: int = 0,
+    shmem_kb: int = 0,
 ) -> None:
     proc_dir = root / "proc"
     proc_dir.mkdir(parents=True, exist_ok=True)
     lines = [
         f"MemTotal:       {mem_total_kb} kB",
+        f"MemFree:        {mem_free_kb} kB",
         f"MemAvailable:   {mem_available_kb} kB",
+        f"Cached:         {cached_kb} kB",
         f"SwapTotal:      {swap_total_kb} kB",
         f"SwapFree:       {swap_free_kb} kB",
+        f"Shmem:          {shmem_kb} kB",
     ]
     (proc_dir / "meminfo").write_text("\n".join(lines) + "\n")
 

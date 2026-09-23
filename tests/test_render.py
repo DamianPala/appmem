@@ -17,6 +17,9 @@ _SNAPSHOT_DOCUMENT: dict[str, Any] = {
         "ram_total_bytes": 33223766016,
         "ram_used_bytes": 20875931648,
         "ram_available_bytes": 12347834368,
+        "ram_free_bytes": 6347834368,
+        "ram_cache_bytes": 6000000000,
+        "ram_shared_bytes": 3221225472,
         "swap_total_bytes": 34342957056,
         "swap_used_bytes": 23782510592,
         "system_services_ram_bytes": 300 * 1024 * 1024,
@@ -112,6 +115,43 @@ def test_snapshot_text_has_header_table_cut_notice_and_next_line() -> None:
     assert "ghostty" in text
     assert "1 of 41 apps shown (--limit 41 shows all)" in text
     assert "Next: appmem app ghostty" in text
+
+
+def test_snapshot_text_header_line_shows_shared_and_avail_breakdown() -> None:
+    text = render_snapshot_text(_SNAPSHOT_DOCUMENT, total_apps=41)
+    header_line = text.splitlines()[0]
+
+    assert "shared" in header_line
+    assert "free" in header_line
+    assert "cache" in header_line
+    assert header_line.index("RAM") < header_line.index("shared")
+    assert header_line.index("avail") < header_line.index("free")
+
+
+def test_snapshot_table_column_order_is_app_ram_swap_total() -> None:
+    text = render_snapshot_text(_SNAPSHOT_DOCUMENT, total_apps=1)
+    table_header = text.splitlines()[1]
+
+    assert table_header.index("APP") < table_header.index("RAM")
+    assert table_header.index("RAM") < table_header.index("SWAP")
+    assert table_header.index("SWAP") < table_header.index("TOTAL")
+
+
+def test_app_process_and_command_table_column_order_is_ram_before_swap() -> None:
+    text = render_app_text(_APP_DOCUMENT, total_processes=1, total_commands=1)
+    lines = text.splitlines()
+    process_header = next(line for line in lines if "PID" in line)
+    command_header = next(line for line in lines if "COMMAND" in line)
+
+    assert process_header.index("RAM") < process_header.index("SWAP")
+    assert command_header.index("RAM") < command_header.index("SWAP")
+
+
+def test_app_title_line_shows_ram_before_swap() -> None:
+    text = render_app_text(_APP_DOCUMENT, total_processes=1, total_commands=1)
+    title_line = text.splitlines()[0]
+
+    assert title_line.index("RAM") < title_line.index("swap")
 
 
 def test_snapshot_text_omits_cut_notice_when_nothing_was_cut() -> None:

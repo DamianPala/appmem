@@ -47,6 +47,8 @@ You use its non-interactive commands; the live TUI is for the human.
 - Act when `ram_available_bytes` is low (under ~10 % of `ram_total_bytes`) together with `some` or `high`.
 - `ram_bytes` is anonymous + shared + charged kernel memory, without page cache (`cache_bytes`, reclaimable).
   `total_bytes` is RAM + swap, an accounting sum, not what closing the app frees.
+- In `snapshot`'s `system`, `ram_shared_bytes` is tmpfs, shared memory and GPU buffers: part of `ram_used_bytes`, swappable but not droppable.
+  `ram_free_bytes` (truly free) and `ram_cache_bytes` (droppable file cache) are the main parts of `ram_available_bytes`, which is a kernel estimate, not their sum.
 - Apps don't add up to the `system` totals: `system_services_*` and `elsewhere_bytes` (VMs, containers, other users, login sessions) cover the rest.
 - Terminals: everything started from a terminal counts as the terminal app.
   A terminal with 17 GiB is usually not the terminal itself; `commands.items` shows the agent sessions, node processes and builds inside it.

@@ -22,6 +22,9 @@ _DEFAULT_STATS = SystemStats(
     system_ram=0,
     system_swap=0,
     elsewhere=None,
+    mem_free=2_500_000_000,
+    mem_shared=3_000_000_000,
+    mem_cache=6_100_000_000,
 )
 
 _WIDE = 200  # wide enough that nothing droppable ever needs to go
@@ -81,7 +84,7 @@ def test_line1_system_total_is_ram_plus_swap_with_no_process_count() -> None:
 
 
 def test_line1_shares_unit_between_used_and_total_when_equal() -> None:
-    # SPEC.md "Main-view polish": `RAM 18.7/30.9 GiB`, not `RAM 18.7 GiB / 30.9 GiB`.
+    # SPEC.md "Main view": `RAM 18.7/30.9 GiB`, not `RAM 18.7 GiB / 30.9 GiB`.
     line = _line(mem_total=30_900_000_000, mem_available=12_100_000_000)
 
     assert "RAM 17.5/28.8 GiB" in line
@@ -117,31 +120,119 @@ def test_line2_format() -> None:
 # --- narrow terminals drop parts by priority -------------------------------------
 
 
-def test_line1_drops_elsewhere_first_when_narrow() -> None:
+def test_line1_narrow_drop_order() -> None:
+    # Drop order (SPEC.md "Main view"):
+    # elsewhere, system, avail's own breakdown, avail itself, then RAM's
+    # shared last -- `shared` is the stickiest droppable part, so it
+    # survives even once `avail` is gone entirely. RAM, Swap and pressure
+    # never drop.
     full = _stats(elsewhere=2 * 1024**2, system_ram=500 * 1024**2)
-    wide_line = format_line1(full, _WIDE).plain
-    width = len(wide_line) - 1  # one column too narrow for everything
+    line = format_line1(full, _WIDE).plain
+    assert "free" in line and "cache" in line  # avail breakdown present
+    assert "shared" in line
+    assert "elsewhere" in line
+    assert "system" in line
+    assert "avail" in line
 
-    narrow = format_line1(full, width).plain
+    line = format_line1(full, len(line) - 1).plain  # one column short
+    assert "elsewhere" not in line  # gone first
+    assert "shared" in line
+    assert "system" in line
+    assert "avail" in line
 
-    assert "elsewhere" not in narrow
-    assert "system" in narrow  # not dropped yet
+    line = format_line1(full, len(line) - 1).plain
+    assert "system" not in line  # gone second
+    assert "shared" in line
+    assert "avail" in line
+    assert "free" in line and "cache" in line
+
+    line = format_line1(full, len(line) - 1).plain
+    assert "free" not in line and "cache" not in line  # avail breakdown: gone third
+    assert "shared" in line
+    assert "avail" in line
+
+    line = format_line1(full, len(line) - 1).plain
+    assert "avail" not in line  # gone fourth, whole figure this time
+    assert "shared" in line  # not dropped yet
+
+    line = format_line1(full, len(line) - 1).plain
+    assert "shared" not in line  # gone last of the droppable parts
+    assert "RAM" in line
+    assert "Swap" in line
 
 
-def test_line1_drops_system_before_avail() -> None:
-    full = _stats(elsewhere=2 * 1024**2, system_ram=500 * 1024**2)
-    wide_line = format_line1(full, _WIDE).plain
-    elsewhere_segment = "   elsewhere 2 MiB"
-    assert wide_line.endswith(elsewhere_segment)
-    without_elsewhere = wide_line[: -len(elsewhere_segment)]
-    assert "system" in without_elsewhere
-    width = len(without_elsewhere) - 1  # one column short even after that drop
+def test_line1_at_80_and_60_columns_never_wraps_and_keeps_ram_swap_pressure() -> None:
+    full = _stats(
+        elsewhere=2 * 1024**2,
+        system_ram=500 * 1024**2,
+        pressure_some_avg10=0.5,
+        pressure_some_avg60=0.0,
+        pressure_full_avg10=0.0,
+    )
+    for width in (80, 60):
+        text = format_line1(full, width)
+        assert text.no_wrap is True
+        assert text.cell_len <= width  # fits by dropping parts, not by cropping
+        assert "RAM" in text.plain
+        assert "Swap" in text.plain
+        assert "pressure" in text.plain
 
-    narrow = format_line1(full, width).plain
 
-    assert "elsewhere" not in narrow
-    assert "system" not in narrow
-    assert "avail" in narrow
+def test_line1_shared_survives_typical_widths_with_realistic_values() -> None:
+    # With realistic sizes (a 31 GiB machine, 3 GiB shared), a 120-column
+    # terminal shows both breakdowns, and shared must still survive down to
+    # an 80-column terminal even though the bare `avail` figure is gone there.
+    realistic = _stats(
+        mem_total=int(30.9 * 1024**3),
+        mem_available=int(10.8 * 1024**3),
+        mem_free=int(2.5 * 1024**3),
+        mem_cache=int(6.1 * 1024**3),
+        mem_shared=int(3.0 * 1024**3),
+        swap_total=32 * 1024**3,
+        swap_free=4 * 1024**3,
+        system_ram=300 * 1024**2,
+        system_swap=86 * 1024**2,
+        elsewhere=213200896,
+        pressure_some_avg10=0.0,
+        pressure_some_avg60=0.0,
+        pressure_full_avg10=0.0,
+    )
+
+    at_120 = format_line1(realistic, 120)
+    assert at_120.cell_len <= 120
+    assert "shared" in at_120.plain
+    assert "free" in at_120.plain and "cache" in at_120.plain
+
+    at_80 = format_line1(realistic, 80)
+    assert at_80.cell_len <= 80
+    assert "shared" in at_80.plain
+
+
+def test_line1_shared_always_shown_even_when_zero() -> None:
+    # No threshold, unlike `elsewhere` (SPEC.md "Main view").
+    line = _line(mem_shared=0)
+
+    assert "shared" in line
+
+
+def test_line1_plain_text_conveys_everything_without_relying_on_colour() -> None:
+    # NO_COLOR strips styles, not text: every distinction the header makes
+    # (pressure level, swap fraction) must already be readable as plain words.
+    text = format_line1(
+        _stats(
+            pressure_some_avg10=25.0,
+            pressure_some_avg60=0.0,
+            pressure_full_avg10=0.0,
+            swap_total=1000,
+            swap_free=100,
+        ),
+        _WIDE,
+    )
+    plain = text.plain
+
+    assert "high" in plain  # pressure word, not colour, carries the level
+    assert "RAM" in plain and "shared" in plain
+    assert "avail" in plain and "free" in plain and "cache" in plain
 
 
 def test_line1_never_drops_ram_swap_or_pressure() -> None:

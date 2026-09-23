@@ -53,6 +53,13 @@ _HEADER_NOTE = (
     "add up to the header, and that's expected."
 )
 
+_HEADER_TERMS_NOTE = (
+    "shared (in the RAM figure) is tmpfs (/tmp, /dev/shm), shared memory and GPU "
+    "buffers: the kernel cannot drop it, only swap it out, and a tmpfs file counts "
+    "toward the app that wrote it. cache (in avail) is file pages the kernel can "
+    "drop on demand. avail is what can be allocated before swapping."
+)
+
 _PRESSURE_INTRO = "Memory pressure is the share of the last 10 s spent waiting for memory:"
 _PRESSURE_ITEMS: tuple[tuple[str, str], ...] = (
     ("none", "few memory stalls in the last 10 s"),
@@ -131,6 +138,7 @@ def _build_body(width: int) -> str:
         _wrap(_INTRO, w),
         "\n".join(_wrap_item(f"{key}  ", desc, w, column=10) for key, desc in _DEFINITIONS),
         _wrap(_HEADER_NOTE, w),
+        _wrap(_HEADER_TERMS_NOTE, w),
         "\n".join(
             [
                 _wrap(_PRESSURE_INTRO, w),

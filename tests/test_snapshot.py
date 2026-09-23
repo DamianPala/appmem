@@ -173,6 +173,28 @@ def test_pressure_is_null_without_the_pressure_file(tmp_path: Path) -> None:
     assert document["pressure"] is None
 
 
+def test_system_includes_ram_free_cache_and_shared_bytes(tmp_path: Path) -> None:
+    user_root = user_service_root(tmp_path, uid=1000)
+    write_memory_stat(user_root, anon=1)
+    write_meminfo(
+        tmp_path,
+        mem_total_kb=32_000_000,
+        mem_available_kb=11_000_000,
+        swap_total_kb=0,
+        swap_free_kb=0,
+        mem_free_kb=2_000_000,
+        cached_kb=7_000_000,
+        shmem_kb=3_000_000,
+    )
+
+    document, _ = snapshot_document(tmp_path, 1000, include_system=False, limit=50, now=_NOW)
+
+    system = document["system"]
+    assert system["ram_free_bytes"] == 2_000_000 * 1024
+    assert system["ram_shared_bytes"] == 3_000_000 * 1024
+    assert system["ram_cache_bytes"] == (7_000_000 - 3_000_000) * 1024
+
+
 def test_elsewhere_is_null_without_the_root_memory_stat(tmp_path: Path) -> None:
     # `_base_tree` never writes `sys/fs/cgroup/memory.stat` (only the user
     # root's own), so `elsewhere_bytes` stays null.

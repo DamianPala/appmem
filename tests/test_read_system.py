@@ -38,6 +38,60 @@ def test_reads_meminfo_and_hidden_system_total(tmp_path: Path) -> None:
     assert stats.system_swap == 7
 
 
+# --- RAM breakdown: free / shared / cache (SPEC.md "Definitions") ---
+
+
+def test_reads_free_shared_and_cache_from_meminfo(tmp_path: Path) -> None:
+    write_meminfo(
+        tmp_path,
+        mem_total_kb=32_000_000,
+        mem_available_kb=11_000_000,
+        swap_total_kb=0,
+        swap_free_kb=0,
+        mem_free_kb=2_500_000,
+        cached_kb=8_600_000,
+        shmem_kb=2_500_000,
+    )
+
+    stats = read_system(tmp_path, UID)
+
+    assert stats.mem_free == 2_500_000 * 1024
+    assert stats.mem_shared == 2_500_000 * 1024
+    # cache = Cached - Shmem, the same definition as the per-app CACHE column.
+    assert stats.mem_cache == (8_600_000 - 2_500_000) * 1024
+
+
+def test_cache_is_clamped_at_zero_when_shmem_exceeds_cached(tmp_path: Path) -> None:
+    # A malformed or transiently inconsistent meminfo (Shmem counted inside
+    # Cached is supposed to be <=, but nothing guarantees it on every kernel):
+    # the header must never show a negative cache figure.
+    write_meminfo(
+        tmp_path,
+        mem_total_kb=32_000_000,
+        mem_available_kb=11_000_000,
+        swap_total_kb=0,
+        swap_free_kb=0,
+        cached_kb=1_000,
+        shmem_kb=5_000,
+    )
+
+    stats = read_system(tmp_path, UID)
+
+    assert stats.mem_cache == 0
+
+
+def test_free_shared_and_cache_default_to_zero_when_meminfo_lacks_them(tmp_path: Path) -> None:
+    write_meminfo(
+        tmp_path, mem_total_kb=1000, mem_available_kb=500, swap_total_kb=0, swap_free_kb=0
+    )
+
+    stats = read_system(tmp_path, UID)
+
+    assert stats.mem_free == 0
+    assert stats.mem_shared == 0
+    assert stats.mem_cache == 0
+
+
 def test_pressure_reads_avg60_for_some_and_full(tmp_path: Path) -> None:
     write_meminfo(
         tmp_path, mem_total_kb=1000, mem_available_kb=500, swap_total_kb=0, swap_free_kb=0

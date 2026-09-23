@@ -1,4 +1,4 @@
-# appmem: spec v0.3
+# appmem: spec v0.4
 
 A live terminal view of RAM and swap usage **per application**, not per process.
 Think `btm` or `htop`, but rows are apps (Ghostty, Brave, LibreOffice), each summing all of its processes.
@@ -31,58 +31,61 @@ Which app holds the memory and swap? Is memory actually the problem right now? W
 ### Main view
 
 ```
-RAM 16.7/30.9 GiB   avail 14.2 GiB   Swap 24.0/32.0 GiB   pressure 10s: none   system 652 MiB [x]   elsewhere 116 MiB
+RAM 21.0/30.9 GiB (2.2 GiB shared)  avail 10.0 GiB (2.2 GiB free, 5.4 GiB cache)  Swap 25.0/32.0 GiB  pressure 10s: none  system 652 MiB [x]
 Δ since 02:13 (3s)
- APP                        SWAP        RAM         TOTAL ▾     ΔSWAP      ΔRAM       PROCS
- ghostty                      11.2 GiB     6.6 GiB    17.8 GiB          ·     -3 MiB     281
- plasma                        2.3 GiB     1.6 GiB     3.9 GiB          ·          ·      17
- chrome                        2.2 GiB     1.6 GiB     3.7 GiB          ·     -1 MiB      35
+ APP                        RAM         SWAP        TOTAL ▾     ΔRAM       ΔSWAP      PROCS
+ ghostty                       6.6 GiB    11.2 GiB    17.8 GiB     -3 MiB          ·     281
+ plasma                        1.6 GiB     2.3 GiB     3.9 GiB          ·          ·      17
+ chrome                        1.6 GiB     2.2 GiB     3.7 GiB     -1 MiB          ·      35
  ...
- s r t d sort  enter procs  x system  c cache  z reset Δ  ? help  q quit
+ r s t d sort  enter procs  x system  c cache  z reset Δ  ? help  q quit
 ```
 
-- **Header line 1:**
-  - System RAM used (`MemTotal - MemAvailable`) and available.
+- **Header line 1** (parts joined by two spaces, each breakdown in parentheses sits inside the total it belongs to):
+  - System RAM used (`MemTotal - MemAvailable`) and total, with `shared` (`Shmem`: tmpfs such as `/tmp` and `/dev/shm`, shared memory, GPU buffers; the kernel can only swap it out, never drop it). Always shown.
+  - `avail` (`MemAvailable`, what can be allocated before swapping) with `free` (`MemFree`) and `cache` (`Cached - Shmem`, clamped at 0, the same definition as the CACHE column). The parts don't sum to `avail`: it is a kernel estimate that also counts reclaimable slab.
   - System swap used and total, or `Swap off` when `SwapTotal` is 0. Coloured yellow above 50 % used, red above 80 %.
   - Memory pressure as a bold word (see Definitions), green/yellow/red; omitted when `/proc/pressure/memory` does not exist.
   - Total of the hidden system services, so the user notices when the culprit is there.
   - `elsewhere`: memory outside the user tree and `system.slice` (root `memory.stat` minus both): VMs, containers, other users, login sessions.
-  - Never wraps: when too narrow, parts drop in the order `elsewhere`, `system`, `avail`. RAM, Swap and pressure always stay.
+  - Never wraps: when too narrow, parts drop in the order `elsewhere`, `system`, the `(free, cache)` breakdown, `avail`, `shared`. RAM, Swap and pressure always stay.
 - **Header line 2:** when the Δ baseline was taken and how long ago.
 - The sort marker `▴`/`▾` sits on the sorted column. Default sort: TOTAL descending.
 - Clicking the sorted column again flips the direction.
 - Rows with equal values keep a stable order by app name.
 - Δ below 1 MiB either way shows as a dim `·`; Δ columns render dim while the baseline is younger than 60 s.
 - Under 95 columns ΔSWAP and ΔRAM are hidden; sorting by a hidden column falls back to TOTAL descending.
-- A footer with key caps sits at the bottom of every view and drops its lowest-priority items instead of wrapping.
+- A footer with key caps sits at the bottom of every view and drops its lowest-priority items instead of wrapping. It shows only keys that act in the current view and mode, labelled by what they do there (e.g. `d` is absent while the Δ columns are hidden).
+- Mouse-wheel scrolling stays where the user put it across refreshes: a tick restores the cursor without scrolling the viewport; only explicit actions (sort, toggles, `z`, drill in/out) scroll the selected row into view.
 
 ### Process view (after Enter)
 
 ```
 ghostty   281 procs   swap 11.2 GiB   RAM 6.6 GiB
- PID      NAME                  SWAP        RAM         TOTAL ▾     AGE     UNIT
-    6091  ghostty                  3.3 GiB     129 MiB     3.4 GiB     86d  app-com.mitchellh.ghostty.service
- 1504671  ghostty                  591 MiB      19 MiB     610 MiB     12d  app-ghostty\x2d2@ad7f69d9c06a4d43bae214674…
- 2026292  claude                   135 MiB     268 MiB     404 MiB      1d  app-ghostty-surface-transient-4172209.scope
+ PID      NAME                  RAM         SWAP        TOTAL ▾     AGE     UNIT
+    6091  ghostty                  129 MiB     3.3 GiB     3.4 GiB     86d  app-com.mitchellh.ghostty.service
+ 1504671  ghostty                   19 MiB     591 MiB     610 MiB     12d  app-ghostty\x2d2@ad7f69d9c06a4d43bae214674…
+ 2026292  claude                   268 MiB     135 MiB     404 MiB      1d  app-ghostty-surface-transient-4172209.scope
  ...
           kernel                   ...                                      (page tables, slab, stacks)
           unattributed             ...                                      (held by the app, not by any process)
 
 systemctl --user stop 'app-com.mitchellh.ghostty.service'   kill 6091
- s r t sort  g group  enter (grouped: members)  ? help  esc back  q quit
+ r s t sort  g group  ? help  esc back  q quit
 ```
 
 With `g` (group by command):
 
 ```
- NAME                  SWAP        RAM         TOTAL ▾     PROCS
- claude                   1.3 GiB     4.2 GiB     5.5 GiB      18
- ghostty                  4.3 GiB     207 MiB     4.5 GiB       3
- node                     1.7 GiB     307 MiB     2.0 GiB      68
+ NAME                  RAM         SWAP        TOTAL ▾     PROCS
+ claude                   4.2 GiB     1.3 GiB     5.5 GiB      18
+ ghostty                  207 MiB     4.3 GiB     4.5 GiB       3
+ node                     307 MiB     1.7 GiB     2.0 GiB      68
  ...
+ r s t sort  g group  enter members  ? help  esc back  q quit
 ```
 
-Enter on a command drills into its member processes (title `ghostty › claude`, flat columns, live); Esc returns to the grouped list on the same command.
+Enter on a command drills into its member processes (title `ghostty › claude`, flat columns, live); Esc (footer `esc groups`) returns to the grouped list on the same command. If the app disappears during a drill-down, the view falls back to the app's empty state with its own columns.
 
 - The process view opens sorted by the same column as the main view (SWAP stays SWAP, TOTAL stays TOTAL).
 - SWAP, RAM and TOTAL are per-process values (see Definitions).
@@ -101,14 +104,14 @@ Enter on a command drills into its member processes (title `ghostty › claude`,
 ### Help screen (`?`)
 
 A scrolling screen with the definitions below in plain words, soft-wrapped to the width, with `esc/?/q close` in its title line.
-It covers what RAM, CACHE, SWAP, TOTAL and pressure mean, why rows don't add up to the header, why a closed app can still have a row, and how to act on what you see.
+It covers what RAM, CACHE, SWAP, TOTAL, pressure and the header's shared/free/cache/avail mean (tmpfs files count toward the app that wrote them), why rows don't add up to the header, why a closed app can still have a row, and how to act on what you see.
 
 ## Keys
 
 | Key | Action |
 |---|---|
 | click header | sort by that column, click again to reverse |
-| `s` / `r` / `t` / `d` | sort by SWAP / RAM / TOTAL / ΔSWAP (repeat to reverse); other columns sort by click |
+| `r` / `s` / `t` / `d` | sort by RAM / SWAP / TOTAL / ΔSWAP (repeat to reverse); other columns sort by click |
 | `↑` `↓` `PgUp` `PgDn` | move |
 | `Enter` | open the process view for the selected app; in grouped mode, the processes of the selected command |
 | `g` | process view: toggle grouping by command |
@@ -250,7 +253,7 @@ Splitting terminal children into their own main-view rows is v2.
 - Apps that appear mid-session get a row. Apps that disappear drop out at the next refresh.
 - A unit or process that vanishes between listing and reading is skipped silently. This is normal churn, not an error.
 - A row can have PROCS 0 and memory above 0: the unit outlives its processes while it still holds memory. It shows like any other row, and its process view shows only the `kernel` and `unattributed` rows.
-- A tick whose `memory.stat` read fails transiently is skipped; the screen keeps the last data. Only a missing user tree ends the app.
+- A tick whose reads fail transiently (`memory.stat` missing, any `OSError`, a parse error from a half-written `/proc` or `/sys` file) is skipped; the screen keeps the last data and the next tick recovers. Errors while applying the data to the screen are bugs and still end the app. Only a missing user tree ends the app as a runtime failure.
 - The cursor follows the selected app across refreshes and re-sorts. If that app disappears, the cursor stays at the same row index, or on the last row.
 
 ## Command line

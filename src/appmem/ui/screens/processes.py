@@ -29,7 +29,13 @@ from textual.timer import Timer
 from textual.widgets import DataTable, Static
 from textual.widgets.data_table import ColumnKey, RowKey
 
-from appmem.collect import AppStats, CgroupUnavailableError, MemoryStatUnavailableError, ProcStats
+from appmem.collect import (
+    AppStats,
+    CgroupUnavailableError,
+    MemoryStatUnavailableError,
+    ProcStats,
+    UnitStats,
+)
 from appmem.collect import find_app_units as collect_find_app_units
 from appmem.collect import read_procs as collect_read_procs
 from appmem.collect import read_unit as collect_read_unit
@@ -62,8 +68,8 @@ from appmem.ui.table_order import reorder_rows
 _PROCESS_COLUMNS: tuple[tuple[str, str, int | None], ...] = (
     ("pid", "PID", 7),  # pid_max 4194304: 7 digits
     ("name", "NAME", None),
-    ("swap", "SWAP", 10),
     ("ram", "RAM", 10),
+    ("swap", "SWAP", 10),
     ("total", "TOTAL", 10),
     ("age", "AGE", 6),
     ("unit", "UNIT", None),  # auto width: never truncated, table scrolls sideways instead
@@ -74,8 +80,8 @@ _PROCESS_COLUMNS_NARROW: tuple[tuple[str, str, int | None], ...] = tuple(
 )
 _GROUP_COLUMNS: tuple[tuple[str, str, int | None], ...] = (
     ("name", "NAME", None),
-    ("swap", "SWAP", 10),
     ("ram", "RAM", 10),
+    ("swap", "SWAP", 10),
     ("total", "TOTAL", 10),
     ("procs", "PROCS", 6),
 )
@@ -83,19 +89,9 @@ _LEFT_ALIGNED = {"name", "unit"}
 
 _NARROW_WIDTH = 95
 
-# Key caps; at full width the plain text is exactly " s r t sort  g
-# group  enter (grouped: members)  ? help  esc back  q quit".
-_FOOTER_ITEMS: tuple[tuple[tuple[str, ...], str], ...] = (
-    (("s", "r", "t"), "sort"),
-    (("g",), "group"),
-    (("enter",), "(grouped: members)"),
-    (("?",), "help"),
-    (("esc",), "back"),
-    (("q",), "quit"),
-)
 # Below the footer's natural width, drop items lowest priority first;
-# `help`, `back` and `quit` are never in this list, so they always stay.
-_FOOTER_DROP_ORDER = ("(grouped: members)", "group", "sort")
+# `help`, `back`/`groups` and `quit` are never in this list, so they always stay.
+_FOOTER_DROP_ORDER = ("members", "group", "sort")
 
 # Process-view title drop order -- procs count first, then swap; the
 # app/breadcrumb name and RAM are always kept.
@@ -207,9 +203,28 @@ class ProcessesScreen(Screen[None]):
         yield Static(id="status")
         yield Static(self._footer_text(), id="footer")
 
+    def _footer_items(self) -> tuple[tuple[tuple[str, ...], str], ...]:
+        """Only the keys that do something in the current mode (SPEC.md
+        "Process view"): `enter` (drill into a command's members) shows
+        only in grouped mode outside a drill-down, since it's a no-op
+        everywhere else, including on the synthetic rows. `esc` is labelled
+        `groups` while drilled (it returns to the grouped list) and `back`
+        otherwise. `s`/`r`/`t`, `g`, `?` and `q` all act in every mode, so
+        they're never hidden."""
+        items: list[tuple[tuple[str, ...], str]] = [(("r", "s", "t"), "sort"), (("g",), "group")]
+        if self._showing_group_table:
+            items.append((("enter",), "members"))
+        items.append((("?",), "help"))
+        items.append((("esc",), "groups" if self._drill_command is not None else "back"))
+        items.append((("q",), "quit"))
+        return tuple(items)
+
     def _footer_text(self) -> Text:
         width = self.app.size.width  # pyright: ignore[reportUnknownMemberType]
-        return build_footer(_FOOTER_ITEMS, width=width, drop_order=_FOOTER_DROP_ORDER)
+        return build_footer(self._footer_items(), width=width, drop_order=_FOOTER_DROP_ORDER)
+
+    def _update_footer(self) -> None:
+        self._set_rich("#footer", self._footer_text())
 
     def on_mount(self) -> None:
         self.refresh_now()
@@ -229,7 +244,7 @@ class ProcessesScreen(Screen[None]):
         self._render_title()
         self._update_status_line()
         self._sync_age_column()
-        self._set_rich("#footer", self._footer_text())
+        self._update_footer()
 
     def _table(self) -> DataTable[str | Text]:
         return cast("DataTable[str | Text]", self.query_one("#table", DataTable))
@@ -254,7 +269,7 @@ class ProcessesScreen(Screen[None]):
         sort_hidden = not show and self._sort_key == "age"
         if sort_hidden:
             self._sort_key, self._sort_reverse = "total", True
-        self._rebuild_current_table()
+        self._rebuild_current_table()  # a resize, not an explicit selection action
         if sort_hidden:
             self.refresh_now()  # the cached rows are still in AGE order: re-sort them
 
@@ -292,30 +307,61 @@ class ProcessesScreen(Screen[None]):
         else:
             for key, row in self._process_rows.items():
                 table.add_row(*self._process_cells(row), key=key)
-        self._restore_selection(table, previous_key, previous_index)
+        self._restore_selection(table, previous_key, previous_index, scroll=False)
         self._update_status_line()
 
     # --- collection tick ----------------------------------------------------
 
-    def refresh_now(self) -> None:
+    def refresh_now(self, *, scroll: bool = False) -> None:
+        """Collect and redraw immediately.
+
+        `scroll` (default `False`, a tick) says whether restoring the
+        cursor's row is also allowed to scroll the viewport: a periodic tick
+        must not, or mouse-wheel scrolling would snap back to the cursor on
+        every refresh; an explicit user action (a sort, `g`, entering or
+        leaving a drill-down) passes `True` so the selected row stays visible
+        (SPEC.md "Process view").
+
+        Only the collector reads are guarded: a transient OS-level read
+        failure or a parse error from a half-written `/proc`/`/sys` file
+        (`OSError`/`ValueError`, same treatment as `MemoryStatUnavailableError`)
+        skips this tick and keeps the last frame, the next tick recovers
+        (SPEC.md "Behaviour details"). Applying the result to the screen runs
+        outside the `try`, so a programming error there (e.g. `reorder_rows`'s
+        `ValueError` invariant check) still propagates and ends the session,
+        instead of being swallowed alongside a transient read failure.
+        """
         try:
-            self._refresh_now_unsafe()
+            # `strict=False`: a transient `memory.stat` read failure on the
+            # user root raises `MemoryStatUnavailableError` (skip the tick)
+            # rather than `CgroupUnavailableError` (fatal) -- only the
+            # directory vanishing is fatal here.
+            unit_paths = collect_find_app_units(
+                self._root, self._uid, self._include_system, self._scope, self._name, strict=False
+            )
+            unit_stats = [
+                stats for path in unit_paths if (stats := collect_read_unit(path)) is not None
+            ]
+            # No unit means no app left to read processes for; `_show_gone`
+            # (outside the try) handles that without a `read_procs` call.
+            procs = collect_read_procs(unit_paths, self._root) if unit_stats else []
         except CgroupUnavailableError as exc:
             self._fail_cgroup_unavailable(exc)
+            return
         except MemoryStatUnavailableError:
-            pass  # transient this tick: keep the last data on screen, try again next tick
+            return  # transient this tick: keep the last data on screen, try again next tick
+        except (OSError, ValueError):
+            return  # transient read/parse failure: same treatment, try again next tick
+        self._apply_refresh(unit_paths, unit_stats, procs, scroll=scroll)
 
-    def _refresh_now_unsafe(self) -> None:
-        # `strict=False`: a transient `memory.stat` read failure on the user
-        # root raises `MemoryStatUnavailableError` (skip the tick) rather than
-        # `CgroupUnavailableError` (fatal) -- only the directory vanishing is
-        # fatal here.
-        unit_paths = collect_find_app_units(
-            self._root, self._uid, self._include_system, self._scope, self._name, strict=False
-        )
-        unit_stats = [
-            stats for path in unit_paths if (stats := collect_read_unit(path)) is not None
-        ]
+    def _apply_refresh(
+        self,
+        unit_paths: list[Path],
+        unit_stats: list[UnitStats],
+        procs: list[ProcStats],
+        *,
+        scroll: bool,
+    ) -> None:
         if not unit_stats:
             self._show_gone()
             return
@@ -330,19 +376,18 @@ class ProcessesScreen(Screen[None]):
             kernel=sum(s.kernel for s in unit_stats),
             unit_paths=tuple(unit_paths),
         )
-        procs = collect_read_procs(unit_paths, self._root)
         if self._drill_command is not None:
             members = [proc for proc in procs if proc.name == self._drill_command]
             # The breadcrumb's counts are the command's, as on its grouped row.
             swap, ram = sum(p.swap for p in members), sum(p.ram for p in members)
             self._set_title(replace(app, swap=swap, ram=ram), len(members))
-            self._apply_process_rows(members, app, include_synthetic=False)
+            self._apply_process_rows(members, app, include_synthetic=False, scroll=scroll)
             return
         self._set_title(app, len(procs))
         if self._showing_group_table:
-            self._apply_command_rows(procs, app)
+            self._apply_command_rows(procs, app, scroll=scroll)
         else:
-            self._apply_process_rows(procs, app, include_synthetic=True)
+            self._apply_process_rows(procs, app, include_synthetic=True, scroll=scroll)
 
     def _fail_cgroup_unavailable(self, exc: CgroupUnavailableError) -> None:
         if self._timer is not None:
@@ -357,15 +402,27 @@ class ProcessesScreen(Screen[None]):
         # Pick the rows on screen before leaving the drill-down: while drilled,
         # the table holds process rows, not the stale `_command_rows`.
         current = self._command_rows if self._showing_group_table else self._process_rows
+        was_drilled = self._drill_command is not None
         self._last_app = None
         self._drill_command = None
         self._set_rich("#title", Text(f"{self._name}   (app no longer running)"))
         self._set_rich("#status", Text(""))
         table = self._table()
-        for key in current:
-            table.remove_row(key)
         self._process_rows = {}
         self._command_rows = {}
+        if was_drilled:
+            # Ending a drill-down changes which columns apply
+            # (`_showing_group_table` depends on `_drill_command`, now cleared):
+            # rebuild them, or a later reappearance would add rows shaped for
+            # one column set into a table still built for the other (SPEC.md
+            # "Process view"). Also drop a process-only sort key (e.g. `age`)
+            # that the group columns don't support, same as `_exit_drill`.
+            self._reset_sort_if_unsupported()
+            self._rebuild_columns(table)  # also clears the rows just emptied above
+        else:
+            for key in current:
+                table.remove_row(key)
+        self._update_footer()  # a drill-down just ended: `esc` is `back` again
 
     # --- title, above the table --------------------------------------------------
 
@@ -386,8 +443,8 @@ class ProcessesScreen(Screen[None]):
         parts: list[tuple[str, Text | None]] = [
             ("name", name_part),
             ("procs", Text(f"{self._last_proc_count} procs")),
-            ("swap", Text(f"swap {size(app.swap)}")),
             ("ram", Text(f"RAM {size(app.ram)}")),
+            ("swap", Text(f"swap {size(app.swap)}")),
         ]
         width = self.app.size.width  # pyright: ignore[reportUnknownMemberType]
         self._set_rich("#title", fit_line(parts, _TITLE_DROP_ORDER, width))
@@ -451,7 +508,7 @@ class ProcessesScreen(Screen[None]):
         ]
 
     def _apply_process_rows(
-        self, procs: list[ProcStats], app: AppStats, *, include_synthetic: bool
+        self, procs: list[ProcStats], app: AppStats, *, include_synthetic: bool, scroll: bool
     ) -> None:
         table = self._table()
         process_key = cast("ProcessSortKey", self._sort_key)
@@ -478,7 +535,7 @@ class ProcessesScreen(Screen[None]):
         self._process_rows = new_by_key
 
         reorder_rows(table, [row.key for row in ordered])
-        self._restore_selection(table, previous_key, previous_index)
+        self._restore_selection(table, previous_key, previous_index, scroll=scroll)
         self._update_status_line()
 
     def _update_process_cells(
@@ -498,7 +555,7 @@ class ProcessesScreen(Screen[None]):
             for key, _label, _width in self._columns()
         ]
 
-    def _apply_command_rows(self, procs: list[ProcStats], app: AppStats) -> None:
+    def _apply_command_rows(self, procs: list[ProcStats], app: AppStats, *, scroll: bool) -> None:
         table = self._table()
         group_key = cast("GroupSortKey", self._sort_key)
         real_rows = sort_command_rows(build_command_rows(procs), group_key, self._sort_reverse)
@@ -517,7 +574,7 @@ class ProcessesScreen(Screen[None]):
         self._command_rows = new_by_key
 
         reorder_rows(table, [row.key for row in ordered])
-        self._restore_selection(table, previous_key, previous_index)
+        self._restore_selection(table, previous_key, previous_index, scroll=scroll)
         self._update_status_line()
 
     def _update_command_cells(
@@ -539,15 +596,20 @@ class ProcessesScreen(Screen[None]):
         return _key_str(row_key), index
 
     def _restore_selection(
-        self, table: DataTable[str | Text], previous_key: str | None, previous_index: int
+        self,
+        table: DataTable[str | Text],
+        previous_key: str | None,
+        previous_index: int,
+        *,
+        scroll: bool,
     ) -> None:
         if table.row_count == 0:
             return
         rows = self._command_rows if self._showing_group_table else self._process_rows
         if previous_key is not None and previous_key in rows:
-            table.move_cursor(row=table.get_row_index(previous_key))
+            table.move_cursor(row=table.get_row_index(previous_key), scroll=scroll)
         else:
-            table.move_cursor(row=min(previous_index, table.row_count - 1))
+            table.move_cursor(row=min(previous_index, table.row_count - 1), scroll=scroll)
 
     # --- actions ----------------------------------------------------------------
 
@@ -561,7 +623,7 @@ class ProcessesScreen(Screen[None]):
         )
         self._sort_key, self._sort_reverse = key, reverse
         table = self._table()
-        self.refresh_now()
+        self.refresh_now(scroll=True)  # explicit sort action: keep the row visible
         self._refresh_column_labels(table)
 
     def action_sort(self, column: str) -> None:
@@ -589,7 +651,8 @@ class ProcessesScreen(Screen[None]):
         self._reset_sort_if_unsupported()
         table = self._table()
         self._rebuild_columns(table)
-        self.refresh_now()
+        self.refresh_now(scroll=True)  # explicit Enter: a whole new table shape
+        self._update_footer()
 
     def action_toggle_group(self) -> None:
         self._grouped = not self._grouped
@@ -599,7 +662,8 @@ class ProcessesScreen(Screen[None]):
         self._process_rows = {}
         self._command_rows = {}
         self._rebuild_columns(table)
-        self.refresh_now()
+        self.refresh_now(scroll=True)  # explicit `g` key press: a whole new table shape
+        self._update_footer()
 
     def action_back(self) -> None:
         if self._drill_command is not None:
@@ -619,7 +683,8 @@ class ProcessesScreen(Screen[None]):
         self._rebuild_columns(table)
         self.refresh_now()  # repopulates `self._command_rows` fresh
         if command is not None and command in self._command_rows:
-            table.move_cursor(row=table.get_row_index(command))
+            table.move_cursor(row=table.get_row_index(command))  # explicit Esc: keep it visible
+        self._update_footer()
 
     def action_help(self) -> None:
         self.app.push_screen(HelpScreen())  # pyright: ignore[reportUnknownMemberType]

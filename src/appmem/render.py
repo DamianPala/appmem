@@ -52,9 +52,12 @@ def _pressure_line(pressure: dict[str, Any] | None) -> str:
 def _snapshot_header_line(document: dict[str, Any]) -> str:
     system = document["system"]
     system_total = system["system_services_ram_bytes"] + system["system_services_swap_bytes"]
+    ram_pair = format_pair(system["ram_used_bytes"], system["ram_total_bytes"])
+    avail_size = size(system["ram_available_bytes"])
     parts = [
-        f"RAM {format_pair(system['ram_used_bytes'], system['ram_total_bytes'])}",
-        f"avail {size(system['ram_available_bytes'])}",
+        f"RAM {ram_pair} ({size(system['ram_shared_bytes'])} shared)",
+        f"avail {avail_size} ({size(system['ram_free_bytes'])} free, "
+        f"{size(system['ram_cache_bytes'])} cache)",
         f"Swap {format_pair(system['swap_used_bytes'], system['swap_total_bytes'])}",
         _pressure_line(document["pressure"]),
         f"system {size(system_total)}",
@@ -66,11 +69,11 @@ def _snapshot_header_line(document: dict[str, Any]) -> str:
 
 
 def _snapshot_table(items: list[dict[str, Any]]) -> list[str]:
-    lines = [f"{'APP':<24}{'SWAP':>10}{'RAM':>10}{'TOTAL':>10}{'PROCS':>7}{'UNITS':>7}"]
+    lines = [f"{'APP':<24}{'RAM':>10}{'SWAP':>10}{'TOTAL':>10}{'PROCS':>7}{'UNITS':>7}"]
     for item in items:
         name = escape_control_chars(truncate_name(str(item["name"]), 23))
         lines.append(
-            f"{name:<24}{size(item['swap_bytes']):>10}{size(item['ram_bytes']):>10}"
+            f"{name:<24}{size(item['ram_bytes']):>10}{size(item['swap_bytes']):>10}"
             f"{size(item['total_bytes']):>10}{item['procs']:>7}{item['units']:>7}"
         )
     return lines
@@ -95,30 +98,30 @@ def _app_title_line(document: dict[str, Any]) -> str:
     name = escape_control_chars(str(document["name"]))
     return (
         f"{name}  {document['scope']}  {document['procs']} procs  "
-        f"{len(document['units'])} units  swap {size(document['swap_bytes'])}  "
-        f"RAM {size(document['ram_bytes'])}  kernel {size(document['kernel_bytes'])}"
+        f"{len(document['units'])} units  RAM {size(document['ram_bytes'])}  "
+        f"swap {size(document['swap_bytes'])}  kernel {size(document['kernel_bytes'])}"
     )
 
 
 def _process_table(items: list[dict[str, Any]]) -> list[str]:
-    lines = [f"{'PID':>8}  {'NAME':<20}{'SWAP':>10}{'RAM':>10}{'TOTAL':>10}{'AGE':>8}  UNIT"]
+    lines = [f"{'PID':>8}  {'NAME':<20}{'RAM':>10}{'SWAP':>10}{'TOTAL':>10}{'AGE':>8}  UNIT"]
     for item in items:
         name = escape_control_chars(truncate_name(str(item["name"]), 19))
         unit = escape_control_chars(str(item["unit"]))
         lines.append(
-            f"{item['pid']:>8}  {name:<20}{size(item['swap_bytes']):>10}"
-            f"{size(item['ram_bytes']):>10}{size(item['total_bytes']):>10}"
+            f"{item['pid']:>8}  {name:<20}{size(item['ram_bytes']):>10}"
+            f"{size(item['swap_bytes']):>10}{size(item['total_bytes']):>10}"
             f"{format_age(item['age_seconds']):>8}  {unit}"
         )
     return lines
 
 
 def _command_table(items: list[dict[str, Any]]) -> list[str]:
-    lines = [f"{'COMMAND':<20}{'SWAP':>10}{'RAM':>10}{'TOTAL':>10}{'PROCS':>7}"]
+    lines = [f"{'COMMAND':<20}{'RAM':>10}{'SWAP':>10}{'TOTAL':>10}{'PROCS':>7}"]
     for item in items:
         name = escape_control_chars(truncate_name(str(item["name"]), 19))
         lines.append(
-            f"{name:<20}{size(item['swap_bytes']):>10}{size(item['ram_bytes']):>10}"
+            f"{name:<20}{size(item['ram_bytes']):>10}{size(item['swap_bytes']):>10}"
             f"{size(item['total_bytes']):>10}{item['procs']:>7}"
         )
     return lines
