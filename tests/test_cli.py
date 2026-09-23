@@ -83,7 +83,7 @@ def test_non_tty_exits_with_terminal_required(
     with pytest.raises(SystemExit) as exc_info:
         main([], root=tmp_path, uid=1000, stdin_isatty=_false, stdout_isatty=_true)
 
-    assert exc_info.value.code == 2
+    assert exc_info.value.code == 1
     error = _last_json_line(capsys.readouterr().err)
     assert error["error"]["kind"] == "terminal_required"  # type: ignore[index]
     assert error["error"]["action"] == "agent"  # type: ignore[index]
@@ -185,7 +185,7 @@ def test_bare_root_off_a_terminal_is_terminal_required(
             stdout_isatty=lambda: stdout_ok,
         )
 
-    assert exc_info.value.code == 2
+    assert exc_info.value.code == 1
     captured = capsys.readouterr()
     assert captured.out == ""
     error = _last_json_line(captured.err)["error"]

@@ -457,10 +457,12 @@ def _run_root(
         next_argv = ["appmem", "snapshot"]
         if json_flag:
             next_argv.append("--json")
+        # A context failure, not a usage error: exit 1 alongside cgroup_unavailable
+        # and not_found, so exit 2 stays reserved for a real invalid_input call.
         _fail(
             "terminal_required",
             "the live view needs a terminal; for a one-shot report run: appmem snapshot",
-            2,
+            1,
             action="agent",
             hint="Run appmem snapshot for a one-shot report",
             next_argv=next_argv,

@@ -52,7 +52,7 @@ _SNAPSHOT_DOCUMENT: dict[str, Any] = {
                 "total_bytes": 18683678720,
                 "cache_bytes": 412090368,
                 "procs": 278,
-                "units": 34,
+                "unit_count": 34,
             },
         ],
         "has_more": True,
@@ -225,7 +225,7 @@ def test_snapshot_table_cjk_app_name_column_stays_aligned() -> None:
                     "total_bytes": 2,
                     "cache_bytes": 0,
                     "procs": 1,
-                    "units": 1,
+                    "unit_count": 1,
                 }
             ],
             "has_more": False,
@@ -278,7 +278,7 @@ def test_snapshot_text_escapes_a_control_character_in_a_name() -> None:
                     "total_bytes": 2,
                     "cache_bytes": 0,
                     "procs": 1,
-                    "units": 1,
+                    "unit_count": 1,
                 }
             ],
             "has_more": False,

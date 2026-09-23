@@ -243,7 +243,7 @@ SNAPSHOT_OUTPUT: dict[str, object] = {
                             "zswapped_bytes",
                             "kernel_bytes",
                             "procs",
-                            "units",
+                            "unit_count",
                             "top_commands",
                         ],
                         "properties": {
@@ -256,7 +256,7 @@ SNAPSHOT_OUTPUT: dict[str, object] = {
                             "zswapped_bytes": {"type": "integer"},
                             "kernel_bytes": {"type": "integer"},
                             "procs": {"type": "integer"},
-                            "units": {"type": "integer"},
+                            "unit_count": {"type": "integer"},
                             "top_commands": {
                                 "type": "array",
                                 "items": {
@@ -446,8 +446,8 @@ FORMAT_DEFAULTS: dict[str, str] = {"tty": "text", "non_tty": "json"}
 
 EXIT_CODES: dict[str, str] = {
     "0": "success",
-    "1": "failure (cgroup tree unavailable, app not found)",
-    "2": "usage error, or the live view started outside a terminal context",
+    "1": "runtime failure (cgroup tree unavailable, app not found, no terminal for the live view)",
+    "2": "usage error",
     "130": "interrupted by SIGINT",
     "143": "terminated by SIGTERM",
 }

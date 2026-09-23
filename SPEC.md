@@ -1,4 +1,4 @@
-# appmem: spec v0.12
+# appmem: spec v0.13
 
 A live terminal view of RAM and swap usage **per application**, not per process.
 Think `btm` or `htop`, but rows are apps (Ghostty, Brave, LibreOffice), each summing all of its processes.
@@ -309,7 +309,7 @@ appmem --version | -V
 The command line conforms to the house CLI Design Standard 0.1.0 (claimed in `appmem schema` under `conformance`).
 `appmem schema` and each command's `--help` are the reference for flags, defaults and output fields; this section only fixes the behaviour.
 
-- **Live view** (no command): `-i/--interval` (default 1, ≥ 0.2) and `--system` (start with system services shown). It starts only in a terminal context: stdin and stdout are terminals, no `--json`, `NO_INPUT` unset or empty. Otherwise it exits `2` with `terminal_required` and `next: ["appmem","snapshot"]`, instead of drawing escape codes into a pipe. `-i` or `--theme` together with a command is `invalid_input`, and so is `--system` before `app` or `schema`.
+- **Live view** (no command): `-i/--interval` (default 1, ≥ 0.2) and `--system` (start with system services shown). It starts only in a terminal context: stdin and stdout are terminals, no `--json`, `NO_INPUT` unset or empty. Otherwise it exits `1` with `terminal_required` (the call is fine, the context isn't, so it's not a usage error) and `next: ["appmem","snapshot"]`, instead of drawing escape codes into a pipe. `-i` or `--theme` together with a command is `invalid_input`, and so is `--system` before `app` or `schema`.
 - **Theme** (live view only). The theme is taken from the first valid source in this order:
   1. `--theme NAME`;
   2. `APPMEM_THEME`;
@@ -343,8 +343,8 @@ Exit codes:
 | Code | Meaning |
 |---|---|
 | `0` | Success, or quit with `q`/`Ctrl+C` in the live view |
-| `1` | Runtime failure: `cgroup_unavailable`, `not_found` |
-| `2` | Invalid call: `invalid_input`, `terminal_required` |
+| `1` | Runtime or context failure: `cgroup_unavailable`, `not_found`, `terminal_required` |
+| `2` | Invalid call: `invalid_input` |
 | `130`, `143` | Interrupted by SIGINT or SIGTERM (`interrupted` for `snapshot`/`app`) |
 
 Every failure writes one JSON error object as the last non-empty stderr line, never on stdout:

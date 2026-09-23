@@ -57,7 +57,7 @@ You use its non-interactive commands; the live TUI is for the human.
   Name those, not the terminal.
 - `kernel_bytes` (page tables, slab, stacks) already excludes the app's own zswap pool share; the pool's own size is `zswap_pool_bytes`, available per app only via `appmem app NAME` (and machine-wide in `snapshot`'s `system`), 0 without zswap. `kernel_bytes` and `unattributed_*` (shared pages, memfd, GPU buffers) explain why processes don't add up to the app.
   Neither is a leak by itself. Both are still inside the app's `ram_bytes`.
-- `units` pairs each raw unit name with a decoded `label` (systemd's own `\xNN` escaping undone), for a name that's otherwise unreadable at a glance (`snapshot`'s own per-app `units` is a plain count, not this array).
+- `units` pairs each raw unit name with a decoded `label` (systemd's own `\xNN` escaping undone), for a name that's otherwise unreadable at a glance (`snapshot`'s own per-app unit count is a separate field, `unit_count`).
 - Per-process values leave out file-backed pages, so they are smaller than htop's RES.
   Compare within appmem, not across tools.
 - A process with large `swap_bytes`, small `ram_bytes` and an `age_seconds` of days is an idle sleeper that was paged out.

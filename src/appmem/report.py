@@ -144,7 +144,7 @@ def _app_item(root: Path, app: AppStats) -> dict[str, Any]:
         "zswapped_bytes": app.zswapped,
         "kernel_bytes": app.kernel,
         "procs": app.procs,
-        "units": len(app.unit_paths),
+        "unit_count": len(app.unit_paths),
         "top_commands": _top_commands(root, app),
     }
 

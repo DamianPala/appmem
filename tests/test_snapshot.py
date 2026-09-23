@@ -87,7 +87,7 @@ def test_document_matches_the_expected_shape_for_two_apps_and_a_hidden_one(tmp_p
     assert document["apps"]["has_more"] is False
     assert total_apps == 2  # the tiny app and the hidden system unit don't count
     for item in items:
-        for key in ("ram_bytes", "swap_bytes", "total_bytes", "cache_bytes", "procs", "units"):
+        for key in ("ram_bytes", "swap_bytes", "total_bytes", "cache_bytes", "procs", "unit_count"):
             assert isinstance(item[key], int)
     assert document["next"] == ["appmem", "app", "ghostty"]
 

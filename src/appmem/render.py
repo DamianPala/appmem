@@ -107,7 +107,7 @@ def _snapshot_table(items: list[dict[str, Any]]) -> list[str]:
         name = _pad_cell(escape_control_chars(truncate_name(str(item["name"]), 23)), 24)
         lines.append(
             f"{name}{size(item['ram_bytes']):>10}{size(item['swap_bytes']):>10}"
-            f"{size(item['total_bytes']):>10}{item['procs']:>7}{item['units']:>7}"
+            f"{size(item['total_bytes']):>10}{item['procs']:>7}{item['unit_count']:>7}"
         )
     return lines
 

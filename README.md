@@ -122,12 +122,12 @@ The command line follows CLI Design Standard 0.1.0, which `appmem schema` report
 | Exit code | Meaning |
 |---|---|
 | 0 | success |
-| 1 | runtime failure (`not_found`, `cgroup_unavailable`) |
-| 2 | invalid call (`invalid_input`, `terminal_required`) |
+| 1 | runtime failure (`not_found`, `cgroup_unavailable`, `terminal_required`) |
+| 2 | invalid call (`invalid_input`) |
 | 130, 143 | interrupted (Ctrl+C, SIGTERM) |
 
 Bare `appmem` is the TUI.
-Without a terminal (piped, `--json`, or `NO_INPUT` set) it exits 2 and points to `appmem snapshot`.
+Without a terminal (piped, `--json`, or `NO_INPUT` set) it exits 1 and points to `appmem snapshot`.
 There are no shell completions yet.
 
 ## Cost
