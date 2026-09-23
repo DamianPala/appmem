@@ -122,6 +122,11 @@ class CommandStats:
     swap: int
     ram: int
     count: int
+    units: tuple[str, ...]
+    """Sorted, de-duplicated unit names the group's processes belong to
+    (review round 1 open item 2): a command usually lives in one unit (the
+    terminal it was started from), but can legitimately span several (the
+    same shell command run in two terminal windows)."""
 
 
 # --- system ---------------------------------------------------------------
@@ -588,6 +593,7 @@ def group_by_command(procs: Iterable[ProcStats]) -> list[CommandStats]:
             swap=sum(p.swap for p in group),
             ram=sum(p.ram for p in group),
             count=len(group),
+            units=tuple(sorted({p.unit for p in group})),
         )
         for name, group in groups.items()
     ]

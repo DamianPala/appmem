@@ -8,13 +8,15 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from typing import Literal
 
 from appmem.collect import AppStats
 
-SortKey = str
-"""One of: ``app``, ``swap``, ``ram``, ``cache``, ``total``, ``delta_swap``,
-``delta_ram``, ``procs``. A plain string (not an enum) because it doubles as a
-`DataTable` column key."""
+SortKey = Literal["app", "swap", "ram", "cache", "total", "delta_swap", "delta_ram", "procs"]
+"""A `Literal`, not a plain `str` (final review F13/5.6): pyright strict then
+catches a typo'd column name at the call site instead of it surfacing as a
+runtime `KeyError` in `_DEFAULT_REVERSE`. Still doubles as a `DataTable`
+column key, which only ever needs `str`."""
 
 DEFAULT_SORT_KEY: SortKey = "total"
 DEFAULT_SORT_REVERSE = True

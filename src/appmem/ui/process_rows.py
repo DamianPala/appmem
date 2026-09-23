@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from typing import Literal
 
 from appmem.collect import AppStats, CommandStats, ProcStats, group_by_command, unattributed_row
 
@@ -21,11 +22,14 @@ UNATTRIBUTED_KEY = "\0unattributed"
 KERNEL_UNIT_TEXT = "charged kernel memory: page tables, slab, stacks"
 UNATTRIBUTED_UNIT_TEXT = "accounting difference, not a process"
 
-ProcessSortKey = str
-"""One of: ``pid``, ``name``, ``swap``, ``ram``, ``total``, ``age``, ``unit``."""
+ProcessSortKey = Literal["pid", "name", "swap", "ram", "total", "age", "unit"]
 
-GroupSortKey = str
-"""One of: ``name``, ``swap``, ``ram``, ``total``, ``procs``."""
+GroupSortKey = Literal["name", "swap", "ram", "total", "procs"]
+
+ScreenSortKey = ProcessSortKey | GroupSortKey
+"""The two sort-key sets `ProcessesScreen` juggles between its flat and
+grouped-by-command tables (final review F13/5.6: `Literal`, not `str`, so
+pyright strict catches a typo'd column name)."""
 
 DEFAULT_SORT_KEY: ProcessSortKey = "total"
 DEFAULT_SORT_REVERSE = True
@@ -40,8 +44,9 @@ KEY_SORT_COLUMNS: dict[str, ProcessSortKey] = {"s": "swap", "r": "ram", "t": "to
 
 # First selection of a column: numeric columns start high-to-low, name/unit
 # start A-Z. Mirrors `ui/rows.py`'s `_DEFAULT_REVERSE`; SPEC.md only pins down
-# the TOTAL default.
-_DEFAULT_REVERSE: dict[str, bool] = {
+# the TOTAL default. Covers both `ProcessSortKey` and `GroupSortKey`: the flat
+# and grouped-by-command tables share one sort-state variable.
+_DEFAULT_REVERSE: dict[ScreenSortKey, bool] = {
     "pid": False,
     "name": False,
     "swap": True,
@@ -93,6 +98,10 @@ class CommandRow:
     total: int
     procs: int | None
     dim: bool = False
+    units: tuple[str, ...] = ()
+    """Sorted, de-duplicated unit names the group's processes belong to
+    (review round 1 open item 2, status line). Empty for the two synthetic
+    rows, which don't belong to one command."""
 
 
 def build_process_rows(procs: Iterable[ProcStats]) -> list[ProcessRow]:
@@ -157,6 +166,7 @@ def _command_row(group: CommandStats) -> CommandRow:
         ram=group.ram,
         total=group.swap + group.ram,
         procs=group.count,
+        units=group.units,
     )
 
 
@@ -231,7 +241,9 @@ def sort_command_rows(
     return sorted(by_name, key=getter, reverse=reverse)
 
 
-def next_sort_state(current_key: str, current_reverse: bool, clicked_key: str) -> tuple[str, bool]:
+def next_sort_state(
+    current_key: ScreenSortKey, current_reverse: bool, clicked_key: ScreenSortKey
+) -> tuple[ScreenSortKey, bool]:
     """Sort-state transition for a header click or a repeated `s`/`r`/`t` key."""
     if clicked_key == current_key:
         return clicked_key, not current_reverse

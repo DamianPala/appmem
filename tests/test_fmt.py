@@ -3,12 +3,14 @@
 import pytest
 
 from appmem.fmt import (
+    ellipsize_middle,
     format_age,
     format_delta,
     format_elapsed,
     format_pair,
     pressure_word,
     size,
+    status_line_command,
     truncate_name,
 )
 
@@ -71,8 +73,14 @@ def test_pressure_none_bare_when_avg60_at_or_below_one_percent() -> None:
     assert pressure_word(some_avg10=0.5, some_avg60=1.0, full_avg10=0.0) == "none"
 
 
-def test_format_delta_zero_is_bare_zero() -> None:
-    assert format_delta(0) == "0"
+def test_format_delta_zero_is_dim_dot() -> None:
+    # |Δ| < 1 MiB renders as a dim `·` (final review F4/5.2), not a bare "0".
+    assert format_delta(0) == "·"
+
+
+def test_format_delta_under_one_mib_is_dim_dot() -> None:
+    assert format_delta(1024**2 - 1) == "·"
+    assert format_delta(-(1024**2 - 1)) == "·"
 
 
 def test_format_delta_positive_gets_plus_sign() -> None:
@@ -145,3 +153,40 @@ def test_truncate_name_caps_at_32_with_an_ellipsis() -> None:
 def test_truncate_name_exactly_at_cap_is_not_truncated() -> None:
     name = "x" * 32
     assert truncate_name(name) == name
+
+
+def test_ellipsize_middle_keeps_short_text_as_is() -> None:
+    assert ellipsize_middle("short", 32) == "short"
+
+
+def test_ellipsize_middle_cuts_the_middle() -> None:
+    assert ellipsize_middle("abcdefgh", 5) == "ab…gh"
+
+
+def test_ellipsize_middle_exactly_at_cap_is_not_truncated() -> None:
+    name = "x" * 10
+    assert ellipsize_middle(name, 10) == name
+
+
+def test_status_line_command_user_scope() -> None:
+    line = status_line_command("user", "app-ghostty.service", None, width=200)
+    assert line == "systemctl --user stop 'app-ghostty.service'"
+
+
+def test_status_line_command_system_scope() -> None:
+    line = status_line_command("system", "cups.service", None, width=200)
+    assert line == "sudo systemctl stop 'cups.service'"
+
+
+def test_status_line_command_adds_kill_pid_for_a_process_row() -> None:
+    line = status_line_command("user", "app-ghostty.service", 12345, width=200)
+    assert line == "systemctl --user stop 'app-ghostty.service'   kill 12345"
+
+
+def test_status_line_command_ellipsizes_unit_when_wider_than_terminal() -> None:
+    unit = "app-" + "x" * 60 + ".service"
+    line = status_line_command("user", unit, None, width=40)
+
+    assert len(line) <= 40
+    assert line.startswith("systemctl --user stop '")
+    assert "…" in line

@@ -42,9 +42,11 @@ def pressure_word(some_avg10: float, some_avg60: float, full_avg10: float) -> st
 
 
 def format_delta(num_bytes: int) -> str:
-    """Format a Δ byte count: ``+``/``-`` sign and size, or ``0`` for no change."""
-    if num_bytes == 0:
-        return "0"
+    """Format a Δ byte count: ``+``/``-`` sign and size, or ``·`` when
+    ``|num_bytes|`` is under 1 MiB -- noise at KiB granularity in the first
+    minutes (SPEC.md "Main view"; final review F4/5.2)."""
+    if abs(num_bytes) < _MIB:
+        return "·"
     sign = "+" if num_bytes > 0 else "-"
     return f"{sign}{size(abs(num_bytes))}"
 
@@ -102,3 +104,38 @@ def truncate_name(name: str, cap: int = 32) -> str:
     if len(name) <= cap:
         return name
     return name[: cap - 1] + "…"
+
+
+def ellipsize_middle(text: str, max_len: int) -> str:
+    """Shorten `text` to `max_len` characters by cutting its middle, e.g.
+    ``ellipsize_middle("abcdefgh", 5)`` -> ``"ab…gh"``.
+
+    Used for the process-view status line's unit name, which is otherwise
+    never truncated: only when the whole line is wider than the terminal
+    (SPEC.md "Process view"; final review F8/5.4).
+    """
+    if len(text) <= max_len:
+        return text
+    if max_len <= 1:
+        return "…"[:max_len]
+    keep = max_len - 1
+    left = (keep + 1) // 2
+    right = keep - left
+    return text[:left] + "…" + (text[len(text) - right :] if right else "")
+
+
+def status_line_command(scope: str, unit: str, pid: int | None, width: int) -> str:
+    """Build the process-view status line for a real unit/process row: the
+    ready-made stop command for its unit, plus `kill PID` when the selected
+    row is an actual process (SPEC.md "Process view"; final review F8/5.4).
+
+    The unit name is never truncated unless the whole line would be wider
+    than `width`, in which case only the unit name is ellipsized in the
+    middle -- the command stays intact and copyable either side of it.
+    """
+    prefix = "systemctl --user stop" if scope == "user" else "sudo systemctl stop"
+    suffix = f"   kill {pid}" if pid is not None else ""
+    overhead = len(prefix) + 3 + len(suffix)  # `" '"` + the closing `"'"`
+    if overhead + len(unit) <= width:
+        return f"{prefix} '{unit}'{suffix}"
+    return f"{prefix} '{ellipsize_middle(unit, max(width - overhead, 1))}'{suffix}"

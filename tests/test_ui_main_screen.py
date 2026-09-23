@@ -9,6 +9,7 @@ calling `MainScreen.refresh_now()` after mutating the fixture on disk.
 from __future__ import annotations
 
 import shutil
+from datetime import timedelta
 from pathlib import Path
 from typing import cast
 
@@ -234,7 +235,7 @@ async def test_z_resets_delta_to_zero(tmp_path: Path) -> None:
     root = _base_tree(tmp_path)
     _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
 
-    async with _app(root).run_test() as pilot:
+    async with _app(root).run_test(size=(120, 35)) as pilot:
         await pilot.pause()
         table = _table(pilot)
         screen = pilot.app.screen
@@ -244,12 +245,12 @@ async def test_z_resets_delta_to_zero(tmp_path: Path) -> None:
         screen.refresh_now()
         delta_before = table.get_cell(row_key("alpha", "user"), "delta_ram")
         assert isinstance(delta_before, Text)
-        assert delta_before.plain != "0"
+        assert delta_before.plain != "·"
 
         await pilot.press("z")
         delta_after = table.get_cell(row_key("alpha", "user"), "delta_ram")
         assert isinstance(delta_after, Text)
-        assert delta_after.plain == "0"
+        assert delta_after.plain == "·"
 
 
 @pytest.mark.asyncio
@@ -262,7 +263,7 @@ async def test_z_takes_a_fresh_sample_not_the_previous_ticks_data(tmp_path: Path
     root = _base_tree(tmp_path)
     _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
 
-    async with _app(root).run_test() as pilot:
+    async with _app(root).run_test(size=(120, 35)) as pilot:
         await pilot.pause()
         table = _table(pilot)
         screen = pilot.app.screen
@@ -281,7 +282,7 @@ async def test_z_takes_a_fresh_sample_not_the_previous_ticks_data(tmp_path: Path
 
         delta_after = table.get_cell(row_key("alpha", "user"), "delta_ram")
         assert isinstance(delta_after, Text)
-        assert delta_after.plain == "0"
+        assert delta_after.plain == "·"
 
 
 @pytest.mark.asyncio
@@ -500,3 +501,239 @@ async def test_transient_memory_stat_failure_skips_the_tick_and_keeps_last_data(
         assert _row_names(table) == ["alpha"]  # last known data stays on screen
 
     assert app.return_code is None  # the session is still running, not exited
+
+
+# --- 5.1: narrow terminals hide ΔSWAP/ΔRAM below 95 columns ---------------------
+
+
+@pytest.mark.asyncio
+async def test_delta_columns_hidden_below_95_columns(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        table = _table(pilot)
+
+        assert "delta_swap" not in table.columns
+        assert "delta_ram" not in table.columns
+
+
+@pytest.mark.asyncio
+async def test_delta_columns_shown_at_or_above_95_columns(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(120, 35)) as pilot:
+        await pilot.pause()
+        table = _table(pilot)
+
+        assert "delta_swap" in table.columns
+        assert "delta_ram" in table.columns
+
+
+@pytest.mark.asyncio
+async def test_delta_columns_recompute_on_resize(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(120, 35)) as pilot:
+        await pilot.pause()
+        table = _table(pilot)
+        assert "delta_ram" in table.columns
+
+        await pilot.resize_terminal(80, 24)
+        assert "delta_ram" not in table.columns
+
+        await pilot.resize_terminal(120, 35)
+        assert "delta_ram" in table.columns
+
+
+@pytest.mark.asyncio
+async def test_sorting_by_delta_hidden_by_width_falls_back_to_total_desc(tmp_path: Path) -> None:
+    # alpha: low TOTAL (1 MiB), bravo: high TOTAL (5 MiB); TOTAL-desc puts
+    # bravo first. Sort by ΔSWAP while wide, then narrow the terminal so the
+    # column (and thus the active sort) disappears.
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+    _app_unit(root, "app-bravo.service", ram=5 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(120, 35)) as pilot:
+        await pilot.pause()
+        table = _table(pilot)
+        await pilot.press("d")  # sort by ΔSWAP desc
+
+        await pilot.resize_terminal(80, 24)
+
+        assert _row_names(table) == ["bravo", "alpha"]  # TOTAL desc, not left on ΔSWAP
+
+
+@pytest.mark.asyncio
+async def test_d_is_a_noop_while_delta_columns_are_hidden(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.screen
+        assert isinstance(screen, MainScreen)
+
+        await pilot.press("d")
+
+        assert screen._sort_key == "total"  # pyright: ignore[reportPrivateUsage]
+
+
+# --- 5.1: header line never wraps, recomputed on resize -------------------------
+
+
+@pytest.mark.asyncio
+async def test_header_line1_recomputes_on_resize(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    write_memory_stat(user_service_root(tmp_path, UID))
+
+    async with _app(root).run_test(size=(200, 24)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.screen
+        assert isinstance(screen, MainScreen)
+        header1 = screen.query_one("#header1", Static)
+        wide_text = str(header1.content)
+
+        await pilot.resize_terminal(30, 24)
+        narrow_text = str(header1.content)
+
+        assert narrow_text != wide_text
+        assert len(narrow_text) <= len(wide_text)
+
+
+# --- 5.2: Δ columns render dim for small deltas and a young baseline -----------
+
+
+@pytest.mark.asyncio
+async def test_delta_cell_is_dim_while_baseline_is_young(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(120, 35)) as pilot:
+        await pilot.pause()
+        table = _table(pilot)
+
+        cell = table.get_cell(row_key("alpha", "user"), "delta_ram")
+        assert isinstance(cell, Text)
+        assert cell.plain == "·"  # baseline just taken: Δ is 0, under 1 MiB
+        assert cell.style == "dim"
+
+
+@pytest.mark.asyncio
+async def test_delta_cell_not_dim_once_baseline_is_old_and_delta_is_large(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(120, 35)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.screen
+        assert isinstance(screen, MainScreen)
+        screen._baseline_time -= timedelta(  # pyright: ignore[reportPrivateUsage]
+            seconds=120
+        )  # pretend the baseline is old
+
+        _app_unit(root, "app-alpha.service", ram=5 * 1024**2, swap=0)  # +4 MiB: not small
+        screen.refresh_now()
+
+        cell = _table(pilot).get_cell(row_key("alpha", "user"), "delta_ram")
+        assert isinstance(cell, Text)
+        assert cell.plain == "+4 MiB"
+        assert cell.style == ""
+
+
+@pytest.mark.asyncio
+async def test_delta_cell_undims_at_60s_even_when_its_text_is_unchanged(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(120, 35)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.screen
+        assert isinstance(screen, MainScreen)
+        _app_unit(root, "app-alpha.service", ram=5 * 1024**2, swap=0)
+        screen.refresh_now()  # "+4 MiB", still dim: the baseline is young
+        young = _table(pilot).get_cell(row_key("alpha", "user"), "delta_ram")
+        assert isinstance(young, Text)
+        assert (young.plain, young.style) == ("+4 MiB", "dim")
+
+        screen._baseline_time -= timedelta(seconds=120)  # pyright: ignore[reportPrivateUsage]
+        screen.refresh_now()  # same data, same text: only the style changes
+
+        cell = _table(pilot).get_cell(row_key("alpha", "user"), "delta_ram")
+        assert isinstance(cell, Text)
+        assert (cell.plain, cell.style) == ("+4 MiB", "")
+
+
+@pytest.mark.asyncio
+async def test_delta_cell_dim_dot_for_small_delta_even_once_seasoned(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(120, 35)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.screen
+        assert isinstance(screen, MainScreen)
+        screen._baseline_time -= timedelta(  # pyright: ignore[reportPrivateUsage]
+            seconds=120
+        )  # pretend the baseline is old
+
+        # A sub-1-MiB move: still "·", now for the small-delta reason, not youth.
+        _app_unit(root, "app-alpha.service", ram=(1024**2) + 500 * 1024, swap=0)
+        screen.refresh_now()
+
+        cell = _table(pilot).get_cell(row_key("alpha", "user"), "delta_ram")
+        assert isinstance(cell, Text)
+        assert cell.plain == "·"
+        assert cell.style == "dim"
+
+
+# --- 5.3: footer is present with key caps ---------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_footer_shows_key_caps(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test() as pilot:
+        await pilot.pause()
+        screen = pilot.app.screen
+        assert isinstance(screen, MainScreen)
+        footer = screen.query_one("#footer", Static)
+        content = footer.content
+        assert isinstance(content, Text)
+
+        text = content.plain
+        assert "sort" in text
+        assert "q quit" in text
+        s_index = text.index("s")
+        styles = [str(span.style) for span in content.spans if span.start <= s_index < span.end]
+        assert any("reverse" in style for style in styles)
+
+
+@pytest.mark.asyncio
+async def test_footer_drops_lowest_priority_items_at_60_columns(tmp_path: Path) -> None:
+    # Review round 1 open item 3: the footer never wraps. Below its natural
+    # width (72 cols) it drops items lowest priority first, keeping help and
+    # quit no matter how narrow.
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(60, 24)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.screen
+        assert isinstance(screen, MainScreen)
+        footer = screen.query_one("#footer", Static)
+        content = footer.content
+        assert isinstance(content, Text)
+
+        assert content.no_wrap is True
+        assert content.cell_len <= 60
+        assert "? help" in content.plain
+        assert "q quit" in content.plain
+        assert "reset Δ" not in content.plain  # lowest priority: dropped first
+        assert "cache" not in content.plain

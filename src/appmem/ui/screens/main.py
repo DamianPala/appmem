@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import ClassVar, cast
 
 from rich.text import Text
+from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.screen import Screen
@@ -36,6 +37,7 @@ from appmem.collect import find_units as collect_find_units
 from appmem.collect import read_unit as collect_read_unit
 from appmem.fmt import format_delta, size, truncate_name
 from appmem.ui.header import format_line1, format_line2
+from appmem.ui.layout import build_footer
 from appmem.ui.process_rows import initial_process_sort
 from appmem.ui.rows import (
     DEFAULT_SORT_KEY,
@@ -53,7 +55,25 @@ from appmem.ui.screens.help import HelpScreen
 from appmem.ui.screens.processes import ProcessesScreen
 from appmem.ui.table_order import reorder_rows
 
-FOOTER_TEXT = " s r t d sort  enter procs  x system  c cache  z reset Δ  ? help  q quit"
+# 5.3: key caps (reverse video); at full width the plain text is exactly
+# " s r t d sort  enter procs  x system  c cache  z reset Δ  ? help  q quit".
+_FOOTER_ITEMS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("s", "r", "t", "d"), "sort"),
+    (("enter",), "procs"),
+    (("x",), "system"),
+    (("c",), "cache"),
+    (("z",), "reset Δ"),
+    (("?",), "help"),
+    (("q",), "quit"),
+)
+# Review round 1 open item 3: below the footer's natural width, drop items
+# lowest priority first; `help` and `quit` are never in this list, so they
+# always stay.
+_FOOTER_DROP_ORDER = ("reset Δ", "cache", "system", "procs", "sort")
+
+# 5.1: below this width, ΔSWAP/ΔRAM are hidden (SPEC.md "Main view"; final
+# review F2). Re-shown above it.
+_NARROW_WIDTH = 95
 
 # Width `None` = auto: the APP column grows to the longest name (capped at 32 by
 # `truncate_name` in `_format_cell`), so short names are never cut short of that.
@@ -63,12 +83,13 @@ _BASE_COLUMNS: tuple[tuple[SortKey, str, int | None], ...] = (
     ("ram", "RAM", 10),
 )
 _CACHE_COLUMN: tuple[SortKey, str, int | None] = ("cache", "CACHE", 10)
-_TAIL_COLUMNS: tuple[tuple[SortKey, str, int | None], ...] = (
-    ("total", "TOTAL", 10),
+_TOTAL_COLUMN: tuple[SortKey, str, int | None] = ("total", "TOTAL", 10)
+_DELTA_COLUMNS: tuple[tuple[SortKey, str, int | None], ...] = (
     ("delta_swap", "ΔSWAP", 9),
     ("delta_ram", "ΔRAM", 9),
-    ("procs", "PROCS", 6),
 )
+_PROCS_COLUMN: tuple[SortKey, str, int | None] = ("procs", "PROCS", 6)
+_DELTA_KEYS = frozenset({"delta_swap", "delta_ram"})
 
 
 def _format_cell(key: SortKey, row: Row) -> str:
@@ -88,15 +109,6 @@ def _format_cell(key: SortKey, row: Row) -> str:
     if key == "delta_ram":
         return format_delta(row.delta_ram)
     return str(row.procs)  # "procs"
-
-
-def _cell_value(key: SortKey, row: Row) -> Text:
-    # Always a literal `Text`, never a plain `str`: `DataTable` renders a `str`
-    # cell through `Text.from_markup`, so an app name containing `[bold]`-style
-    # brackets would otherwise be parsed as markup instead of shown literally
-    # (SPEC.md "Behaviour details"; final review A11).
-    text = _format_cell(key, row)
-    return Text(text) if key == "app" else Text(text, justify="right")
 
 
 def _key_str(key: RowKey | ColumnKey) -> str:
@@ -139,14 +151,23 @@ class MainScreen(Screen[None]):
         self._rows: dict[str, Row] = {}
         self._last_apps: list[AppStats] = []
         self._timer: Timer | None = None
+        self._delta_columns_shown = True
+        self._young_baseline = True
+        self._delta_restyle_pending = False
+        self._last_stats: SystemStats | None = None
 
     def compose(self) -> ComposeResult:
+        self._delta_columns_shown = self._show_delta_columns()
         yield Static(id="header1")
         yield Static(id="header2")
         table: DataTable[str | Text] = DataTable(id="table", cursor_type="row")
         self._rebuild_columns(table)
         yield table
-        yield Static(FOOTER_TEXT, id="footer")
+        yield Static(self._footer_text(), id="footer")
+
+    def _footer_text(self) -> Text:
+        width = self.app.size.width  # pyright: ignore[reportUnknownMemberType]
+        return build_footer(_FOOTER_ITEMS, width=width, drop_order=_FOOTER_DROP_ORDER)
 
     def on_mount(self) -> None:
         self.refresh_now()
@@ -159,6 +180,13 @@ class MainScreen(Screen[None]):
 
     def on_screen_resume(self) -> None:
         self.refresh_now()  # no stale numbers after Esc from the process view
+
+    def on_resize(self, event: events.Resize) -> None:
+        # 5.1/5.3: header, columns and footer never wrap -- recompute on
+        # every resize, not just on the next tick.
+        self._update_header_line1()
+        self._sync_delta_columns()
+        self._update_footer()
 
     def _table(self) -> DataTable[str | Text]:
         # `isinstance()` (which `query_one` uses) rejects a parameterized generic,
@@ -204,6 +232,10 @@ class MainScreen(Screen[None]):
         apps = self._collect_apps()
         self._last_apps = apps
         self._baseline = update_baseline(apps, self._baseline)
+        young_now = self._baseline_age() < 60
+        if young_now != self._young_baseline:
+            self._delta_restyle_pending = True
+        self._young_baseline = young_now
         self._apply_rows(build_rows(apps, self._baseline))
         self._update_header(stats)
 
@@ -218,12 +250,33 @@ class MainScreen(Screen[None]):
             str(exc)
         )
 
+    def _baseline_age(self) -> float:
+        return (datetime.now() - self._baseline_time).total_seconds()
+
     def _update_header(self, stats: SystemStats) -> None:
-        self._set_static("#header1", format_line1(stats))
+        self._last_stats = stats
+        self._update_header_line1()
         self._update_header_line2()
+
+    def _update_header_line1(self) -> None:
+        if self._last_stats is None:
+            return
+        widget = self.query_one("#header1", Static)
+        content = format_line1(
+            self._last_stats,
+            self.app.size.width,  # pyright: ignore[reportUnknownMemberType]
+        )
+        if widget.content != content:
+            widget.update(content)
 
     def _update_header_line2(self) -> None:
         self._set_static("#header2", format_line2(self._baseline_time, datetime.now()))
+
+    def _update_footer(self) -> None:
+        widget = self.query_one("#footer", Static)
+        content = self._footer_text()
+        if widget.content != content:
+            widget.update(content)
 
     def _set_static(self, selector: str, text: str) -> None:
         # Skip unchanged text: every `update` costs a layout pass and a repaint.
@@ -233,11 +286,29 @@ class MainScreen(Screen[None]):
 
     # --- columns --------------------------------------------------------------
 
+    def _show_delta_columns(self) -> bool:
+        return self.app.size.width >= _NARROW_WIDTH  # pyright: ignore[reportUnknownMemberType]
+
+    def _sync_delta_columns(self) -> None:
+        show = self._show_delta_columns()
+        if show == self._delta_columns_shown:
+            return
+        self._delta_columns_shown = show
+        # The active sort column can go away with ΔSWAP/ΔRAM: fall back to the
+        # default sort instead of an invisible one (SPEC.md "Main view"; final
+        # review A5, extended to 5.1's width-based hiding).
+        if not show and self._sort_key in _DELTA_KEYS:
+            self._sort_key, self._sort_reverse = DEFAULT_SORT_KEY, DEFAULT_SORT_REVERSE
+        self._rebuild_table()
+
     def _column_specs(self) -> list[tuple[SortKey, str, int | None]]:
         specs = list(_BASE_COLUMNS)
         if self._show_cache:
             specs.append(_CACHE_COLUMN)
-        specs.extend(_TAIL_COLUMNS)
+        specs.append(_TOTAL_COLUMN)
+        if self._delta_columns_shown:
+            specs.extend(_DELTA_COLUMNS)
+        specs.append(_PROCS_COLUMN)
         return specs
 
     def _header_label(self, key: SortKey, label: str) -> str:
@@ -258,15 +329,33 @@ class MainScreen(Screen[None]):
 
     # --- row diffing ------------------------------------------------------------
 
-    def _row_cells(self, row: Row) -> list[str | Text]:
-        return [_cell_value(key, row) for key, _label, _width in self._column_specs()]
+    def _cell_value(self, key: SortKey, row: Row) -> Text:
+        # Always a literal `Text`, never a plain `str`: `DataTable` renders a `str`
+        # cell through `Text.from_markup`, so an app name containing `[bold]`-style
+        # brackets would otherwise be parsed as markup instead of shown literally
+        # (SPEC.md "Behaviour details"; final review A11).
+        text = _format_cell(key, row)
+        if key == "app":
+            return Text(text)
+        # 5.2: a Δ cell is dim while its glyph is the small-delta `·`, or while
+        # the whole baseline is still under 60 s old.
+        dim = key in _DELTA_KEYS and (text == "·" or self._young_baseline)
+        return Text(text, justify="right", style="dim" if dim else "")
 
-    def _update_row_cells(self, table: DataTable[str | Text], old: Row, row: Row) -> None:
+    def _row_cells(self, row: Row) -> list[str | Text]:
+        return [self._cell_value(key, row) for key, _label, _width in self._column_specs()]
+
+    def _update_row_cells(
+        self, table: DataTable[str | Text], old: Row, row: Row, *, force_delta_restyle: bool
+    ) -> None:
         # Only cells whose text changed: any `update_cell` invalidates the whole
         # DataTable render cache, so a no-op update still repaints every row.
+        # Δ cells are the one exception: the baseline crossing 60 s changes
+        # their dim style without necessarily changing their text.
         for key, _label, _width in self._column_specs():
-            if _format_cell(key, old) != _format_cell(key, row):
-                table.update_cell(row_key(row.name, row.scope), key, _cell_value(key, row))
+            restyle = force_delta_restyle and key in _DELTA_KEYS
+            if restyle or _format_cell(key, old) != _format_cell(key, row):
+                table.update_cell(row_key(row.name, row.scope), key, self._cell_value(key, row))
 
     def _current_selection(self, table: DataTable[str | Text]) -> tuple[str | None, int]:
         index = table.cursor_row
@@ -293,17 +382,33 @@ class MainScreen(Screen[None]):
         table = self._table()
         new_by_key = {row_key(row.name, row.scope): row for row in rows}
         previous_key, previous_index = self._current_selection(table)
+        force_delta_restyle = self._delta_restyle_pending
+        self._delta_restyle_pending = False
 
         for key in self._rows.keys() - new_by_key.keys():
             table.remove_row(key)
         for key, row in new_by_key.items():
             old = self._rows.get(key)
             if old is not None:
-                self._update_row_cells(table, old, row)
+                self._update_row_cells(table, old, row, force_delta_restyle=force_delta_restyle)
             else:
                 table.add_row(*self._row_cells(row), key=key)
         self._rows = new_by_key
 
+        self._resort(table)
+        self._restore_selection(table, previous_key, previous_index)
+
+    # --- table rebuilds -----------------------------------------------------------
+
+    def _rebuild_table(self) -> None:
+        """Rebuild the DataTable's columns and repopulate its rows after a
+        change to which columns are visible (CACHE toggle, Δ columns hidden or
+        shown by width), preserving sort and selection."""
+        table = self._table()
+        previous_key, previous_index = self._current_selection(table)
+        self._rebuild_columns(table)
+        for key, row in self._rows.items():
+            table.add_row(*self._row_cells(row), key=key)
         self._resort(table)
         self._restore_selection(table, previous_key, previous_index)
 
@@ -320,10 +425,12 @@ class MainScreen(Screen[None]):
         self._restore_selection(table, previous_key, previous_index)
 
     def action_sort(self, column: str) -> None:
-        self._set_sort(column)
+        if column in _DELTA_KEYS and not self._delta_columns_shown:
+            return  # `d` while ΔSWAP is hidden by width (5.1): no invisible sort
+        self._set_sort(cast("SortKey", column))
 
     def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
-        self._set_sort(_key_str(event.column_key))
+        self._set_sort(cast("SortKey", _key_str(event.column_key)))
 
     def action_toggle_cache(self) -> None:
         self._show_cache = not self._show_cache
@@ -332,13 +439,7 @@ class MainScreen(Screen[None]):
         # view"; final review A5).
         if not self._show_cache and self._sort_key == "cache":
             self._sort_key, self._sort_reverse = DEFAULT_SORT_KEY, DEFAULT_SORT_REVERSE
-        table = self._table()
-        previous_key, previous_index = self._current_selection(table)
-        self._rebuild_columns(table)
-        for key, row in self._rows.items():
-            table.add_row(*self._row_cells(row), key=key)
-        self._resort(table)
-        self._restore_selection(table, previous_key, previous_index)
+        self._rebuild_table()
 
     def action_toggle_system(self) -> None:
         self._show_system = not self._show_system
@@ -358,6 +459,9 @@ class MainScreen(Screen[None]):
         self._last_apps = apps
         self._baseline = reset_baseline(apps)
         self._baseline_time = datetime.now()
+        if not self._young_baseline:
+            self._delta_restyle_pending = True
+        self._young_baseline = True
         self._apply_rows(build_rows(apps, self._baseline))
         self._update_header_line2()
 
