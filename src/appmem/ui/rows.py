@@ -23,12 +23,13 @@ ever needs `str`."""
 DEFAULT_SORT_KEY: SortKey = "total"
 DEFAULT_SORT_REVERSE = True
 
-# Keys `s`/`r`/`t`/`d` (SPEC.md "Keys"); other columns sort by header click only.
+# Keys `s`/`r`/`t`/`d`/`z` (SPEC.md "Keys"); other columns sort by header click only.
 KEY_SORT_COLUMNS: dict[str, SortKey] = {
     "s": "swap",
     "r": "ram",
     "t": "total",
     "d": "delta_swap",
+    "z": "zswap",
 }
 
 
@@ -72,7 +73,7 @@ def update_baseline(
     starts its Δ at 0 instead of comparing against its old instance.
 
     Existing (still-present) entries are kept untouched: only `reset_baseline`
-    (key `z`, or startup) moves an already-known app's baseline forward.
+    (key `b`, or startup) moves an already-known app's baseline forward.
     """
     current = {_identity(app) for app in apps}
     updated = {identity: base for identity, base in baseline.items() if identity in current}
@@ -84,7 +85,7 @@ def update_baseline(
 
 
 def reset_baseline(apps: Iterable[AppStats]) -> dict[Identity, AppStats]:
-    """Baseline reset (`z`): every currently visible app's Δ starts counting from now."""
+    """Baseline reset (`b`): every currently visible app's Δ starts counting from now."""
     return {_identity(app): app for app in apps}
 
 

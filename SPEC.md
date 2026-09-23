@@ -1,4 +1,4 @@
-# appmem: spec v0.7
+# appmem: spec v0.8
 
 A live terminal view of RAM and swap usage **per application**, not per process.
 Think `btm` or `htop`, but rows are apps (Ghostty, Brave, LibreOffice), each summing all of its processes.
@@ -39,7 +39,7 @@ RAM 20.2/30.9 GiB (3.1 GiB shared)  avail 10.8 GiB (2.1 GiB free, 6.2 GiB cache,
  plasma                        1.6 GiB     2.3 GiB     3.9 GiB          ·          ·      17
  chrome                        1.6 GiB     2.2 GiB     3.7 GiB     -1 MiB          ·      35
  ...
- r s t d sort  enter procs  x system  c cache  w zswap  z reset Δ  T theme  ? help  q quit
+ r s t d z sort  enter procs  x system  c cache  w zswap  b reset Δ  T theme  ? help  q quit
 ```
 
 - **Header line 1** (parts joined by two spaces, each breakdown in parentheses sits inside the total it belongs to):
@@ -65,9 +65,10 @@ RAM 20.2/30.9 GiB (3.1 GiB shared)  avail 10.8 GiB (2.1 GiB free, 6.2 GiB cache,
 - Clicking the sorted column again flips the direction.
 - Rows with equal values keep a stable order by app name.
 - Δ below 1 MiB either way shows as a dim `·`; Δ columns render dim while the baseline is younger than 60 s.
-- Under 95 columns ΔSWAP and ΔRAM are hidden; sorting by a hidden column falls back to TOTAL descending.
+- With zswap enabled, the ZSWAP column is shown by default, between SWAP and TOTAL.
+- Under 95 columns ΔSWAP and ΔRAM are hidden, and under 85 ZSWAP is hidden too. Sorting by a hidden column falls back to TOTAL descending.
 - A footer with key caps sits at the bottom of every view and drops its lowest-priority items instead of wrapping. It shows only keys that act in the current view and mode, labelled by what they do there (e.g. `d` is absent while the Δ columns are hidden). `T theme` is the first item to drop.
-- Mouse-wheel scrolling stays where the user put it across refreshes: a tick restores the cursor without scrolling the viewport; only explicit actions (sort, toggles, `z`, drill in/out) scroll the selected row into view.
+- Mouse-wheel scrolling stays where the user put it across refreshes: a tick restores the cursor without scrolling the viewport; only explicit actions (sort, toggles, `b`, drill in/out) scroll the selected row into view.
 
 ### Process view (after Enter)
 
@@ -123,16 +124,16 @@ It covers what RAM, CACHE, SWAP, TOTAL, pressure and the header's shared/free/ca
 | Key | Action |
 |---|---|
 | click header | sort by that column, click again to reverse |
-| `r` / `s` / `t` / `d` | sort by RAM / SWAP / TOTAL / ΔSWAP (repeat to reverse); other columns sort by click |
+| `r` / `s` / `t` / `d` / `z` | sort by RAM / SWAP / TOTAL / ΔSWAP / ZSWAP (repeat to reverse); a key whose column is hidden is absent and does nothing; other columns sort by click |
 | `↑` `↓` `PgUp` `PgDn` | move |
 | `Enter` | open the process view for the selected app; in grouped mode, the processes of the selected command |
 | `g` | process view: toggle grouping by command |
 | `Esc` | back to the main view |
 | `c` | toggle the CACHE column |
-| `w` | toggle the ZSWAP column (main view, only while zswap is enabled) |
+| `w` | toggle the ZSWAP column (main view, only while zswap is enabled; the choice lasts for the session) |
 | `x` | toggle system services |
-| `z` | reset the Δ baseline to now |
-| `T` / `Ctrl+P` → Theme | theme picker (all views); the chosen theme is saved |
+| `b` | reset the Δ baseline to now |
+| `T` / `Ctrl+P` → Theme | theme picker (all views), opening on the current theme, marked `✓`; the chosen theme is saved |
 | `?` | help screen |
 | `q` / `Ctrl+C` | quit |
 
@@ -180,7 +181,7 @@ Login-session scopes (`user-$UID.slice/session-N.scope`: the display manager hel
   `kernel` is page tables, slab and kernel stacks charged to the app (tens of MiB for a browser).
 - **CACHE = file - shmem.** Reclaimable page cache. Hidden by default, and never part of TOTAL.
 - **SWAP = memory.swap.current.** With zswap enabled this includes pages held compressed in RAM.
-- **ZSWAP = zswapped** (optional column, `w`): the part of the app's SWAP held compressed in RAM, not extra memory. The RAM the compressed pool takes is charged to the app as `kernel` memory, so it is already inside its RAM (verified live).
+- **ZSWAP = zswapped** (shown by default while zswap is enabled, `w` toggles): the part of the app's SWAP held compressed in RAM, not extra memory. The RAM the compressed pool takes is charged to the app as `kernel` memory, so it is already inside its RAM (verified live).
 - **TOTAL = SWAP + RAM.**
 - **Per-process RAM and SWAP** come from `/proc/PID/status`, the same numbers htop uses. They are readable for every process, including sandboxed browser processes and other users' processes.
   They don't add up to the app row, for two reasons. A shared page counts once in every process that maps it, so rows can add up to more than the app. Memory the app holds without any process mapping it (GPU buffers, memfd, tmpfs) belongs to no process, so rows can fall short. The `kernel` and `unattributed` rows show the gap.
@@ -192,7 +193,7 @@ Login-session scopes (`user-$UID.slice/session-N.scope`: the display manager hel
 
   Big swap with pressure `none` means idle pages were paged out, and memory is not why the machine is slow right now.
 - **App identity** is (scope, name): a user app and a system service with the same name are separate rows, and system rows show as `name [sys]`.
-- **Δ** is the change since the baseline shown in the header: appmem start, or the last `z`. Apps that appear later count from their first sample.
+- **Δ** is the change since the baseline shown in the header: appmem start, or the last `b`. Apps that appear later count from their first sample.
 
 ## Grouping: unit → app name
 
@@ -273,7 +274,7 @@ Splitting terminal children into their own main-view rows is v2.
 - A tick whose reads fail transiently (`memory.stat` missing, any `OSError`, a parse error from a half-written `/proc` or `/sys` file) is skipped; the screen keeps the last data and the next tick recovers. Errors while applying the data to the screen are bugs and still end the app. Only a missing user tree ends the app as a runtime failure.
 - The cursor follows the selected app across refreshes and re-sorts. If that app disappears, the cursor stays at the same row index, or on the last row.
 - Names (apps, processes, units, titles, status line) show C0/C1 control characters escaped (`\x1b[41m`), in the live view as in the text reports; nothing a process or unit is called can write to the terminal.
-- Widths count terminal cells, not characters: names are cut at 32 cells with `…` and a wide character is never split. No line of any view wraps at any width; below about 70 columns the name column shrinks so the numeric columns stay whole.
+- Widths count terminal cells, not characters: names are cut at 32 cells with `…` and a wide character is never split. No line of any view wraps at any width. In the main view, the APP column takes only the width left after the numeric columns (capped at 32, never below 8), at every width and again when a scrollbar appears, so numbers are never cut; long names get `…` first.
 - Periodic reads run off the UI thread, one at a time per screen; keys stay responsive while a read is slow, and a result read for a view the user has since left is dropped.
 
 ## Command line

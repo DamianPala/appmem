@@ -20,6 +20,7 @@ from textual.binding import Binding, BindingType
 
 from appmem.theme import TEXTUAL_BUILTIN_DEFAULT, config_path, write_config_theme
 from appmem.ui.screens.main import MainScreen
+from appmem.ui.theme_picker import MarkedThemeProvider, ThemePalette
 
 
 class AppMemApp(App[None]):
@@ -32,13 +33,12 @@ class AppMemApp(App[None]):
         # quit" notice binding (SPEC.md: "Ctrl+C typed in the TUI is a key and
         # quits with exit 0").
         Binding("ctrl+c", "quit", "quit", show=False, priority=True),
-        # `action_change_theme` (inherited from `App`) opens Textual's own
-        # theme picker -- a `CommandPalette` scoped to `ThemeProvider`, which
-        # only ever lists `App.available_themes` (the built-ins here, since
-        # nothing registers a custom one). Bound at the app level, not on a
-        # screen, so it works the same from the main view and the process
-        # view (SPEC.md "Command line"). `T`, not `t`: that stays "sort
-        # TOTAL" on both screens.
+        # `action_change_theme` (inherited from `App`) calls `search_themes`
+        # (overridden below) to open the picker -- scoped to `ThemeProvider`
+        # (the built-ins here, since nothing registers a custom one). Bound
+        # at the app level, not on a screen, so it works the same from the
+        # main view and the process view (SPEC.md "Command line"). `T`, not
+        # `t`: that stays "sort TOTAL" on both screens.
         Binding("T", "change_theme", "theme", show=False),
     ]
 
@@ -79,13 +79,23 @@ class AppMemApp(App[None]):
         for message in self._startup_theme_warnings:
             self.notify(message, severity="warning", timeout=8)
 
+    def search_themes(self) -> None:
+        # Overrides `App.search_themes`, which `action_change_theme` (`T`,
+        # and Ctrl+P -> Theme, SPEC.md "Command line") calls either way:
+        # pushes `ThemePalette` (opens on the current theme, marks it)
+        # instead of Textual's own `CommandPalette`/`ThemeProvider` pair,
+        # otherwise unchanged -- same fuzzy search, same full theme list,
+        # same apply-and-close on Enter (see `theme_picker.py`).
+        self.push_screen(
+            ThemePalette(providers=[MarkedThemeProvider], placeholder="Search for themes…")
+        )
+
     def watch_theme(self, old_theme: str, new_theme: str) -> None:
         # Fires for the startup assignment above too (guarded off by
-        # `_theme_ready`) and for `action_change_theme`'s picker, which only
-        # ever sets `App.theme` once, on Enter -- Textual's own
-        # `CommandPalette`/`ThemeProvider` has no live-preview-on-highlight
-        # in this version, so Esc (which never touches `App.theme`) already
-        # "reverts and writes nothing" for free.
+        # `_theme_ready`) and for the picker above, which only ever sets
+        # `App.theme` once, on Enter -- Textual's `CommandPalette` has no
+        # live-preview-on-highlight in this version, so Esc (which never
+        # touches `App.theme`) already "reverts and writes nothing" for free.
         if not self._theme_ready:
             return
         self._persist_theme(new_theme)

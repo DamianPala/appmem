@@ -22,6 +22,8 @@ from rich.cells import cell_len
 from rich.text import Text
 from textual import events
 from textual.color import Color
+from textual.command import Command, CommandList
+from textual.content import Content
 from textual.coordinate import Coordinate
 from textual.pilot import Pilot
 from textual.theme import BUILTIN_THEMES
@@ -36,6 +38,7 @@ from appmem.ui.rows import row_key
 from appmem.ui.screens import main as main_screen
 from appmem.ui.screens.help import HelpScreen
 from appmem.ui.screens.main import MainScreen
+from appmem.ui.theme_picker import ThemePalette
 from helpers import (
     make_unit,
     user_service_root,
@@ -267,15 +270,45 @@ async def test_c_toggles_the_cache_column(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_w_toggles_the_zswap_column(tmp_path: Path) -> None:
+async def test_zswap_column_shown_by_default_when_enabled(tmp_path: Path) -> None:
     root = _zswap_base_tree(tmp_path)
     # zswapped <= swap always: the compressed pool is a subset of the unit's
     # swap, never more.
     _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=5 * 1024**2, zswapped=5 * 1024**2)
 
+    async with _app(root).run_test(size=(120, 35)) as pilot:  # >= _ZSWAP_MIN_WIDTH
+        await pilot.pause()
+        table = _table(pilot)
+
+        assert "zswap" in table.columns  # shown from the first tick, no `w` needed
+        zswap_cell = table.get_cell(row_key("alpha", "user"), "zswap")
+        assert isinstance(zswap_cell, Text)
+        assert zswap_cell.plain == "5 MiB"
+
+
+@pytest.mark.asyncio
+async def test_zswap_column_absent_when_disabled(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)  # no zswap fixtures: disabled/unsupported
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
     async with _app(root).run_test() as pilot:
         await pilot.pause()
         table = _table(pilot)
+
+        assert "zswap" not in table.columns
+
+
+@pytest.mark.asyncio
+async def test_w_toggles_the_zswap_column(tmp_path: Path) -> None:
+    root = _zswap_base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=5 * 1024**2, zswapped=5 * 1024**2)
+
+    async with _app(root).run_test(size=(120, 35)) as pilot:  # >= _ZSWAP_MIN_WIDTH
+        await pilot.pause()
+        table = _table(pilot)
+        assert "zswap" in table.columns  # shown by default
+
+        await pilot.press("w")
         assert "zswap" not in table.columns
 
         await pilot.press("w")
@@ -283,9 +316,6 @@ async def test_w_toggles_the_zswap_column(tmp_path: Path) -> None:
         zswap_cell = table.get_cell(row_key("alpha", "user"), "zswap")
         assert isinstance(zswap_cell, Text)
         assert zswap_cell.plain == "5 MiB"
-
-        await pilot.press("w")
-        assert "zswap" not in table.columns
 
 
 @pytest.mark.asyncio
@@ -300,6 +330,100 @@ async def test_w_does_nothing_when_zswap_is_disabled(tmp_path: Path) -> None:
         await pilot.press("w")
 
         assert "zswap" not in table.columns
+
+
+# --- ZSWAP hides below its own width threshold, on top of `w`/zswap-off --------
+
+
+@pytest.mark.asyncio
+async def test_zswap_column_hidden_below_85_columns(tmp_path: Path) -> None:
+    root = _zswap_base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=1 * 1024**2, zswapped=1 * 1024**2)
+
+    async with _app(root).run_test(size=(84, 24)) as pilot:
+        await pilot.pause()
+        table = _table(pilot)
+
+        assert "zswap" not in table.columns
+
+
+@pytest.mark.asyncio
+async def test_zswap_column_shown_at_85_columns(tmp_path: Path) -> None:
+    root = _zswap_base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=1 * 1024**2, zswapped=1 * 1024**2)
+
+    async with _app(root).run_test(size=(85, 24)) as pilot:
+        await pilot.pause()
+        table = _table(pilot)
+
+        assert "zswap" in table.columns
+
+
+@pytest.mark.asyncio
+async def test_zswap_column_recomputes_on_resize(tmp_path: Path) -> None:
+    root = _zswap_base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=1 * 1024**2, zswapped=1 * 1024**2)
+
+    async with _app(root).run_test(size=(120, 35)) as pilot:
+        await pilot.pause()
+        table = _table(pilot)
+        assert "zswap" in table.columns
+
+        await pilot.resize_terminal(80, 24)
+        assert "zswap" not in table.columns
+
+        await pilot.resize_terminal(120, 35)
+        assert "zswap" in table.columns
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("width", [85, 90, 100, 110])
+async def test_numeric_columns_fit_on_screen_with_zswap_and_a_32_char_name(
+    tmp_path: Path, width: int
+) -> None:
+    # A name at the 32-char truncation cap, with ZSWAP on: the APP column
+    # must shrink (toward `_APP_MIN_WIDTH` if needed) at every one of these
+    # widths so every numeric column stays fully on screen instead of being
+    # pushed past the terminal edge (SPEC.md "Main view"). Before this,
+    # `_app_column_width` only shrank APP below a fixed 70-column threshold,
+    # so ZSWAP (default on from 85) pushed PROCS off at 85-89, and ΔSWAP/
+    # PROCS (shown from 95) off at 95-110. 100 and 110 are also above the Δ
+    # threshold, so this covers ZSWAP + Δ together, the densest column set.
+    root = _zswap_base_tree(tmp_path)
+    name = "x" * 32
+    _app_unit(root, f"{name}.service", ram=1 * 1024**2, swap=1 * 1024**2, zswapped=1 * 1024**2)
+
+    async with _app(root).run_test(size=(width, 24)) as pilot:
+        await pilot.pause()
+        table = _table(pilot)
+        assert "zswap" in table.columns
+        assert ("delta_swap" in table.columns) == (width >= 95)
+        for key in ("ram", "swap", "zswap", "total", "procs"):
+            idx = table.get_column_index(key)
+            region = table._get_column_region(idx)  # pyright: ignore[reportPrivateUsage]
+            assert region.right <= table.size.width, (key, region, table.size.width)
+
+
+@pytest.mark.asyncio
+async def test_numeric_columns_still_fit_when_new_rows_bring_a_scrollbar(tmp_path: Path) -> None:
+    # No resize happens when enough apps appear to need a vertical scrollbar,
+    # yet it narrows the width the APP column was budgeted against.
+    root = _zswap_base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(85, 20)) as pilot:
+        await pilot.pause()
+        table = _table(pilot)
+        for i in range(40):
+            _app_unit(root, f"app-n{i:02d}.service", ram=1 * 1024**2, swap=0)
+        screen = pilot.app.screen
+        assert isinstance(screen, MainScreen)
+        screen.refresh_now()
+        await pilot.pause()
+
+        assert table.scrollbar_size_vertical > 0
+        region = table._get_column_region(table.get_column_index("procs"))  # pyright: ignore[reportPrivateUsage]
+        assert region.right <= table.scrollable_content_region.width
 
 
 @pytest.mark.asyncio
@@ -317,7 +441,7 @@ async def test_hiding_zswap_while_sorted_by_it_falls_back_to_total_desc(tmp_path
         screen = pilot.app.screen
         assert isinstance(screen, MainScreen)
 
-        await pilot.press("w")  # show ZSWAP
+        # ZSWAP is already shown by default; sort by it (a header click, or `z`).
         header_event = DataTable.HeaderSelected(table, ColumnKey("zswap"), 1, Text("ZSWAP"))
         screen.on_data_table_header_selected(header_event)  # explicit sort by ZSWAP desc
         assert _row_names(table) == ["alpha", "bravo"]
@@ -337,13 +461,13 @@ async def test_zswap_disabled_mid_session_hides_the_shown_column_and_falls_back_
     root = _zswap_base_tree(tmp_path)
     _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=1 * 1024**2, zswapped=1 * 1024**2)
 
-    async with _app(root).run_test() as pilot:
+    async with _app(root).run_test(size=(120, 35)) as pilot:  # >= _ZSWAP_MIN_WIDTH
         await pilot.pause()
         table = _table(pilot)
         screen = pilot.app.screen
         assert isinstance(screen, MainScreen)
 
-        await pilot.press("w")  # show ZSWAP
+        # ZSWAP is already shown by default; sort by it.
         header_event = DataTable.HeaderSelected(table, ColumnKey("zswap"), 1, Text("ZSWAP"))
         screen.on_data_table_header_selected(header_event)  # sort by it
         assert "zswap" in table.columns
@@ -354,6 +478,9 @@ async def test_zswap_disabled_mid_session_hides_the_shown_column_and_falls_back_
 
         assert "zswap" not in table.columns
         assert screen._sort_key != "zswap"  # pyright: ignore[reportPrivateUsage]
+        footer = screen.query_one("#footer", Static).content
+        assert isinstance(footer, Text)
+        assert "r s t d sort" in footer.plain  # `z` left the sort item with the column
 
         await pilot.press("w")  # a no-op again, same as before zswap ever turned on
         assert "zswap" not in table.columns
@@ -411,8 +538,7 @@ async def test_column_order_with_cache_and_zswap_shown_is_ram_swap_cache_zswap_t
 
     async with _app(root).run_test(size=(120, 35)) as pilot:
         await pilot.pause()
-        await pilot.press("c")
-        await pilot.press("w")
+        await pilot.press("c")  # ZSWAP is already shown by default
         table = _table(pilot)
         keys = [column.key.value for column in table.ordered_columns]
 
@@ -462,7 +588,7 @@ async def test_x_toggles_system_rows(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_z_resets_delta_to_zero(tmp_path: Path) -> None:
+async def test_b_resets_delta_to_zero(tmp_path: Path) -> None:
     root = _base_tree(tmp_path)
     _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
 
@@ -478,17 +604,42 @@ async def test_z_resets_delta_to_zero(tmp_path: Path) -> None:
         assert isinstance(delta_before, Text)
         assert delta_before.plain != "·"
 
-        await pilot.press("z")
+        await pilot.press("b")
         delta_after = table.get_cell(row_key("alpha", "user"), "delta_ram")
         assert isinstance(delta_after, Text)
         assert delta_after.plain == "·"
 
 
 @pytest.mark.asyncio
-async def test_z_takes_a_fresh_sample_not_the_previous_ticks_data(tmp_path: Path) -> None:
-    # `test_z_resets_delta_to_zero` above passes even if `z` reuses
+async def test_z_no_longer_resets_delta(tmp_path: Path) -> None:
+    # `b` took over "reset Δ" from `z`, which now sorts by ZSWAP instead
+    # (SPEC.md "Main view"): pressing it must leave the baseline untouched.
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(120, 35)) as pilot:
+        await pilot.pause()
+        table = _table(pilot)
+        screen = pilot.app.screen
+        assert isinstance(screen, MainScreen)
+
+        _app_unit(root, "app-alpha.service", ram=5 * 1024**2, swap=0)
+        screen.refresh_now()
+        delta_before = table.get_cell(row_key("alpha", "user"), "delta_ram")
+        assert isinstance(delta_before, Text)
+        assert delta_before.plain != "·"
+
+        await pilot.press("z")  # a no-op here: the ZSWAP column is hidden (zswap is off)
+        delta_after = table.get_cell(row_key("alpha", "user"), "delta_ram")
+        assert isinstance(delta_after, Text)
+        assert delta_after.plain == delta_before.plain  # untouched, not reset
+
+
+@pytest.mark.asyncio
+async def test_b_takes_a_fresh_sample_not_the_previous_ticks_data(tmp_path: Path) -> None:
+    # `test_b_resets_delta_to_zero` above passes even if `b` reuses
     # `self._last_apps` from the previous tick, because nothing changes on
-    # disk between `z` and the assertion. Here the fixture keeps moving after
+    # disk between `b` and the assertion. Here the fixture keeps moving after
     # the last tick, so a stale baseline and a fresh one disagree.
     root = _base_tree(tmp_path)
     _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
@@ -503,7 +654,7 @@ async def test_z_takes_a_fresh_sample_not_the_previous_ticks_data(tmp_path: Path
         screen.refresh_now()  # the screen's last tick sampled 5 MiB
 
         _app_unit(root, "app-alpha.service", ram=9 * 1024**2, swap=0)  # moves again, no tick yet
-        await pilot.press("z")  # must sample fresh (9 MiB), not reuse the 5 MiB tick
+        await pilot.press("b")  # must sample fresh (9 MiB), not reuse the 5 MiB tick
         screen.refresh_now()  # disk value unchanged: a stale (5 MiB) baseline would show +4 MiB
 
         ram_cell = table.get_cell(row_key("alpha", "user"), "ram")
@@ -977,6 +1128,88 @@ async def test_d_is_a_noop_while_delta_columns_are_hidden(tmp_path: Path) -> Non
         assert screen._sort_key == "total"  # pyright: ignore[reportPrivateUsage]
 
 
+# --- `z` sorts by ZSWAP, inert while that column is hidden ----------------------
+
+
+@pytest.mark.asyncio
+async def test_z_sorts_by_zswap_and_reverses(tmp_path: Path) -> None:
+    root = _zswap_base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=0, swap=1 * 1024**2, zswapped=1 * 1024**2)
+    _app_unit(root, "app-bravo.service", ram=0, swap=3 * 1024**2, zswapped=3 * 1024**2)
+
+    async with _app(root).run_test(size=(120, 35)) as pilot:
+        await pilot.pause()
+        table = _table(pilot)
+
+        await pilot.press("z")  # ZSWAP desc
+        assert _row_names(table) == ["bravo", "alpha"]
+
+        await pilot.press("z")  # repeat: reverses
+        assert _row_names(table) == ["alpha", "bravo"]
+
+
+@pytest.mark.asyncio
+async def test_sorting_by_zswap_hidden_by_width_falls_back_to_total_desc(tmp_path: Path) -> None:
+    root = _zswap_base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=9 * 1024**2, zswapped=9 * 1024**2)
+    _app_unit(root, "app-bravo.service", ram=20 * 1024**2, swap=0, zswapped=0)
+
+    async with _app(root).run_test(size=(120, 35)) as pilot:
+        await pilot.pause()
+        table = _table(pilot)
+        await pilot.press("z")  # sort by ZSWAP desc
+
+        await pilot.resize_terminal(84, 24)  # below `_ZSWAP_MIN_WIDTH`
+
+        assert _row_names(table) == ["bravo", "alpha"]  # TOTAL desc, not left on ZSWAP
+
+
+@pytest.mark.asyncio
+async def test_z_is_a_noop_while_zswap_hidden_by_width(tmp_path: Path) -> None:
+    root = _zswap_base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(84, 24)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.screen
+        assert isinstance(screen, MainScreen)
+
+        await pilot.press("z")
+
+        assert screen._sort_key == "total"  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.asyncio
+async def test_z_is_a_noop_while_zswap_hidden_by_w(tmp_path: Path) -> None:
+    root = _zswap_base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(120, 35)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.screen
+        assert isinstance(screen, MainScreen)
+        await pilot.press("w")  # hide it (shown by default)
+
+        await pilot.press("z")
+
+        assert screen._sort_key == "total"  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.asyncio
+async def test_z_is_a_noop_while_zswap_is_off(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)  # no zswap fixtures: disabled/unsupported
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(120, 35)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.screen
+        assert isinstance(screen, MainScreen)
+
+        await pilot.press("z")
+
+        assert screen._sort_key == "total"  # pyright: ignore[reportPrivateUsage]
+
+
 # --- header line never wraps, recomputed on resize -------------------------------
 
 
@@ -1205,6 +1438,41 @@ async def test_sort_footer_item_drops_d_key_below_95_columns(tmp_path: Path) -> 
         content = footer.content
         assert isinstance(content, Text)
         assert "r s t d sort" in content.plain
+
+
+@pytest.mark.asyncio
+async def test_sort_footer_item_includes_z_only_while_zswap_is_shown(tmp_path: Path) -> None:
+    root = _zswap_base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(120, 35)) as pilot:
+        await pilot.pause()
+        footer = pilot.app.screen.query_one("#footer", Static)
+        content = footer.content
+        assert isinstance(content, Text)
+        assert "r s t d z sort" in content.plain  # ZSWAP shown by default
+
+        await pilot.press("w")  # hide it
+        await pilot.pause()
+        footer = pilot.app.screen.query_one("#footer", Static)
+        content = footer.content
+        assert isinstance(content, Text)
+        assert "r s t d sort" in content.plain
+        assert "z" not in content.plain.split("sort")[0]
+
+
+@pytest.mark.asyncio
+async def test_footer_shows_b_reset_delta_not_z(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        footer = pilot.app.screen.query_one("#footer", Static)
+        content = footer.content
+        assert isinstance(content, Text)
+        assert "b reset Δ" in content.plain
+        assert "z reset Δ" not in content.plain
 
 
 # --- control characters never reach the terminal --------------------------------
@@ -1735,3 +2003,211 @@ async def test_write_failure_notifies_and_the_app_keeps_running(tmp_path: Path) 
         screen = pilot.app.screen
         assert isinstance(screen, MainScreen)
         assert "alpha" in _row_names(_table(pilot))
+
+
+# --- picker opens on the current theme, marked ----------------------------------
+
+
+def _prompt_text(option: Command) -> str:
+    """An option's rendered prompt as plain text: `Command.prompt` is a
+    `Content` in practice (built by `CommandPalette._gather_commands`), but
+    typed as the broader `VisualType`, hence the `isinstance` narrowing
+    rather than a bare `.plain` access."""
+    prompt = option.prompt
+    return prompt.plain if isinstance(prompt, Content) else str(prompt)
+
+
+def _highlighted_theme(palette: ThemePalette) -> tuple[str | None, str]:
+    """`(theme name, its rendered prompt text)` of the picker's highlighted
+    row, or `(None, "")` if nothing is highlighted."""
+    command_list = palette.query_one(CommandList)
+    option = command_list.highlighted_option
+    if not isinstance(option, Command):
+        return None, ""
+    return option.hit.text, _prompt_text(option)
+
+
+@pytest.mark.asyncio
+async def test_picker_opens_with_the_cursor_on_the_current_theme(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    app = AppMemApp(
+        root=root, uid=UID, interval=NO_AUTO_REFRESH_INTERVAL, include_system=False, theme="dracula"
+    )
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+
+        await pilot.press("T")
+        await pilot.pause()
+
+        screen = pilot.app.screen
+        assert isinstance(screen, ThemePalette)
+        name, prompt = _highlighted_theme(screen)
+        assert name == "dracula"
+        assert prompt == "✓ dracula"
+
+
+@pytest.mark.asyncio
+async def test_picker_via_ctrl_p_theme_also_opens_on_the_current_theme(tmp_path: Path) -> None:
+    # `T` and Ctrl+P -> Theme both call `App.search_themes` (SPEC.md
+    # "Command line"): this covers the second entry point.
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    app = AppMemApp(
+        root=root, uid=UID, interval=NO_AUTO_REFRESH_INTERVAL, include_system=False, theme="nord"
+    )
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        await pilot.press(*"Theme")
+        await pilot.pause()
+        await pilot.press("enter")  # select the "Theme" system command
+        await pilot.pause()
+
+        screen = pilot.app.screen
+        assert isinstance(screen, ThemePalette)
+        name, prompt = _highlighted_theme(screen)
+        assert name == "nord"
+        assert prompt == "✓ nord"
+
+
+@pytest.mark.asyncio
+async def test_picker_cursor_moves_with_a_new_pick(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        assert pilot.app.theme != "dracula"
+
+        await pilot.press("T")
+        await pilot.pause()
+        await pilot.press(*"dracula")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert pilot.app.theme == "dracula"
+
+        await pilot.press("T")  # reopen: the cursor follows the just-made pick
+        await pilot.pause()
+        screen = pilot.app.screen
+        assert isinstance(screen, ThemePalette)
+        name, prompt = _highlighted_theme(screen)
+        assert name == "dracula"
+        assert prompt == "✓ dracula"
+
+
+@pytest.mark.asyncio
+async def test_picker_cursor_on_a_config_theme_after_restart(tmp_path: Path) -> None:
+    # A theme resolved from the config file (or `--theme`/`APPMEM_THEME`) is
+    # `App.theme` before the picker ever opens, same as an in-app pick --
+    # `search_themes` reads `self.app.theme` fresh, so no separate wiring is
+    # needed for "restart with a config theme" to work.
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+    config_path().parent.mkdir(parents=True)
+    config_path().write_text('theme = "gruvbox"\n')
+
+    app = AppMemApp(
+        root=root,
+        uid=UID,
+        interval=NO_AUTO_REFRESH_INTERVAL,
+        include_system=False,
+        theme="gruvbox",
+        config_theme="gruvbox",
+    )
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        assert pilot.app.theme == "gruvbox"
+
+        await pilot.press("T")
+        await pilot.pause()
+
+        screen = pilot.app.screen
+        assert isinstance(screen, ThemePalette)
+        name, prompt = _highlighted_theme(screen)
+        assert name == "gruvbox"
+        assert prompt == "✓ gruvbox"
+
+
+@pytest.mark.asyncio
+async def test_picker_marks_only_the_current_theme(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    app = AppMemApp(
+        root=root, uid=UID, interval=NO_AUTO_REFRESH_INTERVAL, include_system=False, theme="dracula"
+    )
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+
+        await pilot.press("T")
+        await pilot.pause()
+
+        screen = pilot.app.screen
+        assert isinstance(screen, ThemePalette)
+        command_list = screen.query_one(CommandList)
+        marks: list[str | None] = []
+        for index in range(command_list.option_count):
+            option = command_list.get_option_at_index(index)
+            assert isinstance(option, Command)
+            if _prompt_text(option).startswith("✓"):
+                marks.append(option.hit.text)
+        assert marks == ["dracula"]  # exactly one mark, on the current theme
+
+
+@pytest.mark.asyncio
+async def test_picker_search_keeps_the_fuzzy_match_highlight(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        await pilot.press("T", *"drac")
+        await pilot.pause()
+
+        screen = pilot.app.screen
+        assert isinstance(screen, ThemePalette)
+        option = screen.query_one(CommandList).get_option_at_index(0)
+        assert isinstance(option, Command)
+        assert isinstance(option.prompt, Content)
+        assert option.prompt.plain == "  dracula"
+        assert option.prompt.spans  # the matched letters stay highlighted after the mark
+
+
+@pytest.mark.asyncio
+async def test_picker_still_previews_confirms_and_cancels_as_before(tmp_path: Path) -> None:
+    # The cursor-on-current-theme change must not touch the rest of the
+    # picker's behaviour (SPEC.md "Command line"): typed search still
+    # filters, Enter still applies and persists, Esc still cancels and
+    # writes nothing -- this is `test_t_opens_the_picker_...`/
+    # `test_esc_in_the_picker_...` above, just via the new `ThemePalette`.
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        before = pilot.app.theme
+
+        await pilot.press("T")
+        await pilot.pause()
+        assert isinstance(pilot.app.screen, ThemePalette)
+        await pilot.press(*"dracula")  # typed filter still narrows the list
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+        assert pilot.app.theme == before  # Esc: cancelled, nothing applied
+        assert not config_path().exists()
+
+        await pilot.press("T")
+        await pilot.pause()
+        await pilot.press(*"dracula")
+        await pilot.pause()
+        await pilot.press("enter")  # Enter: applies and persists
+        await pilot.pause()
+        assert pilot.app.theme == "dracula"
+        assert config_path().read_text() == 'theme = "dracula"\n'

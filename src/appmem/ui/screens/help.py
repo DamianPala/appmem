@@ -90,7 +90,7 @@ _PRESSURE_NOTE = (
 )
 
 _DELTA_NOTE = (
-    "Δ is the change since the baseline: appmem start, or the last z. Apps that "
+    "Δ is the change since the baseline: appmem start, or the last b. Apps that "
     "appear later count from their first sample; an app that closes and reopens "
     "starts a fresh Δ instead of comparing against its old instance."
 )

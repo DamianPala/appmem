@@ -74,18 +74,19 @@ Run `appmem schema` for the full machine-readable interface, or
 
 Keys:
   click header         sort by that column, click again to reverse
-  r / s / t / d        sort by RAM / SWAP / TOTAL / ΔSWAP (repeat to reverse);
-                       other columns sort by click
+  r / s / t / d / z    sort by RAM / SWAP / TOTAL / ΔSWAP / ZSWAP (repeat to reverse;
+                       z only where the ZSWAP column is shown); other columns sort by click
   up/down PgUp PgDn    move
   Enter                open the process view for the selected app;
                        grouped: the processes of the selected command
   g                    process view: toggle grouping by command
   Esc                  back to the main view
   c                    toggle the CACHE column
-  w                    toggle the ZSWAP column (only where zswap is on)
+  w                    toggle the ZSWAP column (shown by default where zswap is on)
   x                    toggle system services
-  z                    reset the Δ baseline to now
-  T / Ctrl+P           change the theme (remembered in the config file)
+  b                    reset the Δ baseline to now
+  T / Ctrl+P           change the theme (opens on the current theme, remembered in the
+                       config file)
   ?                    help screen
   q / Ctrl+C           quit
 

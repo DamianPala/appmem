@@ -23,6 +23,15 @@ def test_body_mentions_theme_key_and_the_config_file() -> None:
     assert "config.toml" in body
 
 
+def test_body_mentions_the_last_b_not_the_last_z_for_the_delta_baseline() -> None:
+    # `b` took over "reset Δ" from `z`, which now sorts by ZSWAP (SPEC.md
+    # "Main view").
+    body = _build_body(200)
+
+    assert "the last b" in body
+    assert "the last z" not in body
+
+
 # --- zswap definitions, only when this session has zswap (SPEC.md "Main view") --
 
 

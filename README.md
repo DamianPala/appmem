@@ -14,7 +14,7 @@ RAM 16.7/30.9 GiB (3.0 GiB shared)  avail 14.2 GiB (8.2 GiB free, 6.0 GiB cache,
  plasma                        1.6 GiB     2.3 GiB     3.9 GiB          ·          ·      17
  chrome                        1.6 GiB     2.2 GiB     3.7 GiB          ·     -1 MiB      35
  code                          1.4 GiB     1.5 GiB     2.9 GiB          ·          ·      32
- r s t d sort  enter procs  x system  c cache  z reset Δ  ? help  q quit
+ r s t d sort  enter procs  x system  c cache  b reset Δ  ? help  q quit
 ```
 
 ## Quick start
@@ -35,7 +35,7 @@ Plus [uv](https://docs.astral.sh/uv/), which fetches Python 3.12+ if needed.
 
 **Find the app.**
 The main view lists apps by TOTAL (RAM + swap).
-Click a column header or press `r` (RAM), `s` (swap), `t` (total), `d` (swap change) to sort; press again to reverse.
+Click a column header or press `r` (RAM), `s` (swap), `t` (total), `d` (swap change), `z` (ZSWAP, where shown) to sort; press again to reverse.
 The header tells you whether memory is a problem right now.
 `pressure 10s: none` with a full swap just means idle pages were moved out of the way; `some` or `high` means programs are waiting for memory.
 `shared` is tmpfs, shared memory and GPU buffers the kernel can only swap out, never drop.
@@ -51,7 +51,7 @@ In the process view press `g` to group by command, then `Enter` on a command to 
 That's how a "terminal holding 17 GiB" turns out to be eighteen `claude` processes plus the terminal's own main process, running for 86 days and sitting on 3.4 GiB of swap.
 
 **Watch it change.**
-ΔSWAP and ΔRAM show how each app grew or shrank since you started appmem (`z` resets the starting point).
+ΔSWAP and ΔRAM show how each app grew or shrank since you started appmem (`b` resets the starting point).
 A dim `·` means less than 1 MiB of change.
 
 **See the rest.**
@@ -64,14 +64,15 @@ The `kernel` and `unattributed` rows at the bottom of the process view explain w
 |---|---|---|
 | click a header | main, processes | sort by that column; click again to reverse |
 | `r` `s` `t` | main, processes | sort by RAM / SWAP / TOTAL; press again to reverse |
-| `d` | main | sort by ΔSWAP |
+| `d` | main | sort by ΔSWAP, only while that column is shown |
+| `z` | main | sort by ZSWAP, only while that column is shown |
 | ↑ ↓ PgUp PgDn | all | move or scroll |
 | `Enter` | main, processes | main: processes of the app; grouped process view: processes of the command |
 | `g` | processes | group by command |
 | `Esc` | processes, help | back |
-| `c` / `x` / `z` | main | show page cache / show system services / reset the Δ baseline |
-| `w` | main | show the ZSWAP column, only where zswap is on |
-| `T`, `Ctrl+P` | main, processes | change the theme (Textual's own picker; remembered for next time) |
+| `c` / `x` / `b` | main | show page cache / show system services / reset the Δ baseline |
+| `w` | main | show/hide the ZSWAP column (shown by default where zswap is on) |
+| `T`, `Ctrl+P` | main, processes | change the theme (opens on the current theme, marked; `Enter`/`Esc` and remembering it work as Textual's own picker does) |
 | `?` | all | what the numbers mean |
 | `q`, `Ctrl+C` | all | quit (`q` in help closes help) |
 
@@ -79,7 +80,7 @@ Options: `appmem -i SECONDS` sets the refresh interval (default 1, minimum 0.2),
 
 ## Theme
 
-`T` (or `Ctrl+P` -> "Theme") opens Textual's own theme picker: any of its built-in themes, `Enter` to confirm, `Esc` to cancel without changing anything.
+`T` (or `Ctrl+P` -> "Theme") opens the theme picker on the current theme, marked with `✓`: any of Textual's built-in themes, `Enter` to confirm, `Esc` to cancel without changing anything.
 Picking one saves it to `$XDG_CONFIG_HOME/appmem/config.toml` (default `~/.config/appmem/config.toml`), so it's back next time you start appmem.
 Only a pick that changes the theme is saved: confirming the theme you started with (from `--theme`, `APPMEM_THEME` or the default) saves nothing, so pick another one and back to save it.
 Startup order: `--theme NAME` on the command line, then the `APPMEM_THEME` environment variable, then that config file, then the `TEXTUAL_THEME` environment variable (Textual's own setting), then Textual's built-in default -- `--theme` and `APPMEM_THEME` never write the file.

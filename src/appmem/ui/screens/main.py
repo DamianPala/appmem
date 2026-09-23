@@ -68,12 +68,14 @@ from appmem.ui.table_order import reorder_rows
 from appmem.writeback import Sample, update_writeback
 
 # Key caps (reverse video); at full width the plain text is exactly
-# " r s t d sort  enter procs  x system  c cache  w zswap  z reset Δ  T theme  ? help  q quit"
-# (the "w zswap" item only where zswap is enabled). `d` (sort by ΔSWAP) drops
-# out of the "sort" item's own key caps -- not the whole item -- while the Δ
-# columns are hidden by width (SPEC.md "Main view": a key that does nothing
-# in the current view doesn't appear). `theme` is the lowest priority of
-# all, dropped before `reset Δ` (SPEC.md "Command line"); `zswap` drops right
+# " r s t d z sort  enter procs  x system  c cache  w zswap  b reset Δ  T theme
+# ? help  q quit" (the "z" sort key and the "w zswap" item only where the
+# ZSWAP column is shown/enabled). `d` (sort by ΔSWAP) and `z` (sort by ZSWAP)
+# each drop out of the "sort" item's own key caps -- not the whole item --
+# while their column is hidden, whether by width or (for ZSWAP) by `w` or by
+# zswap being off (SPEC.md "Main view": a key that does nothing in the
+# current view doesn't appear). `theme` is the lowest priority of all,
+# dropped before `reset Δ` (SPEC.md "Command line"); `zswap` drops right
 # after `cache` (SPEC.md "Main view").
 _FOOTER_DROP_ORDER = ("theme", "reset Δ", "cache", "zswap", "system", "procs", "sort")
 
@@ -81,10 +83,18 @@ _FOOTER_DROP_ORDER = ("theme", "reset Δ", "cache", "zswap", "system", "procs", 
 # above it.
 _NARROW_WIDTH = 95
 
-# Below this width, the APP column shrinks (with truncation) so RAM, SWAP,
-# TOTAL and PROCS stay whole on screen instead of being pushed off the edge
-# by an APP column auto-sized to a long name (SPEC.md "Main view").
-_NUMERIC_FIT_WIDTH = 70
+# Below this width, ZSWAP is hidden too, on top of the Δ columns (SPEC.md
+# "Main view": ZSWAP outranks the Δ columns, so its own cutoff sits below
+# theirs). 85 is the owner's chosen number, consistent with the Δ columns'
+# own 95: `_app_column_width` shrinks the APP column (toward its own
+# `_APP_MIN_WIDTH` floor if needed) at every width, so a long name never
+# pushes ZSWAP -- or any other numeric column -- off screen at 85.
+_ZSWAP_MIN_WIDTH = 85
+
+# The APP column's floor: `_app_column_width` shrinks it (with truncation)
+# at every width so RAM, SWAP, TOTAL and PROCS stay whole on screen instead
+# of being pushed off the edge by an APP column auto-sized to a long name
+# (SPEC.md "Main view").
 _APP_MIN_WIDTH = 8
 _APP_MAX_WIDTH = 32
 # `DataTable`'s default `cell_padding` (1 cell each side of every column).
@@ -210,10 +220,11 @@ class MainScreen(Screen[None]):
         Binding("r", "sort('ram')", "sort RAM", show=False),
         Binding("t", "sort('total')", "sort TOTAL", show=False),
         Binding("d", "sort('delta_swap')", "sort ΔSWAP", show=False),
+        Binding("z", "sort('zswap')", "sort ZSWAP", show=False),
         Binding("c", "toggle_cache", "toggle CACHE", show=False),
         Binding("w", "toggle_zswap", "toggle ZSWAP", show=False),
         Binding("x", "toggle_system", "toggle system", show=False),
-        Binding("z", "reset_delta", "reset Δ", show=False),
+        Binding("b", "reset_delta", "reset Δ", show=False),
         Binding("?", "help", "help", show=False),
     ]
 
@@ -224,7 +235,12 @@ class MainScreen(Screen[None]):
         self._interval = interval
         self._show_system = include_system
         self._show_cache = False
-        self._show_zswap = False
+        self._show_zswap = True
+        """The user's own ZSWAP choice (`w`), independent of whether the
+        column is actually on screen right now (`_zswap_column_shown` below
+        also needs zswap enabled and enough width). Starts `True`: ZSWAP is
+        shown by default once zswap turns out to be enabled (SPEC.md "Main
+        view")."""
         self._zswap_enabled = False
         """Whether this machine has zswap on (`SystemStats.zswap_enabled`
         from the last tick): gates the `w` key, the ZSWAP column, and the
@@ -240,6 +256,13 @@ class MainScreen(Screen[None]):
         self._last_apps: list[AppStats] = []
         self._timer: Timer | None = None
         self._delta_columns_shown = True
+        self._zswap_column_shown = False
+        """Whether ZSWAP is actually on screen right now: `_show_zswap` (the
+        user's `w` choice) and `_zswap_enabled` (a machine fact) both say
+        yes, and the terminal is at least `_ZSWAP_MIN_WIDTH` wide. Tracked
+        separately from those inputs (mirrors `_delta_columns_shown`) so a
+        resize crossing the width threshold can fall back the active sort
+        the same way `w`/zswap-disabling already do."""
         self._young_baseline = True
         self._delta_restyle_pending = False
         self._last_stats: SystemStats | None = None
@@ -253,6 +276,7 @@ class MainScreen(Screen[None]):
 
     def compose(self) -> ComposeResult:
         self._delta_columns_shown = self._show_delta_columns()
+        self._zswap_column_shown = self._show_zswap_column()
         yield Static(id="header1")
         yield Static(id="header2")
         table: DataTable[str | Text] = DataTable(id="table", cursor_type="row")
@@ -261,13 +285,17 @@ class MainScreen(Screen[None]):
         yield Static(self._footer_text(), id="footer")
 
     def _footer_items(self) -> tuple[tuple[tuple[str, ...], str], ...]:
-        # `d` (sort by ΔSWAP) is a no-op while the Δ columns are hidden by
-        # width (`action_sort` refuses it), so it drops out of the "sort"
-        # item's own key caps rather than staying as dead text (SPEC.md
-        # "Main view").
-        sort_keys = ("r", "s", "t", "d") if self._delta_columns_shown else ("r", "s", "t")
+        # `d` (sort by ΔSWAP) and `z` (sort by ZSWAP) are each a no-op while
+        # their own column is hidden (`action_sort` refuses them), so they
+        # drop out of the "sort" item's own key caps rather than staying as
+        # dead text (SPEC.md "Main view").
+        sort_keys = ["r", "s", "t"]
+        if self._delta_columns_shown:
+            sort_keys.append("d")
+        if self._zswap_column_shown:
+            sort_keys.append("z")
         items: list[tuple[tuple[str, ...], str]] = [
-            (sort_keys, "sort"),
+            (tuple(sort_keys), "sort"),
             (("enter",), "procs"),
             (("x",), "system"),
             (("c",), "cache"),
@@ -276,7 +304,7 @@ class MainScreen(Screen[None]):
             items.append((("w",), "zswap"))
         items.extend(
             [
-                (("z",), "reset Δ"),
+                (("b",), "reset Δ"),
                 (("T",), "theme"),
                 (("?",), "help"),
                 (("q",), "quit"),
@@ -426,15 +454,19 @@ class MainScreen(Screen[None]):
             # rare in practice (zswap is a machine fact, not a per-tick one),
             # but cheap to keep in step rather than assume it once at mount.
             self._zswap_enabled = stats.zswap_enabled
-            self._update_footer()
-            if not self._zswap_enabled and self._show_zswap:
+            if not self._zswap_enabled:
                 # The column's data source just vanished, and `w` no longer
                 # does anything to hide it by hand -- same fallback as hiding
                 # it explicitly (`action_toggle_zswap`).
                 self._show_zswap = False
-                if self._sort_key == "zswap":
+            shown = self._show_zswap_column()
+            if shown != self._zswap_column_shown:
+                self._zswap_column_shown = shown
+                if not shown and self._sort_key == "zswap":
                     self._sort_key, self._sort_reverse = DEFAULT_SORT_KEY, DEFAULT_SORT_REVERSE
                 self._rebuild_table(scroll=False)  # automatic, not a user selection
+            # After `_zswap_column_shown`: the sort item's `z` cap follows it.
+            self._update_footer()
         self._update_header_line1()
         self._update_header_line2()
 
@@ -489,20 +521,31 @@ class MainScreen(Screen[None]):
     def _show_delta_columns(self) -> bool:
         return self.app.size.width >= _NARROW_WIDTH  # pyright: ignore[reportUnknownMemberType]
 
+    def _show_zswap_column(self) -> bool:
+        width = self.app.size.width  # pyright: ignore[reportUnknownMemberType]
+        return self._zswap_enabled and self._show_zswap and width >= _ZSWAP_MIN_WIDTH
+
     def _sync_columns(self) -> None:
         """Rebuild the table whenever a resize actually changes the computed
         column widths, not just when ΔSWAP/ΔRAM cross their own visibility
-        threshold: the APP column's shrink width (`_app_column_width`) can
-        change at a different width (`_NUMERIC_FIT_WIDTH`) than that, and a
-        resize that crosses only the APP threshold used to leave the table
-        built for the old width, pushing TOTAL past the terminal edge or
-        leaving APP narrower than it needs to be (SPEC.md "Main view")."""
+        threshold: `_app_column_width` recomputes the APP column's width on
+        every resize, independent of the Δ/ZSWAP thresholds, and a resize
+        that only moved APP used to leave the table built for the old width,
+        pushing TOTAL past the terminal edge or leaving APP narrower than it
+        needs to be (SPEC.md "Main view")."""
         show = self._show_delta_columns()
         if show != self._delta_columns_shown:
             self._delta_columns_shown = show
             # The active sort column can go away with ΔSWAP/ΔRAM: fall back
             # to the default sort instead of an invisible one.
             if not show and self._sort_key in _DELTA_KEYS:
+                self._sort_key, self._sort_reverse = DEFAULT_SORT_KEY, DEFAULT_SORT_REVERSE
+        show_zswap = self._show_zswap_column()
+        if show_zswap != self._zswap_column_shown:
+            self._zswap_column_shown = show_zswap
+            # Mirrors the Δ columns above: a resize can hide ZSWAP out from
+            # under an active sort on it just as `w` or zswap turning off do.
+            if not show_zswap and self._sort_key == "zswap":
                 self._sort_key, self._sort_reverse = DEFAULT_SORT_KEY, DEFAULT_SORT_REVERSE
         table = self._table()
         widths = tuple(width for _key, _label, width in self._column_specs(table))
@@ -513,7 +556,7 @@ class MainScreen(Screen[None]):
         specs = list(_BASE_COLUMNS)
         if self._show_cache:
             specs.append(_CACHE_COLUMN)
-        if self._show_zswap:
+        if self._zswap_column_shown:
             specs.append(_ZSWAP_COLUMN)
         specs.append(_TOTAL_COLUMN)
         if self._delta_columns_shown:
@@ -527,20 +570,25 @@ class MainScreen(Screen[None]):
     def _app_column_width(
         self, specs: list[tuple[SortKey, str, int | None]], table: DataTable[str | Text]
     ) -> int | None:
-        """Below `_NUMERIC_FIT_WIDTH`, shrink the (otherwise auto-sized) APP
-        column so the fixed-width numeric columns after it stay fully on
-        screen instead of being pushed past the terminal edge by a long name
-        (SPEC.md "Main view"). `None` above the threshold: auto-size as
-        before, capped at `_APP_MAX_WIDTH` by `truncate_name`. The table's own
-        vertical scrollbar (when shown) narrows its usable width too, so it
-        comes out of the same budget as the numeric columns."""
+        """Shrink the (otherwise auto-sized) APP column so the fixed-width
+        numeric columns after it always stay fully on screen, at every
+        width, instead of being pushed past the terminal edge by a long name
+        (SPEC.md "Main view"): a single "narrow mode" cutoff doesn't survive
+        a new column being added (with ZSWAP on by default, a long name
+        pushed PROCS off screen well above the old fixed threshold). `None`
+        when the budget is already at least `_APP_MAX_WIDTH`: auto-size,
+        capped at `_APP_MAX_WIDTH` by `truncate_name`, same as a dedicated
+        width that wide would render. The table's own vertical scrollbar
+        (when shown) narrows the usable width too, so it comes out of the
+        same budget as the numeric columns."""
         total_width = (
             self.app.size.width - table.scrollbar_size_vertical  # pyright: ignore[reportUnknownMemberType]
         )
-        if total_width >= _NUMERIC_FIT_WIDTH:
-            return None
         other = sum(_CELL_PADDING + (width or 0) for key, _label, width in specs if key != "app")
-        return max(total_width - other - _CELL_PADDING, _APP_MIN_WIDTH)
+        budget = total_width - other - _CELL_PADDING
+        if budget >= _APP_MAX_WIDTH:
+            return None
+        return max(budget, _APP_MIN_WIDTH)
 
     def _app_cap(self, table: DataTable[str | Text]) -> int:
         width = self._column_specs(table)[0][2]
@@ -635,6 +683,7 @@ class MainScreen(Screen[None]):
         previous_key, previous_index = self._current_selection(table)
         force_delta_restyle = self._delta_restyle_pending
         self._delta_restyle_pending = False
+        row_count_changed = len(new_by_key) != len(self._rows)
 
         for key in self._rows.keys() - new_by_key.keys():
             table.remove_row(key)
@@ -648,6 +697,11 @@ class MainScreen(Screen[None]):
 
         self._resort(table)
         self._restore_selection(table, previous_key, previous_index, scroll=scroll)
+        if row_count_changed:
+            # More or fewer rows can show or hide the vertical scrollbar, which
+            # narrows the APP budget without any resize event; its size is only
+            # known after the next layout.
+            self.call_after_refresh(self._sync_columns)
 
     # --- table rebuilds -----------------------------------------------------------
 
@@ -681,6 +735,8 @@ class MainScreen(Screen[None]):
     def action_sort(self, column: str) -> None:
         if column in _DELTA_KEYS and not self._delta_columns_shown:
             return  # `d` while ΔSWAP is hidden by width: no invisible sort
+        if column == "zswap" and not self._zswap_column_shown:
+            return  # `z` while ZSWAP is hidden (width, `w`, or zswap off): no invisible sort
         self._set_sort(cast("SortKey", column))
 
     def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
@@ -699,11 +755,13 @@ class MainScreen(Screen[None]):
         if not self._zswap_enabled:
             return  # zswap off or unsupported here: `w` does nothing (SPEC.md "Main view")
         self._show_zswap = not self._show_zswap
+        self._zswap_column_shown = self._show_zswap_column()
         # Mirrors `action_toggle_cache`: the active sort column can go away
         # with the ZSWAP column, so fall back instead of an invisible sort.
-        if not self._show_zswap and self._sort_key == "zswap":
+        if not self._zswap_column_shown and self._sort_key == "zswap":
             self._sort_key, self._sort_reverse = DEFAULT_SORT_KEY, DEFAULT_SORT_REVERSE
         self._rebuild_table(scroll=True)  # explicit `w` key press
+        self._update_footer()  # the sort item's own `z` key cap comes and goes with the column
 
     def action_toggle_system(self) -> None:
         self._show_system = not self._show_system
@@ -711,7 +769,7 @@ class MainScreen(Screen[None]):
         self.refresh_now(scroll=True)  # explicit `x` key press
 
     def action_reset_delta(self) -> None:
-        # `z` takes a fresh sample before resetting, so the baseline and its
+        # `b` takes a fresh sample before resetting, so the baseline and its
         # timestamp describe the same instant (SPEC.md "Definitions").
         try:
             apps = _collect_apps(self._root, self._uid, self._show_system)
@@ -728,7 +786,7 @@ class MainScreen(Screen[None]):
         if not self._young_baseline:
             self._delta_restyle_pending = True
         self._young_baseline = True
-        self._apply_rows(build_rows(apps, self._baseline), scroll=True)  # explicit `z` key press
+        self._apply_rows(build_rows(apps, self._baseline), scroll=True)  # explicit `b` key press
         self._update_header_line2()
 
     def action_help(self) -> None:

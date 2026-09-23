@@ -63,7 +63,7 @@ def build_footer(
     leading space before the first.
 
     With `width` given, the footer never wraps: items named in `drop_order`
-    by their *label* (the action text, not the key caps -- `("z",), "reset
+    by their *label* (the action text, not the key caps -- `("b",), "reset
     Δ"` is dropped as `"reset Δ"`) -- lowest priority first -- are dropped
     until the line fits, the same idea as `fit_line`. Without `width` (the
     default) every item is always kept, unchanged from before this line
