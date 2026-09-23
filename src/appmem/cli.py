@@ -27,6 +27,7 @@ from typing import Any, NoReturn, Protocol
 from appmem import __version__, report, schema
 from appmem.collect import CgroupUnavailableError, find_units
 from appmem.render import render_app_text, render_snapshot_text
+from appmem.theme import APPMEM_THEME_ENV, TEXTUAL_THEME_ENV, config_path, resolve_theme
 from appmem.ui.app import AppMemApp
 
 MIN_INTERVAL = 0.2
@@ -46,7 +47,7 @@ _HELP_TEXT = """\
 appmem: live terminal view of RAM and swap usage per application, not per process.
 
 Usage:
-  appmem [-i SECONDS] [--system]
+  appmem [-i SECONDS] [--system] [--theme NAME]
   appmem snapshot [--system] [--limit N] [--json]
   appmem app NAME [--scope user|system] [--limit N] [--json]
   appmem schema [COMMAND]
@@ -56,6 +57,9 @@ Usage:
 Flags:
   -i, --interval SECONDS   Refresh interval, a number >= 0.2 (default: 1); the live view only
   --system                 Start with system services shown (same as pressing x)
+  --theme NAME             One of Textual's built-in themes (appmem schema lists them);
+                           overrides APPMEM_THEME and the config file for this run, the live
+                           view only, never written back
   --json                   Write JSON instead of text; the default when stdout isn't a terminal
   -h, --help               Show this help and exit
   -V, --version            Show the version and exit
@@ -80,6 +84,7 @@ Keys:
   c                    toggle the CACHE column
   x                    toggle system services
   z                    reset the Δ baseline to now
+  T / Ctrl+P           change the theme (remembered in the config file)
   ?                    help screen
   q / Ctrl+C           quit
 
@@ -246,6 +251,13 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=schema.ROOT_SYSTEM.default,
         help=schema.ROOT_SYSTEM.description,
+    )
+    parser.add_argument(
+        *_option_strings(schema.ROOT_THEME),
+        choices=schema.ROOT_THEME.enum,
+        default=None,  # None means "not given"; a named command rejects an explicit value
+        metavar="NAME",
+        help=schema.ROOT_THEME.description,
     )
     _add_json_flag(parser, suppress=False)
     parser.add_argument("-V", "--version", action="version", version=__version__)
@@ -434,7 +446,21 @@ def _run_root(
         _fail("cgroup_unavailable", str(exc), 1, action="user")
 
     interval = args.interval if args.interval is not None else 1.0
-    app = AppMemApp(root=root, uid=uid, interval=interval, include_system=args.system)
+    theme = resolve_theme(
+        cli_theme=args.theme,
+        env_theme=os.environ.get(APPMEM_THEME_ENV) or None,  # empty means unset, as NO_INPUT
+        config_path=config_path(),
+        textual_theme=os.environ.get(TEXTUAL_THEME_ENV) or None,
+    )
+    app = AppMemApp(
+        root=root,
+        uid=uid,
+        interval=interval,
+        include_system=args.system,
+        theme=theme.effective,
+        config_theme=theme.config_theme,
+        theme_warnings=theme.warnings,
+    )
     return _run_app(app)
 
 
@@ -541,6 +567,14 @@ def _reject_live_view_flags(args: argparse.Namespace) -> None:
             2,
             action="agent",
             hint="Drop --system; for a system service run appmem app NAME --scope system",
+        )
+    if args.command is not None and args.theme is not None:
+        _fail(
+            "invalid_input",
+            "--theme applies to the live view; a named command has nothing to colour",
+            2,
+            action="agent",
+            hint="Drop --theme, or run appmem with no command for the live view",
         )
 
 

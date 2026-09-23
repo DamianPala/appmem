@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 
 from rich.text import Text
@@ -16,10 +17,21 @@ _ELSEWHERE_THRESHOLD = 1024 * 1024
 # typical widths even once the bare `avail` figure is gone.
 _DROP_STEPS = ("elsewhere", "system", "avail_breakdown", "avail", "shared")
 
-_PRESSURE_COLOR = {"none": "green", "some": "yellow", "high": "red"}
+
+@dataclass(frozen=True)
+class ThemeColors:
+    """The three theme colours the header borrows (SPEC.md "Main view":
+    "every colour appmem sets follows the theme"), read once per render from
+    `App.current_theme` by the caller. Kept as plain hex strings here rather
+    than importing `textual.theme.Theme`, so this module stays pure and
+    testable without a running app."""
+
+    success: str
+    warning: str
+    error: str
 
 
-def _pressure_part(stats: SystemStats) -> Text | None:
+def _pressure_part(stats: SystemStats, colors: ThemeColors) -> Text | None:
     if (
         stats.pressure_some_avg10 is None
         or stats.pressure_some_avg60 is None
@@ -29,33 +41,35 @@ def _pressure_part(stats: SystemStats) -> Text | None:
     word = pressure_word(
         stats.pressure_some_avg10, stats.pressure_some_avg60, stats.pressure_full_avg10
     )
-    # Bold + coloured pressure word only (none green, some yellow, high
-    # red); any "(some X % ...)" qualifier after it stays plain. The word
-    # itself never changes with color (NO_COLOR strips the style, not the
-    # text), so this alone already says what pressure means in words.
+    # Bold + coloured pressure word only (none success, some warning, high
+    # error, from the active theme); any "(some X % ...)" qualifier after it
+    # stays plain. The word itself never changes with color (NO_COLOR strips
+    # the style, not the text), so this alone already says what pressure
+    # means in words.
+    pressure_color = {"none": colors.success, "some": colors.warning, "high": colors.error}
     head, _, rest = word.partition(" ")
-    styled = Text(head, style=f"bold {_PRESSURE_COLOR[head]}")
+    styled = Text(head, style=f"bold {pressure_color[head]}")
     if rest:
         styled = styled + Text(f" {rest}")
     return Text("pressure 10s: ") + styled
 
 
-def _swap_style(used: int, total: int) -> str | None:
+def _swap_style(used: int, total: int, colors: ThemeColors) -> str | None:
     fraction = used / total
     if fraction > 0.8:
-        return "red"
+        return colors.error
     if fraction > 0.5:
-        return "yellow"
+        return colors.warning
     return None
 
 
-def _swap_part(stats: SystemStats) -> Text:
+def _swap_part(stats: SystemStats, colors: ThemeColors) -> Text:
     if stats.swap_total == 0:
         return Text("Swap off")
     used = stats.swap_total - stats.swap_free
     pair = format_pair(used, stats.swap_total)
-    # Swap used/total coloured yellow > 50 %, red > 80 % of total.
-    style = _swap_style(used, stats.swap_total)
+    # Swap used/total coloured theme warning > 50 %, theme error > 80 %.
+    style = _swap_style(used, stats.swap_total, colors)
     return Text("Swap ") + Text(pair, style=style or "")
 
 
@@ -77,12 +91,12 @@ def _avail_part(stats: SystemStats, *, show_breakdown: bool) -> Text:
     return text
 
 
-def _assemble_line1(stats: SystemStats, disabled: frozenset[str]) -> Text:
+def _assemble_line1(stats: SystemStats, disabled: frozenset[str], colors: ThemeColors) -> Text:
     parts: list[Text] = [_ram_part(stats, show_shared="shared" not in disabled)]
     if "avail" not in disabled:
         parts.append(_avail_part(stats, show_breakdown="avail_breakdown" not in disabled))
-    parts.append(_swap_part(stats))
-    pressure_part = _pressure_part(stats)
+    parts.append(_swap_part(stats, colors))
+    pressure_part = _pressure_part(stats, colors)
     if pressure_part is not None:
         parts.append(pressure_part)
     if "system" not in disabled:
@@ -94,7 +108,7 @@ def _assemble_line1(stats: SystemStats, disabled: frozenset[str]) -> Text:
     return Text("  ").join(parts)
 
 
-def format_line1(stats: SystemStats, width: int) -> Text:
+def format_line1(stats: SystemStats, width: int, colors: ThemeColors) -> Text:
     """RAM (used/total, with a shared-memory breakdown), avail (with a
     free/cache/slab breakdown), swap, pressure (when readable), the hidden
     system.slice total and memory charged outside the walked trees.
@@ -127,15 +141,20 @@ def format_line1(stats: SystemStats, width: int) -> Text:
     `elsewhere` (SPEC.md "Behaviour details") follows `system`: memory charged
     outside the walked trees (other users, VMs, containers), omitted below
     1 MiB or when the root `memory.stat` couldn't be read.
+
+    `colors` supplies the active theme's success/warning/error colours for
+    the pressure word and the swap fraction (SPEC.md "Main view": "every
+    colour appmem sets follows the theme"); the caller reads them from
+    `App.current_theme` once per render.
     """
     disabled: set[str] = set()
-    text = _assemble_line1(stats, frozenset(disabled))
+    text = _assemble_line1(stats, frozenset(disabled), colors)
     while text.cell_len > width:
         remaining = [step for step in _DROP_STEPS if step not in disabled]
         if not remaining:
             break
         disabled.add(remaining[0])
-        text = _assemble_line1(stats, frozenset(disabled))
+        text = _assemble_line1(stats, frozenset(disabled), colors)
     # Belt and braces: even the never-dropped parts could still overflow an
     # extreme width. Never wrap; crop with an ellipsis instead (SPEC.md "Main
     # view": the line must never wrap).

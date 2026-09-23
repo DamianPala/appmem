@@ -23,6 +23,7 @@ from rich.text import Text
 from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
+from textual.color import Color
 from textual.screen import Screen
 from textual.timer import Timer
 from textual.widgets import DataTable, Static
@@ -44,7 +45,7 @@ from appmem.collect import find_units as collect_find_units
 from appmem.collect import read_unit as collect_read_unit
 from appmem.fmt import format_delta, size, truncate_name
 from appmem.render import escape_control_chars
-from appmem.ui.header import format_line1, format_line2
+from appmem.ui.header import ThemeColors, format_line1, format_line2
 from appmem.ui.layout import build_footer
 from appmem.ui.process_rows import initial_process_sort
 from appmem.ui.rows import (
@@ -64,11 +65,12 @@ from appmem.ui.screens.processes import ProcessesScreen
 from appmem.ui.table_order import reorder_rows
 
 # Key caps (reverse video); at full width the plain text is exactly
-# " r s t d sort  enter procs  x system  c cache  z reset Δ  ? help  q quit".
+# " r s t d sort  enter procs  x system  c cache  z reset Δ  T theme  ? help  q quit".
 # `d` (sort by ΔSWAP) drops out of the "sort" item's own key caps -- not the
 # whole item -- while the Δ columns are hidden by width (SPEC.md "Main view":
-# a key that does nothing in the current view doesn't appear).
-_FOOTER_DROP_ORDER = ("reset Δ", "cache", "system", "procs", "sort")
+# a key that does nothing in the current view doesn't appear). `theme` is the
+# lowest priority of all, dropped before `reset Δ` (SPEC.md "Command line").
+_FOOTER_DROP_ORDER = ("theme", "reset Δ", "cache", "system", "procs", "sort")
 
 # Below this width, ΔSWAP/ΔRAM are hidden (SPEC.md "Main view"). Re-shown
 # above it.
@@ -125,6 +127,16 @@ def _format_cell(key: SortKey, row: Row, *, app_cap: int = _APP_MAX_WIDTH) -> st
 def _key_str(key: RowKey | ColumnKey) -> str:
     assert key.value is not None
     return key.value
+
+
+def _rich_color(theme_color: str) -> str:
+    # `Theme.success`/`warning`/`error` are Textual colour specs, and the two
+    # built-in `ansi-*` themes use Textual's own "ansi_red"-style names
+    # (SPEC.md "Main view"), which Rich's `Style` parser doesn't understand
+    # on its own -- `format_line1` plugs this straight into a Rich style
+    # string. Round-tripping through `textual.color.Color` normalises every
+    # theme's colour (hex or `ansi_*`) to a form Rich always accepts.
+    return Color.parse(theme_color).rich_color.name
 
 
 def _collect_apps(root: Path, uid: int, include_system: bool) -> list[AppStats]:
@@ -239,6 +251,7 @@ class MainScreen(Screen[None]):
             (("x",), "system"),
             (("c",), "cache"),
             (("z",), "reset Δ"),
+            (("T",), "theme"),
             (("?",), "help"),
             (("q",), "quit"),
         )
@@ -380,6 +393,17 @@ class MainScreen(Screen[None]):
         self._update_header_line1()
         self._update_header_line2()
 
+    def _theme_colors(self) -> ThemeColors:
+        theme = self.app.current_theme  # pyright: ignore[reportUnknownMemberType]
+        # Every built-in theme sets all three (checked against
+        # `textual.theme.BUILTIN_THEMES` directly); the fallback is only for
+        # `Theme.success`/`warning`/`error`'s nominal `str | None` type.
+        return ThemeColors(
+            success=_rich_color(theme.success or "green"),
+            warning=_rich_color(theme.warning or "yellow"),
+            error=_rich_color(theme.error or "red"),
+        )
+
     def _update_header_line1(self) -> None:
         if self._last_stats is None:
             return
@@ -387,9 +411,17 @@ class MainScreen(Screen[None]):
         content = format_line1(
             self._last_stats,
             self.app.size.width,  # pyright: ignore[reportUnknownMemberType]
+            self._theme_colors(),
         )
         if widget.content != content:
             widget.update(content)
+
+    def refresh_theme(self) -> None:
+        """Re-render the header right away after an in-app theme change
+        (SPEC.md "Main view": "every colour appmem sets follows the
+        theme"), instead of waiting up to a full interval for the next
+        tick. Called by `AppMemApp.watch_theme`."""
+        self._update_header_line1()
 
     def _update_header_line2(self) -> None:
         self._set_static("#header2", format_line2(self._baseline_time, datetime.now()))

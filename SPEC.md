@@ -1,4 +1,4 @@
-# appmem: spec v0.5
+# appmem: spec v0.6
 
 A live terminal view of RAM and swap usage **per application**, not per process.
 Think `btm` or `htop`, but rows are apps (Ghostty, Brave, LibreOffice), each summing all of its processes.
@@ -22,9 +22,10 @@ Which app holds the memory and swap? Is memory actually the problem right now? W
 - One row per app, sortable by clicking a column header or by key.
 - Enter on a row opens the app's process view, which can also group processes by command and drill into one command.
 - A `?` screen explaining the numbers.
+- Textual's built-in themes: `T` opens the picker, and the choice is remembered in a config file.
 - Non-interactive commands for scripts and agents: `appmem snapshot`, `appmem app NAME`, `appmem schema`, plus an agent skill in `skills/appmem/SKILL.md`.
 
-**Not in v1:** recording/history, charts, a streaming `watch` command, CPU or I/O stats, killing processes, config files, login-session scopes, running as root, macOS/Windows, cgroup v1.
+**Not in v1:** recording/history, charts, a streaming `watch` command, CPU or I/O stats, killing processes, settings other than the theme, custom themes, login-session scopes, running as root, macOS/Windows, cgroup v1.
 
 ## Screens
 
@@ -38,14 +39,14 @@ RAM 20.2/30.9 GiB (3.1 GiB shared)  avail 10.8 GiB (2.1 GiB free, 6.2 GiB cache,
  plasma                        1.6 GiB     2.3 GiB     3.9 GiB          ·          ·      17
  chrome                        1.6 GiB     2.2 GiB     3.7 GiB     -1 MiB          ·      35
  ...
- r s t d sort  enter procs  x system  c cache  z reset Δ  ? help  q quit
+ r s t d sort  enter procs  x system  c cache  z reset Δ  T theme  ? help  q quit
 ```
 
 - **Header line 1** (parts joined by two spaces, each breakdown in parentheses sits inside the total it belongs to):
   - System RAM used (`MemTotal - MemAvailable`) and total, with `shared` (`Shmem`: tmpfs such as `/tmp` and `/dev/shm`, shared memory, GPU buffers; the kernel can only swap it out, never drop it). Always shown.
   - `avail` (`MemAvailable`, what can be allocated before swapping) with `free` (`MemFree`) and `cache` (`Cached - Shmem`, clamped at 0, the same definition as the CACHE column) and `slab` (`SReclaimable`: kernel caches of file names and inodes, dropped on demand). The three come close to `avail` but are not an exact sum: `avail` is a kernel estimate that also keeps reserves.
-  - System swap used and total, or `Swap off` when `SwapTotal` is 0. Coloured yellow above 50 % used, red above 80 %.
-  - Memory pressure as a bold word (see Definitions), green/yellow/red; omitted when `/proc/pressure/memory` does not exist.
+  - System swap used and total, or `Swap off` when `SwapTotal` is 0. Coloured with the theme's warning colour above 50 % used, its error colour above 80 %.
+  - Memory pressure as a bold word (see Definitions) in the theme's success/warning/error colour; omitted when `/proc/pressure/memory` does not exist.
   - Total of the hidden system services, so the user notices when the culprit is there.
   - `elsewhere`: memory outside the user tree and `system.slice` (root `memory.stat` minus both): VMs, containers, other users, login sessions.
   - Never wraps: when too narrow, parts drop in the order `elsewhere`, `system`, the `(free, cache, slab)` breakdown, `avail`, `shared`. RAM, Swap and pressure always stay; below their width the line is cropped with an ellipsis.
@@ -55,7 +56,7 @@ RAM 20.2/30.9 GiB (3.1 GiB shared)  avail 10.8 GiB (2.1 GiB free, 6.2 GiB cache,
 - Rows with equal values keep a stable order by app name.
 - Δ below 1 MiB either way shows as a dim `·`; Δ columns render dim while the baseline is younger than 60 s.
 - Under 95 columns ΔSWAP and ΔRAM are hidden; sorting by a hidden column falls back to TOTAL descending.
-- A footer with key caps sits at the bottom of every view and drops its lowest-priority items instead of wrapping. It shows only keys that act in the current view and mode, labelled by what they do there (e.g. `d` is absent while the Δ columns are hidden).
+- A footer with key caps sits at the bottom of every view and drops its lowest-priority items instead of wrapping. It shows only keys that act in the current view and mode, labelled by what they do there (e.g. `d` is absent while the Δ columns are hidden). `T theme` is the first item to drop.
 - Mouse-wheel scrolling stays where the user put it across refreshes: a tick restores the cursor without scrolling the viewport; only explicit actions (sort, toggles, `z`, drill in/out) scroll the selected row into view.
 
 ### Process view (after Enter)
@@ -105,7 +106,7 @@ Enter on a command drills into its member processes (title `ghostty › claude`,
 ### Help screen (`?`)
 
 A scrolling screen with the definitions below in plain words, soft-wrapped to the width, with `esc/?/q close` in its title line.
-It covers what RAM, CACHE, SWAP, TOTAL, pressure and the header's shared/free/cache/avail mean (tmpfs files count toward the app that wrote them), why rows don't add up to the header, why a closed app can still have a row, and how to act on what you see.
+It covers what RAM, CACHE, SWAP, TOTAL, pressure and the header's shared/free/cache/avail mean (tmpfs files count toward the app that wrote them), why rows don't add up to the header, why a closed app can still have a row, and how to act on what you see, plus one line on `T` and where the theme is saved.
 
 ## Keys
 
@@ -120,6 +121,7 @@ It covers what RAM, CACHE, SWAP, TOTAL, pressure and the header's shared/free/ca
 | `c` | toggle the CACHE column |
 | `x` | toggle system services |
 | `z` | reset the Δ baseline to now |
+| `T` / `Ctrl+P` → Theme | theme picker (all views); the chosen theme is saved |
 | `?` | help screen |
 | `q` / `Ctrl+C` | quit |
 
@@ -263,7 +265,7 @@ Splitting terminal children into their own main-view rows is v2.
 ## Command line
 
 ```
-appmem [-i SECONDS] [--system]                      live view (TUI)
+appmem [-i SECONDS] [--system] [--theme NAME]      live view (TUI)
 appmem snapshot [--system] [--limit N] [--json]     machine state + apps
 appmem app NAME [--scope user|system] [--limit N] [--json]
                                                     one app: units, processes, commands, remainder
@@ -275,7 +277,15 @@ appmem --version | -V
 The command line conforms to the house CLI Design Standard 0.1.0 (claimed in `appmem schema` under `conformance`).
 `appmem schema` and each command's `--help` are the reference for flags, defaults and output fields; this section only fixes the behaviour.
 
-- **Live view** (no command): `-i/--interval` (default 1, ≥ 0.2) and `--system` (start with system services shown). It starts only in a terminal context: stdin and stdout are terminals, no `--json`, `NO_INPUT` unset or empty. Otherwise it exits `2` with `terminal_required` and `next: ["appmem","snapshot"]`, instead of drawing escape codes into a pipe. `-i` together with a command is `invalid_input`, and so is `--system` before `app` or `schema`.
+- **Live view** (no command): `-i/--interval` (default 1, ≥ 0.2) and `--system` (start with system services shown). It starts only in a terminal context: stdin and stdout are terminals, no `--json`, `NO_INPUT` unset or empty. Otherwise it exits `2` with `terminal_required` and `next: ["appmem","snapshot"]`, instead of drawing escape codes into a pipe. `-i` or `--theme` together with a command is `invalid_input`, and so is `--system` before `app` or `schema`.
+- **Theme** (live view only). The theme is taken from the first valid source in this order:
+  1. `--theme NAME`;
+  2. `APPMEM_THEME`;
+  3. `$XDG_CONFIG_HOME/appmem/config.toml` (default `~/.config/appmem/config.toml`, key `theme`);
+  4. `TEXTUAL_THEME`;
+  5. `textual-dark`.
+
+  An unknown `--theme` name is `invalid_input`, and the message lists the valid names. A bad env value, or an unreadable, malformed or wrong-typed file, falls back to the next source with a notification, never a crash; unknown keys in the file are ignored. The file is written only when a theme pick in the app changes the theme (never for previews, a cancelled picker, `--theme` or env), atomically, with mode 0600. A write failure is a notification. Agent commands ignore the file and the env vars.
 - **snapshot**: one sample with the same numbers as the main view and header. Apps ≥ 1 MiB TOTAL, sorted by TOTAL, at most `--limit` (default 50) with `has_more`; `next` names the largest app.
 - **app NAME**: resolves (scope, name) exactly like the process view. `units` (raw names), `processes` and `commands` (each paged by `--limit`, default 100), `kernel_bytes` and `unattributed_*`. No match, or every unit gone before it is read: `not_found`, exit 1.
 - **schema**: the index (commands, global flags, format defaults, exit codes, conformance) or one command's detail (flags, args, output schema). Always JSON.

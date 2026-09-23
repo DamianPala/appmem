@@ -33,6 +33,7 @@ _FLAG_DESCRIPTORS: tuple[schema.Flag, ...] = (
     schema.JSON_FLAG,
     schema.ROOT_INTERVAL,
     schema.ROOT_SYSTEM,
+    schema.ROOT_THEME,
     schema.SNAPSHOT_SYSTEM,
     schema.SNAPSHOT_LIMIT,
     schema.APP_SCOPE,

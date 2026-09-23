@@ -8,6 +8,7 @@ calling `MainScreen.refresh_now()` after mutating the fixture on disk.
 
 from __future__ import annotations
 
+import os
 import shutil
 import threading
 import time
@@ -19,12 +20,16 @@ import pytest
 from rich.cells import cell_len
 from rich.text import Text
 from textual import events
+from textual.color import Color
 from textual.coordinate import Coordinate
 from textual.pilot import Pilot
+from textual.theme import BUILTIN_THEMES
 from textual.widgets import DataTable, Static
 from textual.widgets.data_table import ColumnKey
 
 from appmem.collect import AppStats
+from appmem.fmt import format_pair
+from appmem.theme import THEME_NAMES, config_path
 from appmem.ui.app import AppMemApp
 from appmem.ui.rows import row_key
 from appmem.ui.screens import main as main_screen
@@ -912,6 +917,29 @@ async def test_footer_drops_lowest_priority_items_at_55_columns(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
+async def test_theme_footer_item_shows_wide_and_drops_before_reset_delta(tmp_path: Path) -> None:
+    # "theme" is the new lowest-priority item (SPEC.md "Main view"): it drops
+    # before "reset Δ", which still fits at 75 columns.
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        footer = pilot.app.screen.query_one("#footer", Static)
+        content = footer.content
+        assert isinstance(content, Text)
+        assert "T theme" in content.plain
+
+    async with _app(root).run_test(size=(75, 24)) as pilot:
+        await pilot.pause()
+        footer = pilot.app.screen.query_one("#footer", Static)
+        content = footer.content
+        assert isinstance(content, Text)
+        assert "T theme" not in content.plain
+        assert "reset Δ" in content.plain
+
+
+@pytest.mark.asyncio
 async def test_sort_footer_item_drops_d_key_below_95_columns(tmp_path: Path) -> None:
     # `d` is a no-op while the Δ columns are hidden by width (`action_sort`
     # refuses it), so its key cap doesn't appear at all, rather than sitting
@@ -1234,3 +1262,197 @@ async def test_stale_tick_result_is_discarded_after_toggling_system(
 
         await pilot.pause(0.5)  # let the slow, now-stale background read arrive and try to apply
         assert "cups" in _row_names(_table(pilot)), "a stale pre-toggle result overwrote the table"
+
+
+# --- theme picker (T / Ctrl+P) -----------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("theme_name", THEME_NAMES)
+async def test_every_builtin_theme_renders_the_main_view(tmp_path: Path, theme_name: str) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    app = AppMemApp(
+        root=root,
+        uid=UID,
+        interval=NO_AUTO_REFRESH_INTERVAL,
+        include_system=False,
+        theme=theme_name,
+    )
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        assert app.theme == theme_name
+        screen = pilot.app.screen
+        assert isinstance(screen, MainScreen)
+        header = screen.query_one("#header1", Static).content
+        assert isinstance(header, Text)
+        assert header.plain
+        footer = screen.query_one("#footer", Static)
+        assert isinstance(footer.content, Text)
+        assert "q quit" in footer.content.plain
+    assert not config_path().exists()  # a startup theme is never written back
+
+
+def _style_at(text: Text, substr: str) -> str:
+    start = text.plain.index(substr)
+    end = start + len(substr)
+    styles = [str(span.style) for span in text.spans if span.start <= start and span.end >= end]
+    assert styles, f"no style span covers {substr!r} in {text.plain!r}"
+    return styles[-1]
+
+
+@pytest.mark.asyncio
+async def test_startup_theme_warning_shows_as_a_notification(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    app = AppMemApp(
+        root=root,
+        uid=UID,
+        interval=NO_AUTO_REFRESH_INTERVAL,
+        include_system=False,
+        theme_warnings=("APPMEM_THEME='bogus-theme' is not a known theme; ignoring it",),
+    )
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        notifications = list(pilot.app._notifications)  # pyright: ignore[reportPrivateUsage]
+        assert any(n.severity == "warning" and "bogus-theme" in n.message for n in notifications)
+
+
+@pytest.mark.asyncio
+async def test_header_colours_follow_the_running_apps_current_theme(tmp_path: Path) -> None:
+    # `_base_tree`'s fixture swap is 20/32 GiB used (62.5 %), above the 50 %
+    # warning threshold -- the swap figure is coloured on this fixture as-is.
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    app = AppMemApp(
+        root=root, uid=UID, interval=NO_AUTO_REFRESH_INTERVAL, include_system=False, theme="dracula"
+    )
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.screen
+        assert isinstance(screen, MainScreen)
+        header = screen.query_one("#header1", Static).content
+        assert isinstance(header, Text)
+
+        dracula_warning = Color.parse(BUILTIN_THEMES["dracula"].warning or "").rich_color.name
+        # `_base_tree`'s fixture is kB (helpers.write_meminfo); read_system
+        # converts to bytes, so the pair rendered in the header uses bytes too.
+        swap_total = 32_000_000 * 1024
+        swap_free = 12_000_000 * 1024
+        pair = format_pair(swap_total - swap_free, swap_total)
+        assert dracula_warning in _style_at(header, pair)
+
+        pilot.app.theme = "nord"
+        await pilot.pause()
+        header_after = screen.query_one("#header1", Static).content
+        assert isinstance(header_after, Text)
+        nord_warning = Color.parse(BUILTIN_THEMES["nord"].warning or "").rich_color.name
+        assert nord_warning != dracula_warning
+        assert nord_warning in _style_at(header_after, pair)
+        assert dracula_warning not in _style_at(header_after, pair)
+
+
+@pytest.mark.asyncio
+async def test_t_opens_the_picker_and_picking_a_theme_sets_and_writes_it(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        assert pilot.app.theme != "dracula"  # sanity: not already the target
+        assert not config_path().exists()
+
+        await pilot.press("T")
+        await pilot.pause()
+        await pilot.press(*"dracula")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert pilot.app.theme == "dracula"
+        assert config_path().read_text() == 'theme = "dracula"\n'
+
+
+@pytest.mark.asyncio
+async def test_esc_in_the_picker_reverts_and_writes_nothing(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        before = pilot.app.theme
+
+        await pilot.press("T")
+        await pilot.pause()
+        await pilot.press(*"dracula")  # typed into the picker's filter, never confirmed
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert pilot.app.theme == before
+        assert not config_path().exists()
+        assert pilot.app.screen_stack == [pilot.app.screen]  # picker actually closed
+
+
+@pytest.mark.asyncio
+async def test_browsing_the_picker_without_confirming_writes_nothing(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        before = pilot.app.theme
+
+        await pilot.press("T")
+        await pilot.pause()
+        await pilot.press("down")
+        await pilot.press("down")
+        await pilot.pause()
+
+        assert pilot.app.theme == before
+        assert not config_path().exists()
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert pilot.app.screen_stack == [pilot.app.screen]
+
+
+@pytest.mark.asyncio
+async def test_write_failure_notifies_and_the_app_keeps_running(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        path = config_path()
+        path.parent.mkdir(parents=True)
+        path.parent.chmod(0o500)
+        try:
+            if os.access(path.parent, os.W_OK):  # running as root
+                pytest.skip("cannot make a directory read-only to this user")
+
+            await pilot.press("T")
+            await pilot.pause()
+            await pilot.press(*"dracula")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+        finally:
+            path.parent.chmod(0o700)
+
+        # The theme still applies in the running app even though persisting
+        # it failed (SPEC.md "Command line": a write failure never crashes).
+        assert pilot.app.theme == "dracula"
+        assert not path.exists()
+        notifications = list(pilot.app._notifications)  # pyright: ignore[reportPrivateUsage]
+        assert any(n.severity == "error" for n in notifications)
+
+        # Still alive and responsive: an ordinary key still works after the failure.
+        await pilot.press("c")  # toggle the cache column
+        await pilot.pause()
+        screen = pilot.app.screen
+        assert isinstance(screen, MainScreen)
+        assert "alpha" in _row_names(_table(pilot))

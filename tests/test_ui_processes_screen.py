@@ -19,6 +19,7 @@ import pytest
 from rich.cells import cell_len
 from rich.text import Text
 from textual import events
+from textual.command import CommandPalette
 from textual.containers import VerticalScroll
 from textual.content import Content
 from textual.coordinate import Coordinate
@@ -27,6 +28,7 @@ from textual.widgets import DataTable, Static
 from textual.widgets.data_table import ColumnKey
 
 from appmem.collect import ProcStats, UnitStats
+from appmem.theme import config_path
 from appmem.ui.app import AppMemApp
 from appmem.ui.process_rows import KERNEL_KEY, UNATTRIBUTED_KEY
 from appmem.ui.rows import row_key
@@ -874,7 +876,7 @@ async def test_footer_hides_members_and_says_back_in_flat_mode(tmp_path: Path) -
         footer = pilot.app.screen.query_one("#footer", Static)
         content = footer.content
         assert isinstance(content, Text)
-        assert content.plain == " r s t sort  g group  ? help  esc back  q quit"
+        assert content.plain == " r s t sort  g group  T theme  ? help  esc back  q quit"
 
 
 @pytest.mark.asyncio
@@ -892,7 +894,9 @@ async def test_footer_shows_members_and_back_in_grouped_non_drilled_mode(tmp_pat
         footer = pilot.app.screen.query_one("#footer", Static)
         content = footer.content
         assert isinstance(content, Text)
-        assert content.plain == (" r s t sort  g group  enter members  ? help  esc back  q quit")
+        assert content.plain == (
+            " r s t sort  g group  enter members  T theme  ? help  esc back  q quit"
+        )
 
 
 @pytest.mark.asyncio
@@ -916,7 +920,7 @@ async def test_footer_hides_members_and_relabels_esc_to_groups_when_drilled(
         footer = pilot.app.screen.query_one("#footer", Static)
         content = footer.content
         assert isinstance(content, Text)
-        assert content.plain == " r s t sort  g group  ? help  esc groups  q quit"
+        assert content.plain == " r s t sort  g group  T theme  ? help  esc groups  q quit"
 
 
 @pytest.mark.asyncio
@@ -1086,8 +1090,8 @@ async def test_footer_present_in_process_view(tmp_path: Path) -> None:
 async def test_footer_drops_lowest_priority_items_at_60_columns(tmp_path: Path) -> None:
     # The footer never wraps. Below its natural width, in grouped mode where
     # "members" is a candidate item at all, it drops lowest priority first
-    # (SPEC.md "Process view" drop order: members, group, sort), keeping
-    # help, back and quit no matter how narrow.
+    # (SPEC.md "Process view" drop order: theme, members, group, sort),
+    # keeping help, back and quit no matter how narrow.
     root = _base_tree(tmp_path)
     _app_unit(root, "app-ghostty.service", ram=1 * 1024**2, swap=0, pids=[100])
     _proc(root, 100, name="ghostty")
@@ -1106,7 +1110,47 @@ async def test_footer_drops_lowest_priority_items_at_60_columns(tmp_path: Path) 
         assert "? help" in content.plain
         assert "esc back" in content.plain
         assert "q quit" in content.plain
-        assert "members" not in content.plain  # lowest priority: dropped first
+        assert "theme" not in content.plain  # lowest priority: dropped first
+        assert "members" not in content.plain  # dropped next
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["flat", "grouped", "drilled"])
+async def test_t_opens_the_picker_from_every_process_view_mode(tmp_path: Path, mode: str) -> None:
+    # `T` is bound at the app level (SPEC.md "Command line"), not on either
+    # screen, so it must keep working no matter which process-view mode is
+    # on top.
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-ghostty.service", ram=1 * 1024**2, swap=0, pids=[100, 101])
+    _proc(root, 100, name="node")
+    _proc(root, 101, name="node")
+
+    async with _app(root).run_test(size=SCREEN_SIZE) as pilot:
+        await pilot.pause()
+        await _open_ghostty_process_view(pilot)
+        if mode in ("grouped", "drilled"):
+            await pilot.press("g")
+            await pilot.pause()
+        if mode == "drilled":
+            table = _table(pilot)
+            table.move_cursor(row=table.get_row_index("node"))
+            await pilot.press("enter")
+            await pilot.pause()
+        assert isinstance(pilot.app.screen, ProcessesScreen)
+
+        await pilot.press("T")
+        await pilot.pause()
+        assert isinstance(pilot.app.screen, CommandPalette)
+        # A capital T typed into the picker's own filter must not reopen a
+        # second palette: the Input widget consumes the key first.
+        await pilot.press(*"nodeT")
+        await pilot.pause()
+        assert sum(isinstance(s, CommandPalette) for s in pilot.app.screen_stack) == 1
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(pilot.app.screen, ProcessesScreen)
+    assert not config_path().exists()  # Esc closes it without picking anything
 
 
 @pytest.mark.asyncio

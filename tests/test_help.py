@@ -14,3 +14,10 @@ def test_body_explains_slab_as_part_of_avail_not_an_exact_sum() -> None:
     assert "kernel caches of file names and inodes" in body
     assert "not an exact sum" in body
     assert "free" in body and "cache" in body
+
+
+def test_body_mentions_theme_key_and_the_config_file() -> None:
+    body = _build_body(200)
+
+    assert "T (or Ctrl+P)" in body
+    assert "config.toml" in body

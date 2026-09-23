@@ -113,6 +113,11 @@ _SYSTEM_ROWS_NOTE = (
     "same-named system service stay two separate rows, with separate Δ."
 )
 
+_THEME_NOTE = (
+    "T (or Ctrl+P) opens Textual's own theme picker; the choice is remembered in "
+    "~/.config/appmem/config.toml (or $XDG_CONFIG_HOME/appmem/config.toml)."
+)
+
 _ACTIONS_INTRO = "What to do about it:"
 _ACTIONS_PLAIN = "close the app normally"
 _ACTIONS_COMMANDS: tuple[tuple[str, str], ...] = (
@@ -155,6 +160,7 @@ def _build_body(width: int) -> str:
         _wrap(_CLOSED_APP_NOTE, w),
         _wrap(_TERMINALS_NOTE, w),
         _wrap(_SYSTEM_ROWS_NOTE, w),
+        _wrap(_THEME_NOTE, w),
         "\n".join(
             [
                 _wrap(_ACTIONS_INTRO, w),

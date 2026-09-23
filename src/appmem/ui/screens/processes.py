@@ -104,8 +104,9 @@ _CELL_PADDING = 2
 _TICK_GROUP = "collect"
 
 # Below the footer's natural width, drop items lowest priority first;
-# `help`, `back`/`groups` and `quit` are never in this list, so they always stay.
-_FOOTER_DROP_ORDER = ("members", "group", "sort")
+# `help`, `back`/`groups` and `quit` are never in this list, so they always
+# stay. `theme` is the lowest priority of all (SPEC.md "Command line").
+_FOOTER_DROP_ORDER = ("theme", "members", "group", "sort")
 
 # Process-view title drop order -- procs count first, then swap; the
 # app/breadcrumb name and RAM are always kept.
@@ -281,11 +282,13 @@ class ProcessesScreen(Screen[None]):
         only in grouped mode outside a drill-down, since it's a no-op
         everywhere else, including on the synthetic rows. `esc` is labelled
         `groups` while drilled (it returns to the grouped list) and `back`
-        otherwise. `s`/`r`/`t`, `g`, `?` and `q` all act in every mode, so
-        they're never hidden."""
+        otherwise. `s`/`r`/`t`, `g`, `T`, `?` and `q` all act in every mode,
+        so they're never hidden (SPEC.md "Command line": `T` opens the theme
+        picker from the process view too, same as the main view)."""
         items: list[tuple[tuple[str, ...], str]] = [(("r", "s", "t"), "sort"), (("g",), "group")]
         if self._showing_group_table:
             items.append((("enter",), "members"))
+        items.append((("T",), "theme"))
         items.append((("?",), "help"))
         items.append((("esc",), "groups" if self._drill_command is not None else "back"))
         items.append((("q",), "quit"))

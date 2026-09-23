@@ -70,10 +70,19 @@ The `kernel` and `unattributed` rows at the bottom of the process view explain w
 | `g` | processes | group by command |
 | `Esc` | processes, help | back |
 | `c` / `x` / `z` | main | show page cache / show system services / reset the Δ baseline |
+| `T`, `Ctrl+P` | main, processes | change the theme (Textual's own picker; remembered for next time) |
 | `?` | all | what the numbers mean |
 | `q`, `Ctrl+C` | all | quit (`q` in help closes help) |
 
-Options: `appmem -i SECONDS` sets the refresh interval (default 1, minimum 0.2), `appmem --system` starts with system services shown, `appmem --version` prints the version.
+Options: `appmem -i SECONDS` sets the refresh interval (default 1, minimum 0.2), `appmem --system` starts with system services shown, `appmem --theme NAME` opens with one of Textual's built-in themes, `appmem --version` prints the version.
+
+## Theme
+
+`T` (or `Ctrl+P` -> "Theme") opens Textual's own theme picker: any of its built-in themes, `Enter` to confirm, `Esc` to cancel without changing anything.
+Picking one saves it to `$XDG_CONFIG_HOME/appmem/config.toml` (default `~/.config/appmem/config.toml`), so it's back next time you start appmem.
+Only a pick that changes the theme is saved: confirming the theme you started with (from `--theme`, `APPMEM_THEME` or the default) saves nothing, so pick another one and back to save it.
+Startup order: `--theme NAME` on the command line, then the `APPMEM_THEME` environment variable, then that config file, then the `TEXTUAL_THEME` environment variable (Textual's own setting), then Textual's built-in default -- `--theme` and `APPMEM_THEME` never write the file.
+A broken or unreadable config file, or an unknown name in `APPMEM_THEME`/`TEXTUAL_THEME`, falls back to the next source and shows a notification instead of crashing.
 
 ## What the numbers mean
 

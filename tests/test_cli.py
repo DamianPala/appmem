@@ -471,6 +471,8 @@ def test_help_lists_flags_keys_and_pressure_and_an_example(
     out = capsys.readouterr().out
     assert "-i, --interval" in out
     assert "--system" in out
+    assert "--theme" in out  # SPEC.md "Command line": --help lists --theme
+    assert "T / Ctrl+P" in out
     assert "q / Ctrl+C" in out
     assert "Enter" in out  # slice-3 key, shipped in the same release, not "coming soon"
     assert "coming soon" not in out.lower()
@@ -627,3 +629,224 @@ def test_snapshot_text_reads_the_cgroup_tree_only_once(
     main(["snapshot"], root=tmp_path, uid=1000, stdin_isatty=_true, stdout_isatty=_true)
 
     assert len(calls) == 1
+
+
+# --- --theme (SPEC.md "Command line": startup theme precedence) ------------------
+
+
+def _capture_theme_kwargs(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    """Let `AppMemApp.__init__` run for real (so `_run_app`'s post-construction
+    reads of `cgroup_error_message`/`return_code` stay valid), but record its
+    keyword arguments and replace `.run()` with a no-op so no real Textual
+    app is driven (same idea as the mid-run cgroup-vanish test above)."""
+    captured: dict[str, object] = {}
+    real_init = AppMemApp.__init__
+
+    def _capturing_init(self: AppMemApp, **kwargs: object) -> None:
+        captured.update(kwargs)
+        real_init(self, **kwargs)  # type: ignore[arg-type]
+
+    def _fake_run(self: AppMemApp, *args: object, **kwargs: object) -> None:
+        pass
+
+    monkeypatch.setattr(AppMemApp, "__init__", _capturing_init)
+    monkeypatch.setattr(AppMemApp, "run", _fake_run)
+    return captured
+
+
+def test_theme_bogus_is_invalid_input_with_valid_names_listed(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--theme", "bogus"], stdin_isatty=_true, stdout_isatty=_true)
+
+    assert exc_info.value.code == 2
+    error = _last_json_line(capsys.readouterr().err)["error"]
+    assert error["kind"] == "invalid_input"  # type: ignore[index]
+    message = error["message"]  # type: ignore[index]
+    assert "nord" in message and "dracula" in message  # type: ignore[operator]
+
+
+def test_theme_with_a_named_command_is_invalid_input(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--theme", "nord", "snapshot"], stdin_isatty=_true, stdout_isatty=_true)
+
+    assert exc_info.value.code == 2
+    assert _last_json_line(capsys.readouterr().err)["error"]["kind"] == "invalid_input"  # type: ignore[index]
+
+
+def test_theme_flag_wins_over_env_and_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_memory_stat(user_service_root(tmp_path, uid=1000))
+    xdg = tmp_path / "xdg"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+    monkeypatch.setenv("APPMEM_THEME", "gruvbox")
+    (xdg / "appmem").mkdir(parents=True)
+    (xdg / "appmem" / "config.toml").write_text('theme = "nord"\n')
+    captured = _capture_theme_kwargs(monkeypatch)
+
+    main(["--theme", "dracula"], root=tmp_path, uid=1000, stdin_isatty=_true, stdout_isatty=_true)
+
+    assert captured["theme"] == "dracula"
+    assert captured["config_theme"] == "nord"  # the file's own value, kept as the baseline
+    assert captured["theme_warnings"] == ()
+
+
+def test_theme_env_wins_over_file_when_no_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_memory_stat(user_service_root(tmp_path, uid=1000))
+    xdg = tmp_path / "xdg"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+    monkeypatch.setenv("APPMEM_THEME", "gruvbox")
+    (xdg / "appmem").mkdir(parents=True)
+    (xdg / "appmem" / "config.toml").write_text('theme = "nord"\n')
+    captured = _capture_theme_kwargs(monkeypatch)
+
+    main([], root=tmp_path, uid=1000, stdin_isatty=_true, stdout_isatty=_true)
+
+    assert captured["theme"] == "gruvbox"
+    assert captured["config_theme"] == "nord"
+    assert captured["theme_warnings"] == ()
+
+
+def test_theme_file_wins_over_default_when_no_flag_or_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_memory_stat(user_service_root(tmp_path, uid=1000))
+    xdg = tmp_path / "xdg"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+    monkeypatch.delenv("APPMEM_THEME", raising=False)
+    (xdg / "appmem").mkdir(parents=True)
+    (xdg / "appmem" / "config.toml").write_text('theme = "monokai"\n')
+    captured = _capture_theme_kwargs(monkeypatch)
+
+    main([], root=tmp_path, uid=1000, stdin_isatty=_true, stdout_isatty=_true)
+
+    assert captured["theme"] == "monokai"
+    assert captured["config_theme"] == "monokai"
+
+
+def test_theme_falls_back_to_textual_default_with_nothing_configured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_memory_stat(user_service_root(tmp_path, uid=1000))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.delenv("APPMEM_THEME", raising=False)
+    captured = _capture_theme_kwargs(monkeypatch)
+
+    main([], root=tmp_path, uid=1000, stdin_isatty=_true, stdout_isatty=_true)
+
+    assert captured["theme"] == "textual-dark"
+    assert captured["config_theme"] is None
+    assert captured["theme_warnings"] == ()
+
+
+def test_theme_unknown_env_name_falls_through_to_file_with_a_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_memory_stat(user_service_root(tmp_path, uid=1000))
+    xdg = tmp_path / "xdg"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+    monkeypatch.setenv("APPMEM_THEME", "not-a-real-theme")
+    (xdg / "appmem").mkdir(parents=True)
+    (xdg / "appmem" / "config.toml").write_text('theme = "nord"\n')
+    captured = _capture_theme_kwargs(monkeypatch)
+
+    main([], root=tmp_path, uid=1000, stdin_isatty=_true, stdout_isatty=_true)
+
+    assert captured["theme"] == "nord"
+    warnings = captured["theme_warnings"]
+    assert len(warnings) == 1  # type: ignore[arg-type]
+    assert "not-a-real-theme" in warnings[0]  # type: ignore[index]
+
+
+def test_theme_malformed_config_file_falls_back_to_default_with_a_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_memory_stat(user_service_root(tmp_path, uid=1000))
+    xdg = tmp_path / "xdg"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+    monkeypatch.delenv("APPMEM_THEME", raising=False)
+    (xdg / "appmem").mkdir(parents=True)
+    (xdg / "appmem" / "config.toml").write_text("theme = [unterminated\n")
+    captured = _capture_theme_kwargs(monkeypatch)
+
+    main([], root=tmp_path, uid=1000, stdin_isatty=_true, stdout_isatty=_true)
+
+    assert captured["theme"] == "textual-dark"
+    warnings = captured["theme_warnings"]
+    assert len(warnings) == 1  # type: ignore[arg-type]
+
+
+def test_theme_textual_theme_wins_when_nothing_else_is_configured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_memory_stat(user_service_root(tmp_path, uid=1000))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.delenv("APPMEM_THEME", raising=False)
+    monkeypatch.setenv("TEXTUAL_THEME", "gruvbox")
+    captured = _capture_theme_kwargs(monkeypatch)
+
+    main([], root=tmp_path, uid=1000, stdin_isatty=_true, stdout_isatty=_true)
+
+    assert captured["theme"] == "gruvbox"
+    assert captured["theme_warnings"] == ()
+
+
+def test_theme_config_file_wins_over_textual_theme(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_memory_stat(user_service_root(tmp_path, uid=1000))
+    xdg = tmp_path / "xdg"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+    monkeypatch.delenv("APPMEM_THEME", raising=False)
+    monkeypatch.setenv("TEXTUAL_THEME", "gruvbox")
+    (xdg / "appmem").mkdir(parents=True)
+    (xdg / "appmem" / "config.toml").write_text('theme = "nord"\n')
+    captured = _capture_theme_kwargs(monkeypatch)
+
+    main([], root=tmp_path, uid=1000, stdin_isatty=_true, stdout_isatty=_true)
+
+    assert captured["theme"] == "nord"
+    assert captured["theme_warnings"] == ()
+
+
+def test_theme_unknown_textual_theme_falls_back_with_a_warning_and_does_not_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_memory_stat(user_service_root(tmp_path, uid=1000))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.delenv("APPMEM_THEME", raising=False)
+    monkeypatch.setenv("TEXTUAL_THEME", "not-a-real-theme")
+    captured = _capture_theme_kwargs(monkeypatch)
+
+    main([], root=tmp_path, uid=1000, stdin_isatty=_true, stdout_isatty=_true)
+
+    assert captured["theme"] == "textual-dark"
+    warnings = captured["theme_warnings"]
+    assert len(warnings) == 1  # type: ignore[arg-type]
+    assert "not-a-real-theme" in warnings[0]  # type: ignore[index]
+
+
+def test_theme_unreadable_config_directory_falls_back_with_a_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_memory_stat(user_service_root(tmp_path, uid=1000))
+    xdg = tmp_path / "xdg"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+    monkeypatch.delenv("APPMEM_THEME", raising=False)
+    appmem_dir = xdg / "appmem"
+    appmem_dir.mkdir(parents=True)
+    (appmem_dir / "config.toml").write_text('theme = "nord"\n')
+    appmem_dir.chmod(0o000)
+    captured = _capture_theme_kwargs(monkeypatch)
+    try:
+        if os.access(appmem_dir / "config.toml", os.R_OK):  # running as root
+            pytest.skip("cannot make a directory unreadable to this user")
+        main([], root=tmp_path, uid=1000, stdin_isatty=_true, stdout_isatty=_true)
+    finally:
+        appmem_dir.chmod(0o700)
+
+    assert captured["theme"] == "textual-dark"
+    warnings = captured["theme_warnings"]
+    assert len(warnings) == 1  # type: ignore[arg-type]

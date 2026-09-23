@@ -60,6 +60,9 @@ def test_root_parser_matches_root_descriptors() -> None:
     # default of 1, which only applies once the live view actually starts.
     _assert_flag_matches(root, schema.ROOT_INTERVAL, check_default=False)
     _assert_flag_matches(root, schema.ROOT_SYSTEM)
+    # No fixed default (the effective one depends on APPMEM_THEME/the config
+    # file), same reasoning as `-i/--interval` above.
+    _assert_flag_matches(root, schema.ROOT_THEME, check_default=False)
     _assert_flag_matches(root, schema.JSON_FLAG)
 
 
@@ -93,7 +96,7 @@ def _parser_inputs(parser: argparse.ArgumentParser) -> set[str]:
 @pytest.mark.parametrize(
     ("command", "descriptors"),
     [
-        (None, [schema.ROOT_INTERVAL, schema.ROOT_SYSTEM]),
+        (None, [schema.ROOT_INTERVAL, schema.ROOT_SYSTEM, schema.ROOT_THEME]),
         ("snapshot", [schema.SNAPSHOT_SYSTEM, schema.SNAPSHOT_LIMIT]),
         ("app", [schema.APP_NAME, schema.APP_SCOPE, schema.APP_LIMIT]),
     ],

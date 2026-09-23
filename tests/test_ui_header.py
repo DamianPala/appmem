@@ -5,10 +5,17 @@ from datetime import datetime
 from typing import Any
 
 from rich.text import Text
+from textual.theme import BUILTIN_THEMES
 
 from appmem.collect import SystemStats
 from appmem.fmt import format_pair
-from appmem.ui.header import format_line1, format_line2
+from appmem.ui.header import ThemeColors, format_line1, format_line2
+
+# Rich colour names, not real theme hex values: keeps every pre-existing test
+# below reading exactly as it did before theming (SPEC.md "Main view"). The
+# "colours actually come from the theme" tests further down use real
+# `textual.theme.BUILTIN_THEMES` entries instead.
+_COLORS = ThemeColors(success="green", warning="yellow", error="red")
 
 _DEFAULT_STATS = SystemStats(
     mem_total=30_000_000_000,
@@ -35,7 +42,7 @@ def _stats(**overrides: Any) -> SystemStats:
 
 
 def _line(width: int = _WIDE, **overrides: Any) -> str:
-    return format_line1(_stats(**overrides), width).plain
+    return format_line1(_stats(**overrides), width, _COLORS).plain
 
 
 def _style_at(text: Text, substr: str) -> str:
@@ -137,35 +144,35 @@ def test_line1_narrow_drop_order() -> None:
     # survives even once `avail` is gone entirely. RAM, Swap and pressure
     # never drop.
     full = _stats(elsewhere=2 * 1024**2, system_ram=500 * 1024**2)
-    line = format_line1(full, _WIDE).plain
+    line = format_line1(full, _WIDE, _COLORS).plain
     assert "free" in line and "cache" in line  # avail breakdown present
     assert "shared" in line
     assert "elsewhere" in line
     assert "system" in line
     assert "avail" in line
 
-    line = format_line1(full, len(line) - 1).plain  # one column short
+    line = format_line1(full, len(line) - 1, _COLORS).plain  # one column short
     assert "elsewhere" not in line  # gone first
     assert "shared" in line
     assert "system" in line
     assert "avail" in line
 
-    line = format_line1(full, len(line) - 1).plain
+    line = format_line1(full, len(line) - 1, _COLORS).plain
     assert "system" not in line  # gone second
     assert "shared" in line
     assert "avail" in line
     assert "free" in line and "cache" in line
 
-    line = format_line1(full, len(line) - 1).plain
+    line = format_line1(full, len(line) - 1, _COLORS).plain
     assert "free" not in line and "cache" not in line  # avail breakdown: gone third
     assert "shared" in line
     assert "avail" in line
 
-    line = format_line1(full, len(line) - 1).plain
+    line = format_line1(full, len(line) - 1, _COLORS).plain
     assert "avail" not in line  # gone fourth, whole figure this time
     assert "shared" in line  # not dropped yet
 
-    line = format_line1(full, len(line) - 1).plain
+    line = format_line1(full, len(line) - 1, _COLORS).plain
     assert "shared" not in line  # gone last of the droppable parts
     assert "RAM" in line
     assert "Swap" in line
@@ -180,7 +187,7 @@ def test_line1_at_80_and_60_columns_never_wraps_and_keeps_ram_swap_pressure() ->
         pressure_full_avg10=0.0,
     )
     for width in (80, 60):
-        text = format_line1(full, width)
+        text = format_line1(full, width, _COLORS)
         assert text.no_wrap is True
         assert text.cell_len <= width  # fits by dropping parts, not by cropping
         assert "RAM" in text.plain
@@ -211,12 +218,12 @@ def test_line1_shared_survives_typical_widths_with_realistic_values() -> None:
         pressure_full_avg10=0.0,
     )
 
-    at_140 = format_line1(realistic, 140)
+    at_140 = format_line1(realistic, 140, _COLORS)
     assert at_140.cell_len <= 140
     assert "shared" in at_140.plain
     assert "free" in at_140.plain and "cache" in at_140.plain and "slab" in at_140.plain
 
-    at_80 = format_line1(realistic, 80)
+    at_80 = format_line1(realistic, 80, _COLORS)
     assert at_80.cell_len <= 80
     assert "shared" in at_80.plain
 
@@ -240,6 +247,7 @@ def test_line1_plain_text_conveys_everything_without_relying_on_colour() -> None
             swap_free=100,
         ),
         _WIDE,
+        _COLORS,
     )
     plain = text.plain
 
@@ -257,7 +265,7 @@ def test_line1_never_drops_ram_swap_or_pressure() -> None:
         pressure_full_avg10=0.0,
     )
 
-    narrow = format_line1(full, 1).plain  # absurdly narrow
+    narrow = format_line1(full, 1, _COLORS).plain  # absurdly narrow
 
     assert "RAM" in narrow
     assert "Swap" in narrow
@@ -265,7 +273,7 @@ def test_line1_never_drops_ram_swap_or_pressure() -> None:
 
 
 def test_line1_never_wraps() -> None:
-    text = format_line1(_stats(elsewhere=2 * 1024**2), 1)
+    text = format_line1(_stats(elsewhere=2 * 1024**2), 1, _COLORS)
 
     assert text.no_wrap is True
 
@@ -275,7 +283,9 @@ def test_line1_never_wraps() -> None:
 
 def test_line1_pressure_word_none_is_green() -> None:
     text = format_line1(
-        _stats(pressure_some_avg10=0.0, pressure_some_avg60=0.0, pressure_full_avg10=0.0), _WIDE
+        _stats(pressure_some_avg10=0.0, pressure_some_avg60=0.0, pressure_full_avg10=0.0),
+        _WIDE,
+        _COLORS,
     )
     assert "green" in _style_at(text, "none")
     assert "bold" in _style_at(text, "none")
@@ -283,20 +293,24 @@ def test_line1_pressure_word_none_is_green() -> None:
 
 def test_line1_pressure_word_some_is_yellow() -> None:
     text = format_line1(
-        _stats(pressure_some_avg10=3.0, pressure_some_avg60=0.0, pressure_full_avg10=0.0), _WIDE
+        _stats(pressure_some_avg10=3.0, pressure_some_avg60=0.0, pressure_full_avg10=0.0),
+        _WIDE,
+        _COLORS,
     )
     assert "yellow" in _style_at(text, "some")
 
 
 def test_line1_pressure_word_high_is_red() -> None:
     text = format_line1(
-        _stats(pressure_some_avg10=25.0, pressure_some_avg60=0.0, pressure_full_avg10=0.0), _WIDE
+        _stats(pressure_some_avg10=25.0, pressure_some_avg60=0.0, pressure_full_avg10=0.0),
+        _WIDE,
+        _COLORS,
     )
     assert "red" in _style_at(text, "high")
 
 
 def test_line1_swap_fraction_uncoloured_under_50_percent() -> None:
-    text = format_line1(_stats(swap_total=1000, swap_free=600), _WIDE)  # 40 % used
+    text = format_line1(_stats(swap_total=1000, swap_free=600), _WIDE, _COLORS)  # 40 % used
     assert text.plain.count("Swap") == 1
     # No span covering the pair carries a colour.
     pair_start = text.plain.index("Swap ") + len("Swap ")
@@ -305,12 +319,55 @@ def test_line1_swap_fraction_uncoloured_under_50_percent() -> None:
 
 
 def test_line1_swap_fraction_yellow_above_50_percent() -> None:
-    text = format_line1(_stats(swap_total=1000, swap_free=400), _WIDE)  # 60 % used
+    text = format_line1(_stats(swap_total=1000, swap_free=400), _WIDE, _COLORS)  # 60 % used
     pair = format_pair(600, 1000)
     assert "yellow" in _style_at(text, pair)
 
 
 def test_line1_swap_fraction_red_above_80_percent() -> None:
-    text = format_line1(_stats(swap_total=1000, swap_free=100), _WIDE)  # 90 % used
+    text = format_line1(_stats(swap_total=1000, swap_free=100), _WIDE, _COLORS)  # 90 % used
     pair = format_pair(900, 1000)
     assert "red" in _style_at(text, pair)
+
+
+# --- colours actually come from the active theme, not a fixed palette -----------
+
+
+def _theme_colors(name: str) -> ThemeColors:
+    theme = BUILTIN_THEMES[name]
+    assert theme.success and theme.warning and theme.error
+    return ThemeColors(success=theme.success, warning=theme.warning, error=theme.error)
+
+
+def _busy_stats() -> SystemStats:
+    # `high` pressure and > 80 % swap: both colour rules fire at once.
+    return _stats(
+        pressure_some_avg10=25.0,
+        pressure_some_avg60=0.0,
+        pressure_full_avg10=0.0,
+        swap_total=1000,
+        swap_free=100,
+    )
+
+
+def test_line1_pressure_and_swap_colours_equal_the_theme_colors() -> None:
+    colors = _theme_colors("dracula")
+    text = format_line1(_busy_stats(), _WIDE, colors)
+
+    assert colors.error in _style_at(text, "high")
+    pair = format_pair(900, 1000)
+    assert colors.error in _style_at(text, pair)
+
+
+def test_line1_colours_change_after_switching_the_theme() -> None:
+    stats = _busy_stats()
+    dracula = _theme_colors("dracula")
+    nord = _theme_colors("nord")
+    assert dracula.error != nord.error  # sanity: the two themes actually differ
+
+    before = format_line1(stats, _WIDE, dracula)
+    after = format_line1(stats, _WIDE, nord)
+
+    assert dracula.error in _style_at(before, "high")
+    assert nord.error in _style_at(after, "high")
+    assert dracula.error not in _style_at(after, "high")

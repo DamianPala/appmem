@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from appmem import __version__
+from appmem.theme import THEME_NAMES
 
 SCHEMA_VERSION = "1"
 CONFORMANCE_STANDARD_VERSION = "0.1.0"
@@ -99,11 +100,23 @@ ROOT_SYSTEM = Flag(
     required=False,
     default=False,
 )
+ROOT_THEME = Flag(
+    name="theme",
+    description=(
+        "Open the live view with this Textual theme, overriding APPMEM_THEME and the "
+        "config file for this run only; never written back. Only the live view uses "
+        "it, a named command rejects it."
+    ),
+    type="string",
+    required=False,
+    enum=THEME_NAMES,
+)
 ROOT_DESCRIPTION = (
     "Open the live per-app RAM and swap view. Starts only in a terminal context: "
     "stdin and stdout are TTYs, --json is absent and NO_INPUT is unset; otherwise "
     "fails with kind terminal_required before reading anything and points to "
-    "appmem snapshot."
+    "appmem snapshot. The theme (--theme, APPMEM_THEME, or the config file, in "
+    "that order) is remembered across runs once chosen inside the app."
 )
 
 # --- snapshot ------------------------------------------------------------------
@@ -383,7 +396,7 @@ def root_detail() -> dict[str, object]:
         "name": "",
         "description": ROOT_DESCRIPTION,
         "args": [],
-        "flags": [ROOT_INTERVAL.to_dict(), ROOT_SYSTEM.to_dict()],
+        "flags": [ROOT_INTERVAL.to_dict(), ROOT_SYSTEM.to_dict(), ROOT_THEME.to_dict()],
         "effects": "read_only",
         "confirm": False,
         "interactive": True,
