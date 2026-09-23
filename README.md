@@ -1,74 +1,123 @@
 # appmem
 
-A live terminal view of RAM and swap **per application** on Linux.
+See which **applications** hold your RAM and swap on Linux, live, in the terminal.
 
-`htop` and `btm` show processes. A browser or a terminal is dozens of processes, so "which app is eating my swap?" turns into mental math.
-appmem reads the memory and swap counters the kernel already keeps for every systemd app cgroup, sums them per app, and shows a sortable table that refreshes every second.
+`htop` and `btm` list processes.
+A browser or a terminal is dozens of them, so "what is eating my swap?" turns into mental math.
+appmem reads the memory counters the kernel already keeps for every app (systemd puts each one in its own cgroup), adds them up per app, and shows one sortable row per app, refreshed every second.
 
 ```
-RAM 17.1/30.9 GiB  avail 13.9 GiB   Swap 23.0/32.0 GiB   pressure 10s: none   system 560 MiB (x)
-Δ since 00:01 (2s)
+RAM 16.7/30.9 GiB   avail 14.2 GiB   Swap 24.0/32.0 GiB   pressure 10s: none   system 652 MiB [x]   elsewhere 116 MiB
+Δ since 02:13 (3s)
  APP                        SWAP        RAM         TOTAL ▾     ΔSWAP      ΔRAM       PROCS
- ghostty                      11.1 GiB     6.3 GiB    17.4 GiB     -8 KiB    -11 MiB     278
- chrome                        1.9 GiB     1.8 GiB     3.7 GiB          0   +168 KiB      35
- plasma                        2.1 GiB     1.3 GiB     3.5 GiB     -4 KiB   +516 KiB      16
- code                          1.9 GiB  1019 MiB     2.9 GiB    -12 KiB    -15 MiB      32
+ ghostty                      11.2 GiB     6.6 GiB    17.8 GiB          ·     -3 MiB     281
+ plasma                        2.3 GiB     1.6 GiB     3.9 GiB          ·          ·      17
+ chrome                        2.2 GiB     1.6 GiB     3.7 GiB          ·     -1 MiB      35
+ code                          1.5 GiB     1.4 GiB     2.9 GiB          ·          ·      32
+ s r t d sort  enter procs  x system  c cache  z reset Δ  ? help  q quit
 ```
 
-Press Enter on an app to see its processes, then `g` to group them by command.
-That is how you find out that the "terminal" holding 17 GiB is really eight agent sessions and one terminal window that leaked 3 GiB over 86 days.
-
-## Requirements
-
-- Linux with cgroup v2 and systemd user sessions (any current desktop distro: KDE Plasma, GNOME, ...).
-- Python 3.12+.
-- No root. Everything it reads is world-readable.
-
-## Install
+## Quick start
 
 ```
-uv tool install .
+git clone <repo URL> appmem
+cd appmem
+uv run appmem
 ```
 
-or run it from a checkout with `uv run appmem`.
+No root, no config.
+To have `appmem` on your PATH, run `uv tool install .` once.
 
-## Usage
+You need Linux with cgroup v2, a systemd user session, and a desktop that starts apps as systemd units (KDE Plasma and GNOME do).
+Plus [uv](https://docs.astral.sh/uv/), which fetches Python 3.12+ if needed.
 
-```
-appmem [-i SECONDS] [--system]
-```
+## What you can do with it
 
-| Flag | Default | Meaning |
+**Find the app.**
+The main view lists apps by TOTAL (swap + RAM).
+Click a column header or press `s` (swap), `r` (RAM), `t` (total), `d` (swap change) to sort; press again to reverse.
+The header tells you whether memory is a problem right now.
+`pressure 10s: none` with a full swap just means idle pages were moved out of the way; `some` or `high` means programs are waiting for memory.
+
+**Look inside it.**
+Press `Enter` on an app to see its processes, with their age and the systemd unit each one lives in.
+The line at the bottom gives you the ready command for the selected row, for example `systemctl --user stop 'app-firefox.service'   kill 41233`.
+
+**Find out what's really in your terminal.**
+Everything you start from a terminal counts as the terminal.
+In the process view press `g` to group by command, then `Enter` on a command to see its processes.
+That's how a "terminal holding 17 GiB" turns out to be eighteen `claude` processes plus the terminal's own main process, running for 86 days and sitting on 3.4 GiB of swap.
+
+**Watch it change.**
+ΔSWAP and ΔRAM show how each app grew or shrank since you started appmem (`z` resets the starting point).
+A dim `·` means less than 1 MiB of change.
+
+**See the rest.**
+`x` adds system services, `c` shows page cache.
+The `kernel` and `unattributed` rows at the bottom of the process view explain why the processes don't add up to the app.
+
+## Keys
+
+| Key | Where | Action |
 |---|---|---|
-| `-i`, `--interval SECONDS` | `1` | Refresh interval, ≥ 0.2 |
-| `--system` | off | Also show system services (same as `x`) |
+| click a header | main, processes | sort by that column; click again to reverse |
+| `s` `r` `t` | main, processes | sort by SWAP / RAM / TOTAL; press again to reverse |
+| `d` | main | sort by ΔSWAP |
+| ↑ ↓ PgUp PgDn | all | move or scroll |
+| `Enter` | main, processes | main: processes of the app; grouped process view: processes of the command |
+| `g` | processes | group by command |
+| `Esc` | processes, help | back |
+| `c` / `x` / `z` | main | show page cache / show system services / reset the Δ baseline |
+| `?` | all | what the numbers mean |
+| `q`, `Ctrl+C` | all | quit (`q` in help closes help) |
 
-| Key | Action |
-|---|---|
-| click header, `s` `r` `t` `d` | sort by that column / SWAP / RAM / TOTAL / ΔSWAP, again to reverse |
-| `Enter` | processes of the selected app |
-| `g` | in the process view: group by command |
-| `Esc` | back |
-| `c` | show page cache |
-| `x` | show system services |
-| `z` | reset the Δ baseline |
-| `?` | what the numbers mean |
-| `q`, `Ctrl+C` | quit |
+Options: `appmem -i SECONDS` sets the refresh interval (default 1, minimum 0.2), `appmem --system` starts with system services shown, `appmem --version` prints the version.
 
 ## What the numbers mean
 
-- **RAM** is `anon + shmem + kernel` from the app's `memory.stat`: anonymous, shared and charged kernel memory, excluding file cache. Page cache is left out (press `c` to see it), because it makes an app that read a big file look like a hog.
-- **SWAP** is the app's `memory.swap.current`.
-- **TOTAL** is `SWAP + RAM`: an accounting sum, not a prediction of what closing the app would free.
-- **pressure** is how much of the last 10 s tasks spent waiting for memory. A lot of swap with pressure `none` just means idle pages were paged out; `high` means memory stalls are happening, but not which app is causing them.
-- In the process view, rows come from `/proc/PID/status`, leaving out file-backed pages, so they read smaller than htop's RES. They don't add up to the app row either: shared pages count in every process, and memory the app holds without any process mapping it (GPU buffers, memfd) belongs to no process. The `unattributed` row shows that gap, and `kernel` shows the app's own page tables, slab and stacks.
-- Anything started from a terminal counts as the terminal, because that's the cgroup it lives in. Use `g` in the process view to see what is actually running there.
+- **RAM** is anonymous + shared + charged kernel memory of the app, without page cache.
+  Page cache is reclaimable and makes an app that read a big file look like a hog, so it has its own column (`c`).
+- **SWAP** is what the kernel moved out of RAM for that app.
+  With zswap it also includes pages kept compressed in RAM.
+- **TOTAL** is SWAP + RAM: an accounting sum, not a promise of what closing the app frees.
+- **pressure** is the share of the last 10 s that programs spent waiting for memory.
+  It tells you whether memory stalls are happening, not which app causes them.
+- Rows don't add up to the header: system services (`x`) and memory outside your session (VMs, containers, other users: `elsewhere`) cover the rest.
+- Process rows leave out file-backed pages, so they read smaller than htop's RES.
 
 Press `?` in the app for the full explanation.
 
+## For agents
+
+appmem has a non-interactive interface next to the TUI, so you can give this repo's link to an AI agent and ask it what is eating your memory.
+
+```
+appmem snapshot [--system] [--limit N] [--json]
+appmem app NAME [--scope user|system] [--limit N] [--json]
+appmem schema [COMMAND]
+```
+
+`appmem snapshot` reports the machine and every app, and `appmem app NAME` reports the units, processes and commands of one app.
+Both print a text report on a terminal and JSON otherwise; `--json` forces JSON.
+`appmem schema` describes the commands, flags, output fields and exit codes as JSON.
+Every error is one JSON object on the last line of stderr with a stable `kind` (listed below).
+The diagnosis workflow (how to read pressure against swap, what hides inside a terminal, what to recommend) is in [`skills/appmem/SKILL.md`](skills/appmem/SKILL.md).
+The command line follows CLI Design Standard 0.1.0, which `appmem schema` reports under `conformance`.
+
+| Exit code | Meaning |
+|---|---|
+| 0 | success |
+| 1 | runtime failure (`not_found`, `cgroup_unavailable`) |
+| 2 | invalid call (`invalid_input`, `terminal_required`) |
+| 130, 143 | interrupted (Ctrl+C, SIGTERM) |
+
+Bare `appmem` is the TUI.
+Without a terminal (piped, `--json`, or `NO_INPUT` set) it exits 2 and points to `appmem snapshot`.
+There are no shell completions yet.
+
 ## Cost
 
-About 1 % of a CPU core for reading the counters at the default 1 s interval. With the Textual UI on a busy desktop the whole process takes roughly 4-5 % of one core, in the process view of a 280-process app too.
+About 1 % of a CPU core for reading the counters at the default 1 s interval; with the UI, 3-4 % of one core on a busy desktop.
 
 ## License
 

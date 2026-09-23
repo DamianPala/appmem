@@ -1,4 +1,4 @@
-# appmem: spec v0.2
+# appmem: spec v0.3
 
 A live terminal view of RAM and swap usage **per application**, not per process.
 Think `btm` or `htop`, but rows are apps (Ghostty, Brave, LibreOffice), each summing all of its processes.
@@ -17,76 +17,90 @@ Which app holds the memory and swap? Is memory actually the problem right now? W
 
 **In v1:**
 
-- One command, `appmem`, opens the live view straight away.
+- `appmem` opens the live view straight away.
 - Refresh every 1 s (`-i/--interval SECONDS` to change).
 - One row per app, sortable by clicking a column header or by key.
-- Enter on a row opens the app's process view, which can also group processes by command.
+- Enter on a row opens the app's process view, which can also group processes by command and drill into one command.
 - A `?` screen explaining the numbers.
-- Terminal only.
+- Non-interactive commands for scripts and agents: `appmem snapshot`, `appmem app NAME`, `appmem schema`, plus an agent skill in `skills/appmem/SKILL.md`.
 
-**Not in v1:** JSON output, recording/history, charts, CPU or I/O stats, killing processes, config files, login-session scopes, running as root, macOS/Windows, cgroup v1.
+**Not in v1:** recording/history, charts, a streaming `watch` command, CPU or I/O stats, killing processes, config files, login-session scopes, running as root, macOS/Windows, cgroup v1.
 
 ## Screens
 
 ### Main view
 
 ```
-RAM 19.9 / 30.9 GiB  avail 11.0   Swap 20.8 / 32.0 GiB   memory pressure: none   system 0.5 GiB (x)
-Δ since 14:02 (5m)
-
-  APP              SWAP      RAM       TOTAL ▾   ΔSWAP     ΔRAM      PROCS
-  ghostty          10.9 GiB  6.0 GiB   16.8 GiB  +2 MiB    +60 MiB     278
-  plasma           2.2 GiB   1.4 GiB   3.6 GiB   0         +12 MiB      32
-  chrome           1.2 GiB   2.6 GiB   3.8 GiB   +35 MiB   +480 MiB     37
-  code             896 MiB   1.8 GiB   2.6 GiB   0         +4 MiB       32
-  ...
-
- click header / s r t d  sort   enter  processes   x  system   z  reset Δ   ?  help   q  quit
+RAM 16.7/30.9 GiB   avail 14.2 GiB   Swap 24.0/32.0 GiB   pressure 10s: none   system 652 MiB [x]   elsewhere 116 MiB
+Δ since 02:13 (3s)
+ APP                        SWAP        RAM         TOTAL ▾     ΔSWAP      ΔRAM       PROCS
+ ghostty                      11.2 GiB     6.6 GiB    17.8 GiB          ·     -3 MiB     281
+ plasma                        2.3 GiB     1.6 GiB     3.9 GiB          ·          ·      17
+ chrome                        2.2 GiB     1.6 GiB     3.7 GiB          ·     -1 MiB      35
+ ...
+ s r t d sort  enter procs  x system  c cache  z reset Δ  ? help  q quit
 ```
 
 - **Header line 1:**
   - System RAM used (`MemTotal - MemAvailable`) and available.
-  - System swap used and total, or `Swap off` when `SwapTotal` is 0.
-  - Memory pressure as a word (see Definitions), omitted when `/proc/pressure/memory` does not exist.
+  - System swap used and total, or `Swap off` when `SwapTotal` is 0. Coloured yellow above 50 % used, red above 80 %.
+  - Memory pressure as a bold word (see Definitions), green/yellow/red; omitted when `/proc/pressure/memory` does not exist.
   - Total of the hidden system services, so the user notices when the culprit is there.
+  - `elsewhere`: memory outside the user tree and `system.slice` (root `memory.stat` minus both): VMs, containers, other users, login sessions.
+  - Never wraps: when too narrow, parts drop in the order `elsewhere`, `system`, `avail`. RAM, Swap and pressure always stay.
 - **Header line 2:** when the Δ baseline was taken and how long ago.
 - The sort marker `▴`/`▾` sits on the sorted column. Default sort: TOTAL descending.
 - Clicking the sorted column again flips the direction.
 - Rows with equal values keep a stable order by app name.
+- Δ below 1 MiB either way shows as a dim `·`; Δ columns render dim while the baseline is younger than 60 s.
+- Under 95 columns ΔSWAP and ΔRAM are hidden; sorting by a hidden column falls back to TOTAL descending.
+- A footer with key caps sits at the bottom of every view and drops its lowest-priority items instead of wrapping.
 
 ### Process view (after Enter)
 
 ```
-ghostty   278 procs   swap 10.9 GiB   RAM 6.0 GiB             g  group by command   esc  back
+ghostty   281 procs   swap 11.2 GiB   RAM 6.6 GiB
+ PID      NAME                  SWAP        RAM         TOTAL ▾     AGE     UNIT
+    6091  ghostty                  3.3 GiB     129 MiB     3.4 GiB     86d  app-com.mitchellh.ghostty.service
+ 1504671  ghostty                  591 MiB      19 MiB     610 MiB     12d  app-ghostty\x2d2@ad7f69d9c06a4d43bae214674…
+ 2026292  claude                   135 MiB     268 MiB     404 MiB      1d  app-ghostty-surface-transient-4172209.scope
+ ...
+          kernel                   ...                                      (page tables, slab, stacks)
+          unattributed             ...                                      (held by the app, not by any process)
 
-      PID  NAME       SWAP      RAM       TOTAL ▾   AGE   UNIT
-     6091  ghostty    3.3 GiB   181 MiB   3.5 GiB   86d   app-com.mitchellh.ghostty.service
-  1504671  ghostty    591 MiB   18 MiB    609 MiB   6d    app-ghostty-surface-transient-1504671.scope
-  2026292  claude     136 MiB   258 MiB   394 MiB   2h    app-ghostty\x2d2@7b755c4e18184688b9c5e64a8ceb245d.service
-  ...
-           other      857 MiB   297 MiB   1.1 GiB         (held by the app, not by any process)
+systemctl --user stop 'app-com.mitchellh.ghostty.service'   kill 6091
+ s r t sort  g group  enter (grouped: members)  ? help  esc back  q quit
 ```
 
 With `g` (group by command):
 
 ```
-  NAME       SWAP      RAM       TOTAL ▾   PROCS
-  ghostty    4.2 GiB   ...                    12
-  node       1.7 GiB   ...                    40
-  claude     1.3 GiB   ...                     8
-  npm        800 MiB   ...                    22
-  ...
+ NAME                  SWAP        RAM         TOTAL ▾     PROCS
+ claude                   1.3 GiB     4.2 GiB     5.5 GiB      18
+ ghostty                  4.3 GiB     207 MiB     4.5 GiB       3
+ node                     1.7 GiB     307 MiB     2.0 GiB      68
+ ...
 ```
+
+Enter on a command drills into its member processes (title `ghostty › claude`, flat columns, live); Esc returns to the grouped list on the same command.
 
 - The process view opens sorted by the same column as the main view (SWAP stays SWAP, TOTAL stays TOTAL).
 - SWAP, RAM and TOTAL are per-process values (see Definitions).
-- The `other` row is the app row minus the sum of process rows, clamped at 0. It shows memory the app holds without any process mapping it. Without that row the gap would look like a bug.
-- UNIT is the last column and is never truncated, so it can be copied into `systemctl --user`. The table scrolls sideways when it doesn't fit.
-- Both layouts refresh with the same interval as the main view.
+- Two dim rows are pinned last in the flat and grouped layouts (not in a drill-down, since they belong to the whole app):
+  - `kernel`: the app's charged kernel memory (the `kernel` field of `memory.stat`).
+  - `unattributed`: app SWAP minus the process SWAP sum, and app RAM minus kernel minus the process RAM sum, each clamped at 0. Memory the app holds without any process mapping it. Without that row the gap would look like a bug.
+- The status line above the footer describes the selected row:
+  - process row: the full unit name and `systemctl --user stop '<unit>'` (`sudo systemctl stop '<unit>'` for system units) plus `kill <PID>`;
+  - grouped command in one unit: the stop command without `kill`; in several units: `N units, Enter lists the processes`;
+  - `kernel`/`unattributed`: a one-line explanation.
+  The unit is shortened in the middle only when the line is wider than the terminal.
+- The UNIT column is the last one and may be cut at the screen edge; the status line carries the full name.
+- Under 95 columns AGE is hidden. The title drops `procs`, then `swap`, instead of wrapping.
+- All layouts refresh with the same interval as the main view.
 
 ### Help screen (`?`)
 
-A static screen with the definitions below in plain words.
+A scrolling screen with the definitions below in plain words, soft-wrapped to the width, with `esc/?/q close` in its title line.
 It covers what RAM, CACHE, SWAP, TOTAL and pressure mean, why rows don't add up to the header, why a closed app can still have a row, and how to act on what you see.
 
 ## Keys
@@ -96,7 +110,7 @@ It covers what RAM, CACHE, SWAP, TOTAL and pressure mean, why rows don't add up 
 | click header | sort by that column, click again to reverse |
 | `s` / `r` / `t` / `d` | sort by SWAP / RAM / TOTAL / ΔSWAP (repeat to reverse); other columns sort by click |
 | `↑` `↓` `PgUp` `PgDn` | move |
-| `Enter` | open the process view for the selected app |
+| `Enter` | open the process view for the selected app; in grouped mode, the processes of the selected command |
 | `g` | process view: toggle grouping by command |
 | `Esc` | back to the main view |
 | `c` | toggle the CACHE column |
@@ -113,16 +127,17 @@ All reads are plain, world-readable files. No root needed.
 |---|---|
 | App units | see "Finding units" below |
 | SWAP per app | `memory.swap.current` of the unit |
-| RAM per app | `memory.stat` of the unit: `anon + shmem + kernel` |
+| RAM per app | `memory.stat` of the unit: `anon + shmem + kernel` (kernels before 5.18 have no `kernel` field: `slab + kernel_stack + pagetables + percpu`) |
 | CACHE per app | `memory.stat` of the unit: `file - shmem` |
 | Processes of an app | `cgroup.procs` of the unit and every directory below it |
 | SWAP per process | `/proc/PID/status` → `VmSwap` |
 | RAM per process | `/proc/PID/status` → `RssAnon + RssShmem` |
-| Process name | basename of `/proc/PID/cmdline` first field, `/proc/PID/comm` when cmdline is empty |
+| Process name | basename of the first whitespace-separated token of the first `/proc/PID/cmdline` field (never the arguments, which can hold secrets); `/proc/PID/comm` when cmdline is empty, the result is `exe`, or argv[0] starts with `/proc/` |
 | Process age | `/proc/PID/stat` field 22 (`starttime`), parsed after the last `)` because names may contain spaces and parentheses |
 | System totals | `/proc/meminfo`: `MemTotal`, `MemAvailable`, `SwapTotal`, `SwapFree` |
-| Pressure | `/proc/pressure/memory`, `avg10` of `some` and `full` |
+| Pressure | `/proc/pressure/memory`, `avg10` and `avg60` of `some` and `full` |
 | Hidden system total | `memory.stat` and `memory.swap.current` of `/sys/fs/cgroup/system.slice` |
+| `elsewhere` | root `/sys/fs/cgroup/memory.stat` minus the `user@$UID.service` tree minus `system.slice` |
 
 PROCS is the line count of `cgroup.procs`, not `pids.current`, which counts threads.
 
@@ -148,13 +163,15 @@ Login-session scopes (`user-$UID.slice/session-N.scope`: the display manager hel
 - **SWAP = memory.swap.current.** With zswap enabled this includes pages held compressed in RAM. v1 does not separate them.
 - **TOTAL = SWAP + RAM.**
 - **Per-process RAM and SWAP** come from `/proc/PID/status`, the same numbers htop uses. They are readable for every process, including sandboxed browser processes and other users' processes.
-  They don't add up to the app row, for two reasons. A shared page counts once in every process that maps it, so rows can add up to more than the app. Memory the app holds without any process mapping it (GPU buffers, memfd, tmpfs) belongs to no process, so rows can fall short. The `other` row shows the shortfall.
+  They don't add up to the app row, for two reasons. A shared page counts once in every process that maps it, so rows can add up to more than the app. Memory the app holds without any process mapping it (GPU buffers, memfd, tmpfs) belongs to no process, so rows can fall short. The `kernel` and `unattributed` rows show the gap.
 - **Memory pressure** is the share of time tasks waited for memory over the last 10 s:
-  - `none`: `some avg10` < 1 %
-  - `high`: `full avg10` > 5 %
-  - `some`: anything in between, shown with the value, e.g. `some (3.2 %)`
+  - `high`: `full avg10` > 5 % or `some avg10` > 20 %
+  - `some`: `some avg10` ≥ 1 %, shown with the value, e.g. `some (3.2 %)`
+  - `none (some X % last min)`: below that, but `some avg60` > 1 %, so stalls just stopped
+  - `none`: otherwise
 
   Big swap with pressure `none` means idle pages were paged out, and memory is not why the machine is slow right now.
+- **App identity** is (scope, name): a user app and a system service with the same name are separate rows, and system rows show as `name [sys]`.
 - **Δ** is the change since the baseline shown in the header: appmem start, or the last `z`. Apps that appear later count from their first sample.
 
 ## Grouping: unit → app name
@@ -232,50 +249,55 @@ Splitting terminal children into their own main-view rows is v2.
 - Rows with less than 1 MiB TOTAL are hidden. The CACHE toggle doesn't change which rows show.
 - Apps that appear mid-session get a row. Apps that disappear drop out at the next refresh.
 - A unit or process that vanishes between listing and reading is skipped silently. This is normal churn, not an error.
-- A row can have PROCS 0 and memory above 0: the unit outlives its processes while it still holds memory. It shows like any other row, and its process view shows only the `other` row.
+- A row can have PROCS 0 and memory above 0: the unit outlives its processes while it still holds memory. It shows like any other row, and its process view shows only the `kernel` and `unattributed` rows.
+- A tick whose `memory.stat` read fails transiently is skipped; the screen keeps the last data. Only a missing user tree ends the app.
 - The cursor follows the selected app across refreshes and re-sorts. If that app disappears, the cursor stays at the same row index, or on the last row.
 
 ## Command line
 
 ```
-appmem [-i SECONDS] [--system]
+appmem [-i SECONDS] [--system]                      live view (TUI)
+appmem snapshot [--system] [--limit N] [--json]     machine state + apps
+appmem app NAME [--scope user|system] [--limit N] [--json]
+                                                    one app: units, processes, commands, remainder
+appmem schema [COMMAND]                             interface description as JSON
 appmem --help | -h
 appmem --version | -V
 ```
 
-| Flag | Default | Meaning |
-|---|---|---|
-| `-i`, `--interval SECONDS` | `1` | Refresh interval, number ≥ 0.2 |
-| `--system` | off | Start with system services shown (same as `x`) |
+The command line conforms to the house CLI Design Standard 0.1.0 (claimed in `appmem schema` under `conformance`).
+`appmem schema` and each command's `--help` are the reference for flags, defaults and output fields; this section only fixes the behaviour.
 
-Follows the house CLI Design Standard 0.1.0 where it applies to an interactive-only tool.
-Full conformance (`schema`, `--json`) comes with `snapshot --json`.
-
-- `--help` is a standalone cheat sheet: purpose, flags, keys, how to read pressure, one example.
-- Unknown flags and invalid values fail before the TUI starts, with exit `2` and the accepted form.
-- The TUI starts only when stdin and stdout are both terminals. Otherwise appmem exits `2` and says so, instead of drawing escape codes into a pipe.
-- Colour is never the only signal: sort direction uses `▴`/`▾`, deltas use `+`/`-`. `NO_COLOR` is honoured.
+- **Live view** (no command): `-i/--interval` (default 1, ≥ 0.2) and `--system` (start with system services shown). It starts only in a terminal context: stdin and stdout are terminals, no `--json`, `NO_INPUT` unset or empty. Otherwise it exits `2` with `terminal_required` and `next: ["appmem","snapshot"]`, instead of drawing escape codes into a pipe. `-i` together with a command is `invalid_input`, and so is `--system` before `app` or `schema`.
+- **snapshot**: one sample with the same numbers as the main view and header. Apps ≥ 1 MiB TOTAL, sorted by TOTAL, at most `--limit` (default 50) with `has_more`; `next` names the largest app.
+- **app NAME**: resolves (scope, name) exactly like the process view. `units` (raw names), `processes` and `commands` (each paged by `--limit`, default 100), `kernel_bytes` and `unattributed_*`. No match, or every unit gone before it is read: `not_found`, exit 1.
+- **schema**: the index (commands, global flags, format defaults, exit codes, conformance) or one command's detail (flags, args, output schema). Always JSON.
+- Output: text on a terminal, JSON otherwise; `--json` forces JSON. Sizes are integer bytes (`_bytes`), percentages `_percent`, ages `age_seconds`, `taken_at` is RFC 3339 with the local offset. Text reports contain no escape sequences, and names with control characters are shown escaped.
+- A closed stdout pipe (`| head`) ends quietly with exit `0`.
+- `--help` is a standalone cheat sheet: purpose, commands, flags, keys, how to read pressure, one example. Unknown flags and invalid values fail with exit `2` and the accepted form.
+- Colour is never the only signal: sort direction uses `▴`/`▾`, deltas use `+`/`-` and `·`, pressure is a word. `NO_COLOR` is honoured.
 
 Exit codes:
 
 | Code | Meaning |
 |---|---|
-| `0` | Quit with `q` or `Ctrl+C` |
-| `1` | Runtime failure (no usable cgroup v2 tree) |
-| `2` | Usage error, or not running in a terminal |
+| `0` | Success, or quit with `q`/`Ctrl+C` in the live view |
+| `1` | Runtime failure: `cgroup_unavailable`, `not_found` |
+| `2` | Invalid call: `invalid_input`, `terminal_required` |
+| `130`, `143` | Interrupted by SIGINT or SIGTERM (`interrupted` for `snapshot`/`app`) |
 
-For the pre-start failures, where a script may be the caller, the last stderr line is one JSON error object:
+Every failure writes one JSON error object as the last non-empty stderr line, never on stdout:
 
 ```json
-{"error":{"kind":"not_a_tty","message":"appmem needs an interactive terminal on stdin and stdout","action":"user"}}
+{"error": {"kind": "not_found", "message": "no app named 'nosuch' in scope 'user'", "action": "agent", "hint": "Names are as listed by appmem snapshot; system services need --scope system", "next": ["appmem", "snapshot"]}}
 ```
 
-Error kinds: `usage`, `not_a_tty`, `cgroup_unavailable`.
+`kind` is stable; `hint` and `next` (the recovery command) appear where they help.
 
 ## Errors
 
-- `cgroup_unavailable`, exit `1`: no cgroup v2 at `/sys/fs/cgroup`, no `user@$UID.service` tree (e.g. run as root), or the memory controller is not enabled there (`memory.stat` missing). The message names the missing path.
-- `SIGINT`/`SIGTERM` from outside (e.g. `kill`): restore the terminal and exit with the usual `128 + signal` code, with no JSON line.
+- `cgroup_unavailable`, exit `1`: no cgroup v2 at `/sys/fs/cgroup`, no `user@$UID.service` tree (e.g. run as root), or the memory controller is not enabled there (`memory.stat` missing). The message names the missing path. In the live view this can also happen mid-run, when the user tree disappears; the JSON line is printed after the terminal is restored.
+- `SIGINT`/`SIGTERM` from outside (e.g. `kill`) in the live view: restore the terminal and exit with the usual `128 + signal` code, with no JSON line.
 - Swap disabled: SWAP columns show `0` and the header says `Swap off`. The tool still runs.
 
 ## Tech
@@ -293,21 +315,22 @@ Error kinds: `usage`, `not_a_tty`, `cgroup_unavailable`.
 
 Performance budget: the collector stays under 1 % of one CPU core at a 1 s interval.
 Measured on the dev machine: 4.5 ms per tick for 146 units, 10 ms for `/proc/PID/status` of all 542 user processes.
-Measure UI repaint cost in the first build and state it.
+Measured with the UI at `-i 1` on the dev machine (2026-09-23): main view 3.0 %, grouped process view of a 281-process app 3.5 %, drill-down 4.1 % of one core. `appmem snapshot` takes about 0.2 s including interpreter start.
 
 ## Tests
 
 - Grouping: the acceptance table, plus escapes, unknown shapes and empty names.
 - Unit walk: fixture tree with nested sub-cgroups (Konsole tabs, `system-cups.slice/cups.service`) and ignored `*.socket`/`*.mount` directories.
 - Collectors: fixture trees for `memory.stat`, `memory.swap.current`, `/proc/PID/*` (including names with spaces and parentheses), missing files, a process vanishing mid-read.
-- Process view math: the `other` row, clamping at 0, grouping by command.
+- Process view math: the `kernel` and `unattributed` rows, clamping at 0, grouping by command.
 - Formatting: unit boundaries (1023 KiB, 1 MiB, 1023 MiB, 1 GiB) and pressure word thresholds.
-- UI: Textual pilot tests that sort by header click, open the process view, toggle `g`, and return.
-- CLI: exit codes and the JSON error line for a bad flag, a non-TTY run and a missing cgroup tree.
+- UI: Textual pilot tests for sorting, the process view, `g`, drill-down, the status line, narrow layouts (80x24, 60 columns) and the help screen.
+- CLI: exit codes and the JSON error line for every kind; the terminal-context rules; parser-versus-descriptor parity; every emitted document validated against its published output schema.
+- Docs: README and the skill name only commands, flags and error kinds that exist.
 
 ## Later (not v1)
 
-- `appmem snapshot --json` and `appmem schema` for scripts and agents, with full CLI standard conformance.
+- `watch`: an NDJSON stream of snapshots for agents that want growth over time.
 - Per-app swap-in/swap-out rate (`pswpin`/`pswpout` from `memory.stat`) to answer "is this app thrashing right now".
 - `record` + `history` for tracking slow growth over hours or days.
 - Terminal children as their own main-view rows.
