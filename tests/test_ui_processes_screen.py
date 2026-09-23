@@ -128,7 +128,7 @@ async def test_enter_opens_process_view_with_right_title(tmp_path: Path) -> None
         assert "2 procs" in text
         assert "swap 2 MiB" in text
         assert "RAM 6 MiB" in text
-        # 5.3: key hints moved to the footer, no longer inlined in the title.
+        # Key hints moved to the footer, no longer inlined in the title.
         assert "group by command" not in text
         assert "back" not in text
         assert _row_keys(_table(pilot)) == ["100", "101", KERNEL_KEY, UNATTRIBUTED_KEY]
@@ -343,7 +343,7 @@ async def test_help_scrolls_to_reach_the_kill_pid_line_at_80x24(tmp_path: Path) 
         screen = pilot.app.screen
         assert isinstance(screen, HelpScreen)
         scroll = screen.query_one("#help-scroll", VerticalScroll)
-        assert scroll.max_scroll_y > 0  # review round 1 open item 1: was 0 (never scrolled)
+        assert scroll.max_scroll_y > 0  # was 0 (never scrolled)
 
         await pilot.press("end")
         await pilot.pause()
@@ -370,7 +370,7 @@ async def test_help_body_lines_fit_the_content_width_no_orphan_rewrap(tmp_path: 
         # Every line must already fit the real content width (app width minus
         # the scrollbar gutter). If a line were wrapped for the wider app
         # width instead, Static would auto-wrap it again here, spilling its
-        # last word onto an orphan line of its own (review round 1 open item 1).
+        # last word onto an orphan line of its own.
         content_width = scroll.size.width - scroll.scrollbar_size_vertical
         body = screen.query_one("#help-text", Static)
         lines = str(body.content).split("\n")
@@ -421,7 +421,7 @@ async def test_help_title_and_footer_stay_visible_without_scrolling_at_80x24(
         assert "close" in str(footer.content)
 
 
-# --- 4.2: kernel/unattributed rows pinned last under every sort, both modes ----
+# --- kernel/unattributed rows pinned last under every sort, both modes ----------
 
 
 @pytest.mark.asyncio
@@ -455,7 +455,7 @@ async def test_kernel_and_unattributed_rows_stay_pinned_last_under_every_sort(
             assert _row_keys(table)[-2:] == [KERNEL_KEY, UNATTRIBUTED_KEY]
 
 
-# --- 4.4: the unit list is re-derived every tick, not captured once on Enter ---
+# --- the unit list is re-derived every tick, not captured once on Enter --------
 
 
 @pytest.mark.asyncio
@@ -506,7 +506,7 @@ async def test_unit_replaced_while_the_process_view_is_open_keeps_the_app_alive(
         assert "300" in _row_keys(_table(pilot))
 
 
-# --- 4.8: externally sourced names render literally, markup never parsed -------
+# --- externally sourced names render literally, markup never parsed ------------
 
 
 @pytest.mark.asyncio
@@ -541,7 +541,7 @@ async def test_markup_like_app_name_renders_literally_in_the_process_view_title(
     # text: dropping the title `Static`'s `markup=False` still passed it. Here
     # the app name itself is markup-like, so the title's rendered text would
     # change (Rich would consume "[bold]" as a style tag) if markup parsing
-    # ran (final review, slice 4 round 2 item 3).
+    # ran.
     root = _base_tree(tmp_path)
     _app_unit(root, "app-[bold]x[-].service", ram=1 * 1024**2, swap=0, pids=[100])
     _proc(root, 100, name="node")
@@ -561,7 +561,7 @@ async def test_markup_like_app_name_renders_literally_in_the_process_view_title(
         assert visual.spans == []  # not parsed into a "bold" style span
 
 
-# --- 4.9: a vanishing cgroup tree exits cleanly, no traceback -------------------
+# --- a vanishing cgroup tree exits cleanly, no traceback ------------------------
 
 
 @pytest.mark.asyncio
@@ -588,7 +588,7 @@ async def test_cgroup_vanishing_mid_tick_exits_with_code_1(tmp_path: Path) -> No
 @pytest.mark.asyncio
 async def test_transient_memory_stat_failure_skips_the_process_view_tick(tmp_path: Path) -> None:
     # Directory present, memory.stat unparseable for one tick: skip the tick,
-    # keep the rows, no exit and no "app no longer running" (slice 4 round 2 item 5).
+    # keep the rows, no exit and no "app no longer running".
     root = _base_tree(tmp_path)
     _app_unit(root, "app-ghostty.service", ram=1 * 1024**2, swap=0, pids=[100])
     _proc(root, 100, name="ghostty")
@@ -610,7 +610,7 @@ async def test_transient_memory_stat_failure_skips_the_process_view_tick(tmp_pat
     assert app.return_code is None
 
 
-# --- 5.3: footer present in the process view and the help screen ---------------
+# --- footer present in the process view and the help screen --------------------
 
 
 @pytest.mark.asyncio
@@ -634,7 +634,7 @@ async def test_footer_present_in_process_view(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_footer_drops_lowest_priority_items_at_60_columns(tmp_path: Path) -> None:
-    # Review round 1 open item 3: the footer never wraps. Below its natural
+    # The footer never wraps. Below its natural
     # width (72 cols) it drops items lowest priority first, keeping help,
     # back and quit no matter how narrow.
     root = _base_tree(tmp_path)
@@ -672,7 +672,7 @@ async def test_footer_present_in_help_screen(tmp_path: Path) -> None:
         assert content.plain == " esc close"
 
 
-# --- 5.4: status line for the selected row --------------------------------------
+# --- status line for the selected row --------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -767,7 +767,7 @@ async def test_status_line_ellipsizes_long_unit_in_the_middle(tmp_path: Path) ->
 async def test_status_line_in_grouped_mode_one_unit_shows_command_no_kill(
     tmp_path: Path,
 ) -> None:
-    # Review round 1 open item 2: grouped mode is where the terminal use case
+    # Grouped mode is where the terminal use case
     # lives (ghostty -> claude), so a command backed by a single unit gets the
     # same stop command as a real process row, minus `kill` (several PIDs).
     root = _base_tree(tmp_path)
@@ -845,7 +845,7 @@ async def test_status_line_in_grouped_mode_on_kernel_and_unattributed_rows(
         assert "accounting difference" in str(status.content)
 
 
-# --- 5.5: grouped drill-down ------------------------------------------------------
+# --- grouped drill-down ------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -985,7 +985,7 @@ async def test_app_gone_while_drilled_clears_the_table(tmp_path: Path) -> None:
         assert "no longer running" in str(screen.query_one("#title", Static).content)
 
 
-# --- 5.1: AGE hidden below 95 columns, process-view title never wraps ----------
+# --- AGE hidden below 95 columns, process-view title never wraps ---------------
 
 
 @pytest.mark.asyncio

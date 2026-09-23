@@ -75,7 +75,7 @@ def _row_names(table: DataTable[str | Text]) -> list[str]:
 
 async def _click_header(pilot: Pilot[None], table: DataTable[str | Text], column_key: str) -> None:
     # A genuine pilot `click`, not calling `on_data_table_header_selected`
-    # directly (SPEC.md "Tests" 4.5): computes the header cell's x offset from
+    # directly (SPEC.md "Tests"): computes the header cell's x offset from
     # the table's own column layout and clicks the header row (y=0).
     column_index = table.get_column_index(column_key)
     region = table._get_column_region(column_index)  # pyright: ignore[reportPrivateUsage]
@@ -187,8 +187,8 @@ async def test_hiding_cache_while_sorted_by_it_falls_back_to_total_desc(tmp_path
 
         await pilot.press("c")  # hide CACHE while it's the active sort column
 
-        # Falls back to TOTAL desc (SPEC.md "Main view"; final review A5),
-        # not just dropping to insertion order or staying CACHE-ordered.
+        # Falls back to TOTAL desc (SPEC.md "Main view"), not just dropping
+        # to insertion order or staying CACHE-ordered.
         assert _row_names(table) == ["bravo", "alpha"]
 
 
@@ -258,8 +258,7 @@ async def test_z_takes_a_fresh_sample_not_the_previous_ticks_data(tmp_path: Path
     # `test_z_resets_delta_to_zero` above passes even if `z` reuses
     # `self._last_apps` from the previous tick, because nothing changes on
     # disk between `z` and the assertion. Here the fixture keeps moving after
-    # the last tick, so a stale baseline and a fresh one disagree (final
-    # review, slice 4 round 2 item 2).
+    # the last tick, so a stale baseline and a fresh one disagree.
     root = _base_tree(tmp_path)
     _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
 
@@ -344,7 +343,7 @@ async def test_ctrl_c_quits_with_exit_code_zero(tmp_path: Path) -> None:
     assert app.return_code == 0
 
 
-# --- 4.5: cursor follows the selected app across an explicit sort --------------
+# --- cursor follows the selected app across an explicit sort -------------------
 
 
 @pytest.mark.asyncio
@@ -388,7 +387,7 @@ async def test_cursor_follows_selected_app_across_a_real_pilot_header_click(
         assert cursor_key.value == row_key("alpha", "user")
 
 
-# --- 4.6: sorting compares full raw values, never truncated rendered text ------
+# --- sorting compares full raw values, never truncated rendered text -----------
 
 
 @pytest.mark.asyncio
@@ -397,7 +396,7 @@ async def test_sorting_by_app_uses_full_name_not_truncated_rendered_text(
 ) -> None:
     # Both names share a 31-char prefix, so `truncate_name`'s 32-char cap
     # would render them identically ("<prefix>…"); only the untruncated name
-    # tells them apart (final review F12/A6).
+    # tells them apart.
     prefix = "x" * 31
     root = _base_tree(tmp_path)
     _app_unit(root, f"{prefix}b1.service", ram=1 * 1024**2, swap=0)
@@ -416,7 +415,7 @@ async def test_sorting_by_app_uses_full_name_not_truncated_rendered_text(
         assert _row_names(table) == [f"{prefix}b1", f"{prefix}c2"]
 
 
-# --- 4.7: system rows render with a "[sys]" suffix ------------------------------
+# --- system rows render with a "[sys]" suffix -----------------------------------
 
 
 @pytest.mark.asyncio
@@ -433,7 +432,7 @@ async def test_system_app_renders_with_sys_suffix_in_the_app_cell(tmp_path: Path
         assert cell.plain == "cups [sys]"
 
 
-# --- 4.8: externally sourced names render literally, markup never parsed -------
+# --- externally sourced names render literally, markup never parsed ------------
 
 
 @pytest.mark.asyncio
@@ -451,7 +450,7 @@ async def test_markup_like_app_name_is_rendered_literally(tmp_path: Path) -> Non
         assert cell.spans == []  # not parsed as Rich markup into a styled span
 
 
-# --- 4.9: a vanishing cgroup tree exits cleanly, no traceback -------------------
+# --- a vanishing cgroup tree exits cleanly, no traceback ------------------------
 
 
 @pytest.mark.asyncio
@@ -482,7 +481,7 @@ async def test_transient_memory_stat_failure_skips_the_tick_and_keeps_last_data(
     # The user tree directory stays put but its memory.stat becomes
     # unparseable for one tick (e.g. read mid-write): the tick must be
     # skipped silently -- last data kept on screen, no exit -- not treated as
-    # the tree vanishing (final review, slice 4 round 2 item 5).
+    # the tree vanishing.
     root = _base_tree(tmp_path)
     _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
     app = _app(root)
@@ -503,7 +502,7 @@ async def test_transient_memory_stat_failure_skips_the_tick_and_keeps_last_data(
     assert app.return_code is None  # the session is still running, not exited
 
 
-# --- 5.1: narrow terminals hide ΔSWAP/ΔRAM below 95 columns ---------------------
+# --- narrow terminals hide ΔSWAP/ΔRAM below 95 columns ---------------------------
 
 
 @pytest.mark.asyncio
@@ -583,7 +582,7 @@ async def test_d_is_a_noop_while_delta_columns_are_hidden(tmp_path: Path) -> Non
         assert screen._sort_key == "total"  # pyright: ignore[reportPrivateUsage]
 
 
-# --- 5.1: header line never wraps, recomputed on resize -------------------------
+# --- header line never wraps, recomputed on resize -------------------------------
 
 
 @pytest.mark.asyncio
@@ -605,7 +604,7 @@ async def test_header_line1_recomputes_on_resize(tmp_path: Path) -> None:
         assert len(narrow_text) <= len(wide_text)
 
 
-# --- 5.2: Δ columns render dim for small deltas and a young baseline -----------
+# --- Δ columns render dim for small deltas and a young baseline -----------------
 
 
 @pytest.mark.asyncio
@@ -691,7 +690,7 @@ async def test_delta_cell_dim_dot_for_small_delta_even_once_seasoned(tmp_path: P
         assert cell.style == "dim"
 
 
-# --- 5.3: footer is present with key caps ---------------------------------------
+# --- footer is present with key caps ----------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -717,7 +716,7 @@ async def test_footer_shows_key_caps(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_footer_drops_lowest_priority_items_at_60_columns(tmp_path: Path) -> None:
-    # Review round 1 open item 3: the footer never wraps. Below its natural
+    # The footer never wraps. Below its natural
     # width (72 cols) it drops items lowest priority first, keeping help and
     # quit no matter how narrow.
     root = _base_tree(tmp_path)

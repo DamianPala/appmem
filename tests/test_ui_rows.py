@@ -51,8 +51,8 @@ def test_update_baseline_keeps_existing_entries_untouched() -> None:
 
 
 def test_update_baseline_drops_entry_when_app_leaves() -> None:
-    # Final review F15: a closed and reopened app must not compare against its
-    # old instance's baseline.
+    # A closed and reopened app must not compare against its old instance's
+    # baseline.
     baseline = update_baseline([], {("user", "ghostty"): _app("ghostty", swap=999)})
 
     assert baseline == {}
@@ -97,7 +97,7 @@ def test_build_rows_app_missing_from_baseline_gets_zero_delta() -> None:
 
 
 def test_build_rows_user_and_system_same_name_get_separate_deltas() -> None:
-    # SPEC.md "Grouping": app identity is (scope, name) (final review A7).
+    # SPEC.md "Grouping": app identity is (scope, name).
     apps = [_app("dbus", scope="user", swap=60), _app("dbus", scope="system", swap=5)]
     baseline = {
         ("user", "dbus"): _app("dbus", scope="user", swap=10),

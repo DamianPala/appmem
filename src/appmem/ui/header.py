@@ -12,7 +12,7 @@ from appmem.ui.layout import fit_line
 
 _ELSEWHERE_THRESHOLD = 1024 * 1024
 
-# 5.1: main header drop order when the line doesn't fit -- elsewhere first,
+# Main header drop order when the line doesn't fit -- elsewhere first,
 # then system, then avail; RAM, Swap and pressure are never dropped.
 _DROP_ORDER = ("elsewhere", "system", "avail")
 
@@ -29,7 +29,7 @@ def _pressure_part(stats: SystemStats) -> Text | None:
     word = pressure_word(
         stats.pressure_some_avg10, stats.pressure_some_avg60, stats.pressure_full_avg10
     )
-    # 5.2: bold + coloured pressure word only (none green, some yellow, high
+    # Bold + coloured pressure word only (none green, some yellow, high
     # red); any "(some X % ...)" qualifier after it stays plain. The word
     # itself never changes with color (NO_COLOR strips the style, not the
     # text), so this alone already says what pressure means in words.
@@ -54,7 +54,7 @@ def _swap_part(stats: SystemStats) -> Text:
         return Text("Swap off")
     used = stats.swap_total - stats.swap_free
     pair = format_pair(used, stats.swap_total)
-    # 5.2: swap used/total coloured yellow > 50 %, red > 80 % of total.
+    # Swap used/total coloured yellow > 50 %, red > 80 % of total.
     style = _swap_style(used, stats.swap_total)
     return Text("Swap ") + Text(pair, style=style or "")
 
@@ -64,8 +64,8 @@ def format_line1(stats: SystemStats, width: int) -> Text:
     and memory charged outside the walked trees.
 
     Never wraps: built from parts with a priority, dropping the lowest below
-    `width` and recomputed on every resize (SPEC.md "Main-view polish"; final
-    review F2/5.1). Used/total share a unit when they render to the same one
+    `width` and recomputed on every resize (SPEC.md "Main-view polish").
+    Used/total share a unit when they render to the same one
     (`format_pair`), and the pressure label drops the redundant "memory" word.
 
     The system.slice total is shown regardless of whether system rows are

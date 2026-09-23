@@ -36,7 +36,7 @@ class MemoryStatUnavailableError(Exception):
     user's tree directory exists but its `memory.stat` couldn't be parsed
     this tick (e.g. read mid-write). Transient, unlike `CgroupUnavailableError`:
     callers should skip the tick and keep the last data on screen, not treat
-    the session as over (final review, slice 4 round 2 item 5).
+    the session as over.
     """
 
 
@@ -123,10 +123,10 @@ class CommandStats:
     ram: int
     count: int
     units: tuple[str, ...]
-    """Sorted, de-duplicated unit names the group's processes belong to
-    (review round 1 open item 2): a command usually lives in one unit (the
-    terminal it was started from), but can legitimately span several (the
-    same shell command run in two terminal windows)."""
+    """Sorted, de-duplicated unit names the group's processes belong to:
+    a command usually lives in one unit (the terminal it was started from),
+    but can legitimately span several (the same shell command run in two
+    terminal windows)."""
 
 
 # --- system ---------------------------------------------------------------
@@ -221,11 +221,10 @@ def find_units(root: Path, uid: int, include_system: bool, *, strict: bool = Tru
 
     `strict` (default `True`, the pre-start check in `cli.py`) also raises
     `CgroupUnavailableError` when that tree's `memory.stat` can't be parsed
-    (memory controller not enabled there, F1). A per-tick caller passes
+    (memory controller not enabled there). A per-tick caller passes
     `strict=False`: the same parse failure there is usually transient (e.g. a
     read mid-write), so it raises the lighter `MemoryStatUnavailableError`
-    instead, which callers treat as "skip this tick" rather than fatal
-    (final review, slice 4 round 2 item 5).
+    instead, which callers treat as "skip this tick" rather than fatal.
     """
     cgroup_root = os.path.join(str(root), "sys", "fs", "cgroup")
     user_root = os.path.join(cgroup_root, "user.slice", f"user-{uid}.slice", f"user@{uid}.service")
@@ -234,7 +233,7 @@ def find_units(root: Path, uid: int, include_system: bool, *, strict: bool = Tru
     memory_stat = os.path.join(user_root, "memory.stat")
     # Parses the file rather than just checking it exists, so a controller
     # enabled without anon/shmem/file (memory accounting not really on) fails
-    # here instead of showing an empty table (F1).
+    # here instead of showing an empty table.
     if _read_ram(memory_stat) is None:
         if strict:
             raise CgroupUnavailableError(f"missing cgroup path: {memory_stat}")
@@ -554,7 +553,7 @@ def _read_proc_name(proc_dir: Path) -> str:
         basename = Path(argv0).name
         # Electron/AppImage-style processes re-exec through /proc/self/exe, so
         # cmdline[0] is that self-referential path and its basename is just
-        # "exe"; comm still carries the real program name in both cases (F6).
+        # "exe"; comm still carries the real program name in both cases.
         if basename != "exe" and not argv0.startswith("/proc/"):
             return basename
     return (proc_dir / "comm").read_bytes().decode(errors="replace").strip()

@@ -4,8 +4,7 @@
 never its `RowKey` (see Textual's `DataTable.sort`), so a sort built by ranking
 rows via their *rendered* first-column text can silently collide: two
 different app/command names truncated to the same prefix, or a synthetic row
-whose display text happens to equal a real command's name (SPEC.md "Tech";
-final review F12/A6).
+whose display text happens to equal a real command's name (SPEC.md "Tech").
 
 `reorder_rows` instead ranks each row by its real `RowKey` string -- the same
 identity already used to add/update/remove that row -- and hands `sort` a key

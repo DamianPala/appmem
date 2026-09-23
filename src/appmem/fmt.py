@@ -44,7 +44,7 @@ def pressure_word(some_avg10: float, some_avg60: float, full_avg10: float) -> st
 def format_delta(num_bytes: int) -> str:
     """Format a Δ byte count: ``+``/``-`` sign and size, or ``·`` when
     ``|num_bytes|`` is under 1 MiB -- noise at KiB granularity in the first
-    minutes (SPEC.md "Main view"; final review F4/5.2)."""
+    minutes (SPEC.md "Main view")."""
     if abs(num_bytes) < _MIB:
         return "·"
     sign = "+" if num_bytes > 0 else "-"
@@ -112,7 +112,7 @@ def ellipsize_middle(text: str, max_len: int) -> str:
 
     Used for the process-view status line's unit name, which is otherwise
     never truncated: only when the whole line is wider than the terminal
-    (SPEC.md "Process view"; final review F8/5.4).
+    (SPEC.md "Process view").
     """
     if len(text) <= max_len:
         return text
@@ -127,7 +127,7 @@ def ellipsize_middle(text: str, max_len: int) -> str:
 def status_line_command(scope: str, unit: str, pid: int | None, width: int) -> str:
     """Build the process-view status line for a real unit/process row: the
     ready-made stop command for its unit, plus `kill PID` when the selected
-    row is an actual process (SPEC.md "Process view"; final review F8/5.4).
+    row is an actual process (SPEC.md "Process view").
 
     The unit name is never truncated unless the whole line would be wider
     than `width`, in which case only the unit name is ellipsized in the

@@ -88,7 +88,7 @@ def test_unattributed_process_row_clamps_at_zero() -> None:
 
 def test_synthetic_keys_never_collide_with_a_real_pid_or_command_name() -> None:
     # A real process/command literally named "kernel" or "unattributed" must
-    # still get its own row key (final review A6).
+    # still get its own row key.
     rows = build_process_rows([_proc(1, "kernel"), _proc(2, "unattributed")])
 
     assert KERNEL_KEY not in {row.key for row in rows}

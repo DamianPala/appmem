@@ -1,14 +1,14 @@
 """Help screen: static text explaining the numbers (SPEC.md "Help screen").
 
-The body soft-wraps to the current terminal width with hanging indents
-(final review F2/5.1): each paragraph/labeled item is wrapped fresh via
-`textwrap` instead of being pre-broken at a fixed column, so it never
-double-wraps into isolated single-word lines at 80 columns. A fixed title
-(with the close keys) sits above it and a footer below it; only the middle
-`#help-scroll` area scrolls when its content overflows the terminal (review
-round 1 open item 1: a bare `Static` with `overflow-y: auto` never scrolls
-because its virtual size always equals its region -- it needs an actual
-`VerticalScroll` ancestor whose height is smaller than its child's).
+The body soft-wraps to the current terminal width with hanging indents:
+each paragraph/labeled item is wrapped fresh via `textwrap` instead of being
+pre-broken at a fixed column, so it never double-wraps into isolated
+single-word lines at 80 columns. A fixed title (with the close keys) sits
+above it and a footer below it; only the middle `#help-scroll` area scrolls
+when its content overflows the terminal (a bare `Static` with
+`overflow-y: auto` never scrolls because its virtual size always equals its
+region -- it needs an actual `VerticalScroll` ancestor whose height is
+smaller than its child's).
 """
 
 from __future__ import annotations
@@ -196,7 +196,7 @@ class HelpScreen(Screen[None]):
         self.query_one("#help-scroll", VerticalScroll).focus()
 
     def on_resize(self, event: events.Resize) -> None:
-        # 5.1: soft-wraps at any width -- rebuild the wrap on every resize.
+        # Soft-wraps at any width -- rebuild the wrap on every resize.
         # After the refresh: updated mid-layout, the body's auto height is
         # measured at its old width and stays too tall when widening.
         self.call_after_refresh(self._refresh_body)

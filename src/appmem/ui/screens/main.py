@@ -55,7 +55,7 @@ from appmem.ui.screens.help import HelpScreen
 from appmem.ui.screens.processes import ProcessesScreen
 from appmem.ui.table_order import reorder_rows
 
-# 5.3: key caps (reverse video); at full width the plain text is exactly
+# Key caps (reverse video); at full width the plain text is exactly
 # " s r t d sort  enter procs  x system  c cache  z reset Δ  ? help  q quit".
 _FOOTER_ITEMS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("s", "r", "t", "d"), "sort"),
@@ -66,13 +66,12 @@ _FOOTER_ITEMS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("?",), "help"),
     (("q",), "quit"),
 )
-# Review round 1 open item 3: below the footer's natural width, drop items
-# lowest priority first; `help` and `quit` are never in this list, so they
-# always stay.
+# Below the footer's natural width, drop items lowest priority first; `help`
+# and `quit` are never in this list, so they always stay.
 _FOOTER_DROP_ORDER = ("reset Δ", "cache", "system", "procs", "sort")
 
-# 5.1: below this width, ΔSWAP/ΔRAM are hidden (SPEC.md "Main view"; final
-# review F2). Re-shown above it.
+# Below this width, ΔSWAP/ΔRAM are hidden (SPEC.md "Main view"). Re-shown
+# above it.
 _NARROW_WIDTH = 95
 
 # Width `None` = auto: the APP column grows to the longest name (capped at 32 by
@@ -182,8 +181,8 @@ class MainScreen(Screen[None]):
         self.refresh_now()  # no stale numbers after Esc from the process view
 
     def on_resize(self, event: events.Resize) -> None:
-        # 5.1/5.3: header, columns and footer never wrap -- recompute on
-        # every resize, not just on the next tick.
+        # Header, columns and footer never wrap -- recompute on every resize,
+        # not just on the next tick.
         self._update_header_line1()
         self._sync_delta_columns()
         self._update_footer()
@@ -200,8 +199,8 @@ class MainScreen(Screen[None]):
         # transient `memory.stat` read failure on the user root raises
         # `MemoryStatUnavailableError` (skip the tick) rather than
         # `CgroupUnavailableError` (fatal) -- only the directory vanishing is
-        # fatal here (final review, slice 4 round 2 item 5). The pre-start
-        # check in `cli.py` calls `find_units` directly, `strict=True`.
+        # fatal here. The pre-start check in `cli.py` calls `find_units`
+        # directly, `strict=True`.
         unit_paths = collect_find_units(
             self._root, self._uid, include_system=self._show_system, strict=False
         )
@@ -241,7 +240,7 @@ class MainScreen(Screen[None]):
 
     def _fail_cgroup_unavailable(self, exc: CgroupUnavailableError) -> None:
         # No traceback, exit 1, JSON line after the terminal is restored
-        # (SPEC.md "Errors"; final review F10).
+        # (SPEC.md "Errors").
         if self._timer is not None:
             self._timer.stop()
         # Textual's `Screen.app` is typed from a contextvar pyright can't fully
@@ -295,8 +294,8 @@ class MainScreen(Screen[None]):
             return
         self._delta_columns_shown = show
         # The active sort column can go away with ΔSWAP/ΔRAM: fall back to the
-        # default sort instead of an invisible one (SPEC.md "Main view"; final
-        # review A5, extended to 5.1's width-based hiding).
+        # default sort instead of an invisible one (SPEC.md "Main view"),
+        # extended here to the width-based hiding above.
         if not show and self._sort_key in _DELTA_KEYS:
             self._sort_key, self._sort_reverse = DEFAULT_SORT_KEY, DEFAULT_SORT_REVERSE
         self._rebuild_table()
@@ -333,12 +332,12 @@ class MainScreen(Screen[None]):
         # Always a literal `Text`, never a plain `str`: `DataTable` renders a `str`
         # cell through `Text.from_markup`, so an app name containing `[bold]`-style
         # brackets would otherwise be parsed as markup instead of shown literally
-        # (SPEC.md "Behaviour details"; final review A11).
+        # (SPEC.md "Behaviour details").
         text = _format_cell(key, row)
         if key == "app":
             return Text(text)
-        # 5.2: a Δ cell is dim while its glyph is the small-delta `·`, or while
-        # the whole baseline is still under 60 s old.
+        # A Δ cell is dim while its glyph is the small-delta `·`, or while the
+        # whole baseline is still under 60 s old.
         dim = key in _DELTA_KEYS and (text == "·" or self._young_baseline)
         return Text(text, justify="right", style="dim" if dim else "")
 
@@ -426,7 +425,7 @@ class MainScreen(Screen[None]):
 
     def action_sort(self, column: str) -> None:
         if column in _DELTA_KEYS and not self._delta_columns_shown:
-            return  # `d` while ΔSWAP is hidden by width (5.1): no invisible sort
+            return  # `d` while ΔSWAP is hidden by width: no invisible sort
         self._set_sort(cast("SortKey", column))
 
     def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
@@ -436,7 +435,7 @@ class MainScreen(Screen[None]):
         self._show_cache = not self._show_cache
         # The active sort column can go away with the CACHE column: fall back
         # to the default sort instead of an invisible one (SPEC.md "Main
-        # view"; final review A5).
+        # view").
         if not self._show_cache and self._sort_key == "cache":
             self._sort_key, self._sort_reverse = DEFAULT_SORT_KEY, DEFAULT_SORT_REVERSE
         self._rebuild_table()
@@ -447,8 +446,7 @@ class MainScreen(Screen[None]):
 
     def action_reset_delta(self) -> None:
         # `z` takes a fresh sample before resetting, so the baseline and its
-        # timestamp describe the same instant (SPEC.md "Definitions"; final
-        # review A13).
+        # timestamp describe the same instant (SPEC.md "Definitions").
         try:
             apps = self._collect_apps()
         except CgroupUnavailableError as exc:

@@ -81,8 +81,8 @@ def test_missing_memory_stat_on_user_root_raises(tmp_path: Path) -> None:
 
 
 def test_incomplete_memory_stat_on_user_root_raises(tmp_path: Path) -> None:
-    # The file exists but is missing anon/shmem/file (final review F1): the
-    # pre-start check must parse it, not just check it exists.
+    # The file exists but is missing anon/shmem/file: the pre-start check
+    # must parse it, not just check it exists.
     user_root = user_service_root(tmp_path, uid=1000)
     user_root.mkdir(parents=True)
     (user_root / "memory.stat").write_text("kernel 100\n")
@@ -103,7 +103,6 @@ def test_memory_stat_missing_kernel_line_still_passes_the_pre_start_check(tmp_pa
 
 
 # --- strict=False: per-tick calls, not the pre-start check ----------------------
-# (final review, slice 4 round 2 item 5)
 
 
 def test_strict_false_still_raises_cgroup_unavailable_when_the_directory_is_gone(

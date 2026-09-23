@@ -16,7 +16,7 @@ from appmem.collect import AppStats, CommandStats, ProcStats, group_by_command, 
 
 # `\0` can't appear in a process/command name (`_read_proc_name` splits on it),
 # so these keys never collide with a real PID string or command name -- even
-# one literally named "kernel" or "unattributed" (final review A6).
+# one literally named "kernel" or "unattributed".
 KERNEL_KEY = "\0kernel"
 UNATTRIBUTED_KEY = "\0unattributed"
 KERNEL_UNIT_TEXT = "charged kernel memory: page tables, slab, stacks"
@@ -28,8 +28,8 @@ GroupSortKey = Literal["name", "swap", "ram", "total", "procs"]
 
 ScreenSortKey = ProcessSortKey | GroupSortKey
 """The two sort-key sets `ProcessesScreen` juggles between its flat and
-grouped-by-command tables (final review F13/5.6: `Literal`, not `str`, so
-pyright strict catches a typo'd column name)."""
+grouped-by-command tables. `Literal`, not `str`, so pyright strict catches a
+typo'd column name."""
 
 DEFAULT_SORT_KEY: ProcessSortKey = "total"
 DEFAULT_SORT_REVERSE = True
@@ -100,8 +100,8 @@ class CommandRow:
     dim: bool = False
     units: tuple[str, ...] = ()
     """Sorted, de-duplicated unit names the group's processes belong to
-    (review round 1 open item 2, status line). Empty for the two synthetic
-    rows, which don't belong to one command."""
+    (used by the status line). Empty for the two synthetic rows, which don't
+    belong to one command."""
 
 
 def build_process_rows(procs: Iterable[ProcStats]) -> list[ProcessRow]:

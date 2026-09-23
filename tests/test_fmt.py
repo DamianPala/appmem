@@ -45,7 +45,7 @@ def test_pressure_high_above_five_percent_full() -> None:
 
 
 def test_pressure_high_when_some_avg10_above_twenty_percent() -> None:
-    # A lot of tasks waiting even without a full stall yet (final review F9/A1).
+    # A lot of tasks waiting even without a full stall yet.
     assert pressure_word(some_avg10=20.1, some_avg60=0.0, full_avg10=0.0) == "high"
 
 
@@ -74,7 +74,7 @@ def test_pressure_none_bare_when_avg60_at_or_below_one_percent() -> None:
 
 
 def test_format_delta_zero_is_dim_dot() -> None:
-    # |Δ| < 1 MiB renders as a dim `·` (final review F4/5.2), not a bare "0".
+    # |Δ| < 1 MiB renders as a dim `·`, not a bare "0".
     assert format_delta(0) == "·"
 
 

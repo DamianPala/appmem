@@ -1,6 +1,5 @@
 """Non-wrapping line layout, shared by the main header and the process-view
-title/status line/footers (SPEC.md "Main view", "Process view"; final review
-F2/F8/5.1/5.3).
+title/status line/footers (SPEC.md "Main view", "Process view").
 
 Pure, no Textual imports (only `rich.text.Text`, which the screens already
 build cells and titles from), so the priority-drop and key-cap logic is
@@ -46,7 +45,7 @@ def fit_line(
     result = joined()
     # Belt and braces: even the never-dropped parts could still overflow an
     # extreme width. Never wrap; crop with an ellipsis instead (SPEC.md "Main
-    # view", "Process view"; final review F2/5.1: the line must never wrap).
+    # view", "Process view": the line must never wrap).
     result.no_wrap = True
     result.overflow = "ellipsis"
     return result
@@ -59,10 +58,9 @@ def build_footer(
     drop_order: Sequence[str] = (),
 ) -> Text:
     """Build a footer line with reverse-video key caps (SPEC.md "Main view",
-    "Process view", "Help screen"; final review F8/5.3, review round 1 open
-    item 3): each key its own styled span, a plain space, then the action
-    label; items separated by two spaces, with a leading space before the
-    first.
+    "Process view", "Help screen"): each key its own styled span, a plain
+    space, then the action label; items separated by two spaces, with a
+    leading space before the first.
 
     With `width` given, the footer never wraps: items named in `drop_order`
     by their *label* (the action text, not the key caps -- `("z",), "reset

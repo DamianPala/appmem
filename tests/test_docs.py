@@ -4,7 +4,7 @@ These tests never edit or read the live `/sys` or `/proc`: the CLI surface
 comes from `appmem.schema` (the single source `cli.py` builds its parsers
 from) and from `appmem.cli.main(["--help"], ...)`, which never touches a
 cgroup tree. README.md and SKILL.md are read straight off disk; this file
-never edits them (see the slice brief).
+never edits them.
 
 Extraction only ever looks inside fenced code blocks and inline code spans
 (`` `...` ``), never prose: a sentence like "appmem reads the memory
@@ -26,7 +26,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 _README_PATH = _REPO_ROOT / "README.md"
 _SKILL_PATH = _REPO_ROOT / "skills" / "appmem" / "SKILL.md"
 
-# Descriptors are the single source `cli.py` builds its parsers from (D5b);
+# Descriptors are the single source `cli.py` builds its parsers from;
 # `--help` and `--version` are argparse builtins wired directly in `cli.py`
 # and have no descriptor of their own, so they are added by hand below.
 _FLAG_DESCRIPTORS: tuple[schema.Flag, ...] = (
@@ -40,8 +40,8 @@ _FLAG_DESCRIPTORS: tuple[schema.Flag, ...] = (
 )
 _BUILTIN_LONG_FLAGS = frozenset({"--help", "--version"})
 
-# `schema` is a reserved, always-valid top-level command (D5a) that the
-# introspection index deliberately omits from `commands` (D6a).
+# `schema` is a reserved, always-valid top-level command that the
+# introspection index deliberately omits from `commands`.
 _RESERVED_COMMAND_NAMES = frozenset({"schema"})
 
 _INLINE_CODE = re.compile(r"`([^`\n]+)`")

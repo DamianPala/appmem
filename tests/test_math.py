@@ -66,7 +66,7 @@ def test_group_apps_merges_units_by_app_name_and_sums_counters() -> None:
 
 def test_group_apps_keeps_user_and_system_same_name_as_separate_rows() -> None:
     # SPEC.md "Grouping": app identity is (scope, name), so a user dbus and a
-    # system dbus stay two rows instead of merging (final review A7).
+    # system dbus stay two rows instead of merging.
     units = [
         _unit("dbus.service", scope="user", ram=10),
         _unit("dbus.service", scope="system", ram=20),

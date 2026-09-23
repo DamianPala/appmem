@@ -1,5 +1,5 @@
-"""Tests for `appmem.ui.layout` (SPEC.md "Main view", "Process view"; final
-review F2/F8/5.1/5.3): non-wrapping priority-drop lines and key-cap footers.
+"""Tests for `appmem.ui.layout` (SPEC.md "Main view", "Process view"):
+non-wrapping priority-drop lines and key-cap footers.
 """
 
 from __future__ import annotations
@@ -92,7 +92,7 @@ def test_build_footer_styles_each_key_as_reverse_video() -> None:
     assert any("reverse" in str(style) for style in styles_at_r)
 
 
-# --- review round 1 open item 3: footers never wrap ----------------------------
+# --- footers never wrap ----------------------------------------------------------
 
 
 def test_build_footer_without_width_keeps_every_item_unchanged() -> None:

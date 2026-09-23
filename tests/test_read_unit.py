@@ -32,7 +32,7 @@ def test_ram_cache_swap_total_math(tmp_path: Path) -> None:
 
 
 def test_kernel_missing_falls_back_to_slab_stack_pagetables_percpu(tmp_path: Path) -> None:
-    # Linux < 5.18 has no `kernel` line in memory.stat (final review F1).
+    # Linux < 5.18 has no `kernel` line in memory.stat.
     unit_dir = tmp_path / "unit.service"
     unit_dir.mkdir()
     (unit_dir / "memory.stat").write_text(

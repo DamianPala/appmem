@@ -5,13 +5,13 @@ Mirrors `MainScreen`'s tick/diff/sort patterns (row diffing via row keys,
 `update_cell` only on changed text, cursor restore by key). The app's unit
 list is re-derived every tick from `find_app_units` (same identity/naming
 rules as the main view), not captured once at Enter, so a unit added or
-replaced while the screen is open is picked up (final review A3); the app is
-considered gone only once no unit maps to its identity any more.
+replaced while the screen is open is picked up; the app is considered gone
+only once no unit maps to its identity any more.
 
 Three display shapes share this one screen: flat (one row per process),
 grouped by command (one row per command name, `g`), and a drill-down into one
-command's member processes (Enter on a command row, final review A4/5.5) --
-flat process columns again, scoped to that command's PIDs.
+command's member processes (Enter on a command row) -- flat process columns
+again, scoped to that command's PIDs.
 """
 
 from __future__ import annotations
@@ -68,7 +68,7 @@ _PROCESS_COLUMNS: tuple[tuple[str, str, int | None], ...] = (
     ("age", "AGE", 6),
     ("unit", "UNIT", None),  # auto width: never truncated, table scrolls sideways instead
 )
-# 5.1: AGE hidden below `_NARROW_WIDTH` columns.
+# AGE hidden below `_NARROW_WIDTH` columns.
 _PROCESS_COLUMNS_NARROW: tuple[tuple[str, str, int | None], ...] = tuple(
     column for column in _PROCESS_COLUMNS if column[0] != "age"
 )
@@ -83,7 +83,7 @@ _LEFT_ALIGNED = {"name", "unit"}
 
 _NARROW_WIDTH = 95
 
-# 5.3: key caps; at full width the plain text is exactly " s r t sort  g
+# Key caps; at full width the plain text is exactly " s r t sort  g
 # group  enter (grouped: members)  ? help  esc back  q quit".
 _FOOTER_ITEMS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("s", "r", "t"), "sort"),
@@ -93,12 +93,11 @@ _FOOTER_ITEMS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("esc",), "back"),
     (("q",), "quit"),
 )
-# Review round 1 open item 3: below the footer's natural width, drop items
-# lowest priority first; `help`, `back` and `quit` are never in this list, so
-# they always stay.
+# Below the footer's natural width, drop items lowest priority first;
+# `help`, `back` and `quit` are never in this list, so they always stay.
 _FOOTER_DROP_ORDER = ("(grouped: members)", "group", "sort")
 
-# 5.1: process-view title drop order -- procs count first, then swap; the
+# Process-view title drop order -- procs count first, then swap; the
 # app/breadcrumb name and RAM are always kept.
 _TITLE_DROP_ORDER = ("procs", "swap")
 
@@ -134,7 +133,7 @@ def _format_command_cell(key: str, row: CommandRow) -> str:
 def _cell_value(key: str, text: str, *, dim: bool = False) -> Text:
     # Always a literal `Text`, never a plain `str`: `DataTable` renders a `str`
     # cell through `Text.from_markup`, which would parse markup-like process
-    # or unit names instead of showing them literally (final review A11).
+    # or unit names instead of showing them literally.
     style = "dim italic" if dim else ""
     if key in _LEFT_ALIGNED:
         return Text(text, style=style)
@@ -186,7 +185,7 @@ class ProcessesScreen(Screen[None]):
         self._sort_reverse = initial_sort[1]
         self._grouped = False
         self._drill_command: str | None = None
-        """The command currently drilled into from grouped mode (5.5), or
+        """The command currently drilled into from grouped mode, or
         `None` when showing the flat or grouped table as usual."""
         self._process_rows: dict[str, ProcessRow] = {}
         self._command_rows: dict[str, CommandRow] = {}
@@ -225,8 +224,8 @@ class ProcessesScreen(Screen[None]):
         self.refresh_now()  # no stale numbers when a screen pushed on top of us closes
 
     def on_resize(self, event: events.Resize) -> None:
-        # 5.1/5.3: title and footer never wrap -- recompute on every resize,
-        # not just on the next tick. The status line's ellipsis point moves too.
+        # Title and footer never wrap -- recompute on every resize, not just
+        # on the next tick. The status line's ellipsis point moves too.
         self._render_title()
         self._update_status_line()
         self._sync_age_column()
@@ -310,7 +309,7 @@ class ProcessesScreen(Screen[None]):
         # `strict=False`: a transient `memory.stat` read failure on the user
         # root raises `MemoryStatUnavailableError` (skip the tick) rather than
         # `CgroupUnavailableError` (fatal) -- only the directory vanishing is
-        # fatal here (final review, slice 4 round 2 item 5).
+        # fatal here.
         unit_paths = collect_find_app_units(
             self._root, self._uid, self._include_system, self._scope, self._name, strict=False
         )
@@ -415,7 +414,7 @@ class ProcessesScreen(Screen[None]):
             return Text("")
         if row.pid is None:
             # Synthetic row: `row.unit` already carries its one-line
-            # explanation (SPEC.md "Process view"; final review F8/5.4).
+            # explanation (SPEC.md "Process view").
             return Text(row.unit, style="dim italic")
         command = status_line_command(
             self._scope,
@@ -426,9 +425,9 @@ class ProcessesScreen(Screen[None]):
         return Text(command)
 
     def _command_status_content(self) -> Text:
-        # Review round 1 open item 2: grouped mode is where the terminal use
-        # case lives (ghostty -> claude), so it gets a status line too, not
-        # just the flat/drilled views.
+        # Grouped mode is where the terminal use case lives (ghostty ->
+        # claude), so it gets a status line too, not just the flat/drilled
+        # views.
         key = self._selected_key()
         row = self._command_rows.get(key) if key is not None else None
         if row is None:
@@ -575,8 +574,8 @@ class ProcessesScreen(Screen[None]):
         self._update_status_line()  # live as the cursor moves, not just on Enter
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        # 5.5: Enter on a command in grouped mode drills into its members.
-        # A no-op everywhere else, including on the synthetic rows.
+        # Enter on a command in grouped mode drills into its members. A
+        # no-op everywhere else, including on the synthetic rows.
         if not self._showing_group_table:
             return
         key = _key_str(event.row_key)

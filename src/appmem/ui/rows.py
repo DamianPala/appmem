@@ -13,10 +13,10 @@ from typing import Literal
 from appmem.collect import AppStats
 
 SortKey = Literal["app", "swap", "ram", "cache", "total", "delta_swap", "delta_ram", "procs"]
-"""A `Literal`, not a plain `str` (final review F13/5.6): pyright strict then
-catches a typo'd column name at the call site instead of it surfacing as a
-runtime `KeyError` in `_DEFAULT_REVERSE`. Still doubles as a `DataTable`
-column key, which only ever needs `str`."""
+"""A `Literal`, not a plain `str`: pyright strict then catches a typo'd column
+name at the call site instead of it surfacing as a runtime `KeyError` in
+`_DEFAULT_REVERSE`. Still doubles as a `DataTable` column key, which only
+ever needs `str`."""
 
 DEFAULT_SORT_KEY: SortKey = "total"
 DEFAULT_SORT_REVERSE = True
@@ -65,9 +65,8 @@ def update_baseline(
     apps: Iterable[AppStats], baseline: Mapping[Identity, AppStats]
 ) -> dict[Identity, AppStats]:
     """Add apps seen for the first time to the Δ baseline, and drop entries for
-    apps no longer present (SPEC.md "Definitions"; final review F15): a closed
-    and reopened app starts its Δ at 0 instead of comparing against its old
-    instance.
+    apps no longer present (SPEC.md "Definitions"): a closed and reopened app
+    starts its Δ at 0 instead of comparing against its old instance.
 
     Existing (still-present) entries are kept untouched: only `reset_baseline`
     (key `z`, or startup) moves an already-known app's baseline forward.
@@ -149,7 +148,7 @@ def next_sort_state(
 def sort_rows(rows: Iterable[Row], key: SortKey, reverse: bool) -> list[Row]:
     """Sort rows by `key`. Ties always break by `(name, scope)` ascending, both
     directions -- full identity, not just the name a same-named user/system
-    pair share (SPEC.md "Main view"; final review A6).
+    pair share (SPEC.md "Main view").
 
     Two stable passes: sort by identity first, then by `key` with `reverse`.
     Python's sort is stable, and `reverse=True` does not reverse the order of

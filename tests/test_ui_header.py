@@ -114,7 +114,7 @@ def test_line2_format() -> None:
     assert line == "Δ since 14:02 (5m)"
 
 
-# --- 5.1: narrow terminals drop parts by priority -------------------------------
+# --- narrow terminals drop parts by priority -------------------------------------
 
 
 def test_line1_drops_elsewhere_first_when_narrow() -> None:
@@ -166,7 +166,7 @@ def test_line1_never_wraps() -> None:
     assert text.no_wrap is True
 
 
-# --- 5.2: pressure word and swap fraction are bold/coloured --------------------
+# --- pressure word and swap fraction are bold/coloured --------------------------
 
 
 def test_line1_pressure_word_none_is_green() -> None:

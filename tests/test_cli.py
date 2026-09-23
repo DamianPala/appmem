@@ -4,8 +4,8 @@ Most of these never reach `AppMemApp.run()`: the interval/flag/version cases
 fail during argument parsing, and the TTY/cgroup cases fail before the app is
 built. The Textual pilot exercises `MainScreen`/`AppMemApp` directly; the one
 exception here monkeypatches `AppMemApp.run` to check `_run_app`'s own
-post-run wiring (the JSON line printed after a mid-run cgroup vanish, final
-review slice 4 round 2 item 4) without driving a real Textual app.
+post-run wiring (the JSON line printed after a mid-run cgroup vanish)
+without driving a real Textual app.
 """
 
 from __future__ import annotations
@@ -125,8 +125,8 @@ def test_prints_json_error_line_after_the_run_when_cgroup_vanished_mid_run(
     # `app.cgroup_error_message` is set after `app.run()` returns (SPEC.md
     # "Errors"); nothing else in this suite reaches that branch, since the
     # pilot tests check `cgroup_error_message`/`return_code` directly instead
-    # of running a real app through `main()` (final review, slice 4 round 2
-    # item 4). The pre-start check passes here (a valid fixture tree), so
+    # of running a real app through `main()`. The pre-start check passes here
+    # (a valid fixture tree), so
     # `main()` reaches `_run_app`; `AppMemApp.run` is faked to skip actually
     # driving a Textual app and just set the message a real mid-run failure
     # would have set.

@@ -69,7 +69,7 @@ def test_space_joined_cmdline_keeps_only_program_basename(tmp_path: Path) -> Non
 
 def test_exe_basename_falls_back_to_comm(tmp_path: Path) -> None:
     # Electron/AppImage-style processes re-exec through /proc/self/exe, so
-    # cmdline[0]'s basename is just "exe" (final review F6).
+    # cmdline[0]'s basename is just "exe".
     write_uptime(tmp_path, seconds=100.0)
     unit_dir = tmp_path / "sys" / "fs" / "cgroup" / "unit.service"
     write_cgroup_procs(unit_dir, [888])
