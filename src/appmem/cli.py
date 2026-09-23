@@ -13,6 +13,7 @@ tests can call it directly.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import math
 import os
@@ -371,21 +372,29 @@ def _run_app(app: AppMemApp) -> int:
     Ctrl+C typed in the running TUI never reaches these handlers: Textual's raw
     terminal mode stops the terminal from turning it into a signal in the first
     place, so it arrives as an ordinary key event instead (SPEC.md "Errors").
+
+    Registered with `loop.add_signal_handler` rather than `signal.signal`: a
+    `signal.signal` handler only runs the next time the event loop wakes up on
+    its own, so `app.exit()` could sit unapplied until the next periodic tick;
+    `add_signal_handler` wakes the loop immediately via its self-pipe instead.
+    Requires an explicit loop, created and closed here (`loop.close()` also
+    removes the handlers registered on it), instead of the implicit one
+    `app.run()` would otherwise create.
     """
 
-    def _handle_sigterm(signum: int, frame: object) -> None:
+    def _handle_sigterm() -> None:
         app.exit(return_code=143)
 
-    def _handle_sigint(signum: int, frame: object) -> None:
+    def _handle_sigint() -> None:
         app.exit(return_code=130)
 
-    previous_sigterm = signal.signal(signal.SIGTERM, _handle_sigterm)
-    previous_sigint = signal.signal(signal.SIGINT, _handle_sigint)
+    loop = asyncio.new_event_loop()
+    loop.add_signal_handler(signal.SIGTERM, _handle_sigterm)
+    loop.add_signal_handler(signal.SIGINT, _handle_sigint)
     try:
-        app.run()
+        app.run(loop=loop)
     finally:
-        signal.signal(signal.SIGTERM, previous_sigterm)
-        signal.signal(signal.SIGINT, previous_sigint)
+        loop.close()
     # A screen recorded a vanished cgroup tree (SPEC.md "Errors"): the JSON
     # line prints here, after Textual has restored the terminal, reusing the
     # same error-printing path as the pre-start checks.

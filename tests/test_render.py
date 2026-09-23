@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from rich.cells import cell_len
+
+from appmem.fmt import size
 from appmem.render import (
+    _pad_cell,  # pyright: ignore[reportPrivateUsage]
     escape_control_chars,
     render_app_text,
     render_next_line,
@@ -19,6 +23,7 @@ _SNAPSHOT_DOCUMENT: dict[str, Any] = {
         "ram_available_bytes": 12347834368,
         "ram_free_bytes": 6347834368,
         "ram_cache_bytes": 6000000000,
+        "ram_slab_bytes": 2100000000,
         "ram_shared_bytes": 3221225472,
         "swap_total_bytes": 34342957056,
         "swap_used_bytes": 23782510592,
@@ -100,6 +105,11 @@ def test_escape_control_chars_replaces_control_bytes_and_leaves_text_alone() -> 
     assert "\x1b" not in escape_control_chars("\x1b[2Jclear\ndone")
 
 
+def test_escape_control_chars_replaces_c1_controls_and_keeps_text_above_them() -> None:
+    assert escape_control_chars("evil\x9b31mred\x85") == "evil\\x9b31mred\\x85"
+    assert escape_control_chars("café 微信") == "café 微信"
+
+
 def test_render_next_line_quotes_arguments() -> None:
     assert render_next_line(["appmem", "app", "ghostty"]) == "Next: appmem app ghostty"
     assert render_next_line(["appmem", "app", "a name"]) == "Next: appmem app 'a name'"
@@ -152,6 +162,63 @@ def test_app_title_line_shows_ram_before_swap() -> None:
     title_line = text.splitlines()[0]
 
     assert title_line.index("RAM") < title_line.index("swap")
+
+
+def test_snapshot_text_header_line_shows_slab_in_avail_breakdown() -> None:
+    # slab (SReclaimable) joins free/cache inside avail's breakdown.
+    text = render_snapshot_text(_SNAPSHOT_DOCUMENT, total_apps=41)
+    header_line = text.splitlines()[0]
+
+    assert "slab" in header_line
+    assert header_line.index("free") < header_line.index("cache") < header_line.index("slab")
+    assert size(2100000000) in header_line
+
+
+def test_snapshot_table_cjk_app_name_column_stays_aligned() -> None:
+    # The name column is padded by terminal cells (`set_cell_size`), not
+    # code points -- a CJK name (2 cells/char) padded by code points would
+    # push every column after it out of alignment.
+    document = {
+        **_SNAPSHOT_DOCUMENT,
+        "apps": {
+            "items": [
+                {
+                    "name": "微信",
+                    "scope": "user",
+                    "ram_bytes": 1,
+                    "swap_bytes": 1,
+                    "total_bytes": 2,
+                    "cache_bytes": 0,
+                    "procs": 1,
+                    "units": 1,
+                }
+            ],
+            "has_more": False,
+        },
+    }
+    document.pop("next")
+
+    text = render_snapshot_text(document, total_apps=1)
+    lines = text.splitlines()
+    row_line = next(line for line in lines if "微信" in line)
+
+    # The name column is padded to exactly 24 terminal cells (`_pad_cell`),
+    # even though the CJK name has fewer *characters* than an ASCII name
+    # would (each CJK char is 1 code point but 2 cells) -- a `str.format`
+    # `:<24` padding would count code points and leave the numeric columns
+    # after it shifted right by the difference.
+    numbers = f"{size(1):>10}{size(1):>10}{size(2):>10}{1:>7}{1:>7}"
+    assert row_line == _pad_cell("微信", 24) + numbers
+
+
+def test_pad_cell_pads_cjk_text_by_cells_not_code_points() -> None:
+    # Direct unit test of the padding helper: 2 CJK chars (4 cells) padded to
+    # 10 cells must add 6 cells of trailing space, i.e. 6 space characters --
+    # not `10 - len("微信") == 8` spaces, which is what `str.format` would add.
+    padded = _pad_cell("微信", 10)
+
+    assert cell_len(padded) == 10
+    assert padded == "微信" + " " * 6
 
 
 def test_snapshot_text_omits_cut_notice_when_nothing_was_cut() -> None:

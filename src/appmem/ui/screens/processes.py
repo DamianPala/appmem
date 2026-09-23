@@ -16,7 +16,8 @@ again, scoped to that command's PIDs.
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from functools import partial
 from pathlib import Path
 from typing import ClassVar, cast
 
@@ -28,6 +29,7 @@ from textual.screen import Screen
 from textual.timer import Timer
 from textual.widgets import DataTable, Static
 from textual.widgets.data_table import ColumnKey, RowKey
+from textual.worker import Worker, WorkerState
 
 from appmem.collect import (
     AppStats,
@@ -40,6 +42,7 @@ from appmem.collect import find_app_units as collect_find_app_units
 from appmem.collect import read_procs as collect_read_procs
 from appmem.collect import read_unit as collect_read_unit
 from appmem.fmt import format_age, size, status_line_command, truncate_name
+from appmem.render import escape_control_chars
 from appmem.ui.layout import build_footer, fit_line
 from appmem.ui.process_rows import (
     KERNEL_KEY,
@@ -89,6 +92,17 @@ _LEFT_ALIGNED = {"name", "unit"}
 
 _NARROW_WIDTH = 95
 
+# Below this width, the NAME column shrinks (with truncation) so RAM, SWAP
+# and TOTAL stay whole on screen (SPEC.md "Process view"). UNIT is
+# excluded from the budget: it already scrolls sideways rather than shrinking.
+_NUMERIC_FIT_WIDTH = 70
+_NAME_MIN_WIDTH = 8
+_NAME_MAX_WIDTH = 32
+# `DataTable`'s default `cell_padding` (1 cell each side of every column).
+_CELL_PADDING = 2
+
+_TICK_GROUP = "collect"
+
 # Below the footer's natural width, drop items lowest priority first;
 # `help`, `back`/`groups` and `quit` are never in this list, so they always stay.
 _FOOTER_DROP_ORDER = ("members", "group", "sort")
@@ -98,11 +112,11 @@ _FOOTER_DROP_ORDER = ("members", "group", "sort")
 _TITLE_DROP_ORDER = ("procs", "swap")
 
 
-def _format_process_cell(key: str, row: ProcessRow) -> str:
+def _format_process_cell(key: str, row: ProcessRow, *, name_cap: int = _NAME_MAX_WIDTH) -> str:
     if key == "pid":
         return "" if row.pid is None else str(row.pid)
     if key == "name":
-        return truncate_name(row.name)
+        return truncate_name(escape_control_chars(row.name), name_cap)
     if key == "swap":
         return size(row.swap)
     if key == "ram":
@@ -111,12 +125,12 @@ def _format_process_cell(key: str, row: ProcessRow) -> str:
         return size(row.total)
     if key == "age":
         return "" if row.age_seconds is None else format_age(row.age_seconds)
-    return row.unit  # "unit"
+    return escape_control_chars(row.unit)  # "unit"
 
 
-def _format_command_cell(key: str, row: CommandRow) -> str:
+def _format_command_cell(key: str, row: CommandRow, *, name_cap: int = _NAME_MAX_WIDTH) -> str:
     if key == "name":
-        return truncate_name(row.name)
+        return truncate_name(escape_control_chars(row.name), name_cap)
     if key == "swap":
         return size(row.swap)
     if key == "ram":
@@ -141,6 +155,52 @@ def _key_str(key: RowKey | ColumnKey) -> str:
     return key.value
 
 
+def _collect_process_tick(
+    root: Path, uid: int, include_system: bool, scope: str, name: str
+) -> tuple[list[Path], list[UnitStats], list[ProcStats]]:
+    """Read one app's units, their counters and its processes. Pure and
+    thread-safe (no Textual/UI state touched): shared by the synchronous
+    `refresh_now` path and the threaded periodic tick (SPEC.md "Tech")."""
+    unit_paths = collect_find_app_units(root, uid, include_system, scope, name, strict=False)
+    unit_stats = [stats for path in unit_paths if (stats := collect_read_unit(path)) is not None]
+    # No unit means no app left to read processes for; `_show_gone` (the
+    # caller, outside any try) handles that without a `read_procs` call.
+    procs = collect_read_procs(unit_paths, root) if unit_stats else []
+    return unit_paths, unit_stats, procs
+
+
+@dataclass(frozen=True)
+class _TickResult:
+    """A background tick's outcome, plus the generation it was read under --
+    so a result whose context changed while it was in flight (`g`, drilling
+    in/out, the screen covered/resumed) is discarded instead of applied
+    stale (SPEC.md "Process view")."""
+
+    generation: int
+    unit_paths: list[Path] | None = None
+    unit_stats: list[UnitStats] | None = None
+    procs: list[ProcStats] | None = None
+    cgroup_error: CgroupUnavailableError | None = None
+
+
+def _tick_worker(
+    root: Path, uid: int, include_system: bool, scope: str, name: str, *, generation: int
+) -> _TickResult:
+    """Runs in a thread (SPEC.md "Tech"): blocking `/proc`/`/sys` reads
+    only, no Textual calls."""
+    try:
+        unit_paths, unit_stats, procs = _collect_process_tick(
+            root, uid, include_system, scope, name
+        )
+    except CgroupUnavailableError as exc:
+        return _TickResult(generation=generation, cgroup_error=exc)
+    except (MemoryStatUnavailableError, OSError, ValueError):
+        return _TickResult(generation=generation)
+    return _TickResult(
+        generation=generation, unit_paths=unit_paths, unit_stats=unit_stats, procs=procs
+    )
+
+
 class ProcessesScreen(Screen[None]):
     """Per-process table for one app (SPEC.md "Process view")."""
 
@@ -148,6 +208,10 @@ class ProcessesScreen(Screen[None]):
     # title off screen with many rows.
     DEFAULT_CSS = """
     ProcessesScreen #table { height: 1fr; }
+    ProcessesScreen #title, ProcessesScreen #status, ProcessesScreen #footer {
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
+    }
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -189,6 +253,14 @@ class ProcessesScreen(Screen[None]):
         self._last_proc_count = 0
         self._age_shown = True
         self._timer: Timer | None = None
+        self._tick_in_flight = False
+        self._column_widths: tuple[int | None, ...] = ()
+        self._generation = 0
+        """Bumped on every context change (`g`, drilling in/out, the app
+        going away, the screen covered/resumed). A background result carries
+        the generation it was read under; `on_worker_state_changed` discards
+        one that no longer matches, so a slow read that outlives a later
+        context change can't overwrite what that change already drew."""
 
     @property
     def _showing_group_table(self) -> bool:
@@ -232,10 +304,60 @@ class ProcessesScreen(Screen[None]):
 
     def _tick(self) -> None:
         # Covered by help: skip the work, `on_screen_resume` catches up.
-        if self.is_active:
-            self.refresh_now()
+        # A previous tick's read is still in flight: skip, don't stack a
+        # second one (SPEC.md "Tech": at most one read in flight per screen).
+        if not self.is_active or self._tick_in_flight:
+            return
+        self._tick_in_flight = True
+        self.run_worker(
+            partial(
+                _tick_worker,
+                self._root,
+                self._uid,
+                self._include_system,
+                self._scope,
+                self._name,
+                generation=self._generation,
+            ),
+            thread=True,
+            exclusive=False,
+            group=_TICK_GROUP,
+        )
+
+    def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
+        # Blocking `/proc`/`/sys` reads happen in `_tick_worker`, off the event
+        # loop, so a slow collector never blocks key handling (SPEC.md "Tech").
+        # This applies the result back on the UI thread, the only thread
+        # allowed to touch widgets.
+        if event.worker.group != _TICK_GROUP:  # pyright: ignore[reportUnknownMemberType]
+            return
+        if event.state not in (WorkerState.SUCCESS, WorkerState.ERROR, WorkerState.CANCELLED):
+            return
+        self._tick_in_flight = False
+        if event.state != WorkerState.SUCCESS:
+            return
+        # `Worker` (Textual's own type) is an unparameterized generic here, so
+        # its `.result` is `Unknown` to pyright; `_tick_worker`'s own return
+        # type is the real source of truth for what this cast recovers.
+        result = cast(_TickResult, event.worker.result)  # pyright: ignore[reportUnknownMemberType]
+        if result.cgroup_error is not None:
+            self._fail_cgroup_unavailable(result.cgroup_error)
+            return
+        if result.unit_paths is None:  # transient read/parse failure this tick
+            return
+        if result.generation != self._generation or not self.is_active:
+            # `g`, a drill-down, or the screen being covered/left changed the
+            # context while this read was in flight: discard rather than
+            # show a stale table (SPEC.md "Tech").
+            return
+        self._apply_refresh(
+            result.unit_paths, result.unit_stats or [], result.procs or [], scroll=False
+        )
 
     def on_screen_resume(self) -> None:
+        # A read dispatched before the covering screen closed is now stale,
+        # even if nothing we track here actually changed while it was up.
+        self._generation += 1
         self.refresh_now()  # no stale numbers when a screen pushed on top of us closes
 
     def on_resize(self, event: events.Resize) -> None:
@@ -243,7 +365,7 @@ class ProcessesScreen(Screen[None]):
         # on the next tick. The status line's ellipsis point moves too.
         self._render_title()
         self._update_status_line()
-        self._sync_age_column()
+        self._sync_columns()
         self._update_footer()
 
     def _table(self) -> DataTable[str | Text]:
@@ -259,24 +381,68 @@ class ProcessesScreen(Screen[None]):
     def _show_age_column(self) -> bool:
         return self.app.size.width >= _NARROW_WIDTH  # pyright: ignore[reportUnknownMemberType]
 
-    def _sync_age_column(self) -> None:
+    def _sync_columns(self) -> None:
+        """Rebuild the table whenever a resize actually changes the computed
+        column widths, not just when AGE crosses its own visibility
+        threshold: NAME's shrink width (`_with_name_width`) can change at a
+        different width (`_NUMERIC_FIT_WIDTH`) than that, and a resize that
+        crosses only the NAME threshold used to leave the table built for
+        the old width, pushing TOTAL past the terminal edge or leaving NAME
+        narrower than it needs to be (SPEC.md "Process view")."""
         show = self._show_age_column()
-        if show == self._age_shown:
+        if show != self._age_shown:
+            self._age_shown = show
+            sort_hidden = not show and self._sort_key == "age" and not self._showing_group_table
+            if sort_hidden:
+                self._sort_key, self._sort_reverse = "total", True
+        else:
+            sort_hidden = False
+        table = self._table()
+        widths = tuple(width for _key, _label, width in self._columns(table))
+        if widths == self._column_widths:
             return
-        self._age_shown = show
-        if self._showing_group_table:
-            return  # nothing on screen depends on it right now
-        sort_hidden = not show and self._sort_key == "age"
-        if sort_hidden:
-            self._sort_key, self._sort_reverse = "total", True
         self._rebuild_current_table()  # a resize, not an explicit selection action
         if sort_hidden:
             self.refresh_now()  # the cached rows are still in AGE order: re-sort them
 
-    def _columns(self) -> tuple[tuple[str, str, int | None], ...]:
-        if self._showing_group_table:
-            return _GROUP_COLUMNS
+    def _columns(self, table: DataTable[str | Text]) -> tuple[tuple[str, str, int | None], ...]:
+        base = _GROUP_COLUMNS if self._showing_group_table else self._process_column_base()
+        return self._with_name_width(base, table)
+
+    def _process_column_base(self) -> tuple[tuple[str, str, int | None], ...]:
         return _PROCESS_COLUMNS if self._age_shown else _PROCESS_COLUMNS_NARROW
+
+    def _with_name_width(
+        self, columns: tuple[tuple[str, str, int | None], ...], table: DataTable[str | Text]
+    ) -> tuple[tuple[str, str, int | None], ...]:
+        """Below `_NUMERIC_FIT_WIDTH`, shrink the (otherwise auto-sized) NAME
+        column so RAM, SWAP and TOTAL stay fully on screen instead of being
+        pushed past the terminal edge by a long name (SPEC.md "Process
+        view"). UNIT is excluded from the reserved budget: it already
+        scrolls sideways rather than shrinking. The table's own vertical
+        scrollbar (when shown) narrows its usable width too, so it comes out
+        of the same budget as the numeric columns."""
+        total_width = (
+            self.app.size.width - table.scrollbar_size_vertical  # pyright: ignore[reportUnknownMemberType]
+        )
+        if total_width >= _NUMERIC_FIT_WIDTH:
+            return columns
+        reserved = sum(
+            _CELL_PADDING + (width or 0)
+            for key, _label, width in columns
+            if key not in ("name", "unit")
+        )
+        name_width = max(total_width - reserved - _CELL_PADDING, _NAME_MIN_WIDTH)
+        return tuple(
+            (key, label, name_width) if key == "name" else (key, label, width)
+            for key, label, width in columns
+        )
+
+    def _name_cap(self, table: DataTable[str | Text]) -> int:
+        for key, _label, width in self._columns(table):
+            if key == "name":
+                return width if width is not None else _NAME_MAX_WIDTH
+        return _NAME_MAX_WIDTH
 
     def _header_label(self, key: str, label: str) -> str:
         if key != self._sort_key:
@@ -286,11 +452,13 @@ class ProcessesScreen(Screen[None]):
 
     def _rebuild_columns(self, table: DataTable[str | Text]) -> None:
         table.clear(columns=True)
-        for key, label, width in self._columns():
+        specs = self._columns(table)
+        for key, label, width in specs:
             table.add_column(self._header_label(key, label), width=width, key=key)
+        self._column_widths = tuple(width for _key, _label, width in specs)
 
     def _refresh_column_labels(self, table: DataTable[str | Text]) -> None:
-        for key, label, _width in self._columns():
+        for key, label, _width in self._columns(table):
             table.columns[ColumnKey(key)].label = Text(self._header_label(key, label))
         table.refresh()
 
@@ -303,14 +471,40 @@ class ProcessesScreen(Screen[None]):
         self._rebuild_columns(table)
         if self._showing_group_table:
             for key, row in self._command_rows.items():
-                table.add_row(*self._command_cells(row), key=key)
+                table.add_row(*self._command_cells(row, table), key=key)
         else:
             for key, row in self._process_rows.items():
-                table.add_row(*self._process_cells(row), key=key)
+                table.add_row(*self._process_cells(row, table), key=key)
         self._restore_selection(table, previous_key, previous_index, scroll=False)
         self._update_status_line()
 
     # --- collection tick ----------------------------------------------------
+
+    def _read_once(self) -> tuple[list[Path], list[UnitStats], list[ProcStats]] | None:
+        """One synchronous read, or `None` on a transient failure.
+
+        Only OS-level read failures and half-written `/proc`/`/sys` parse
+        errors (`OSError`/`ValueError`, same treatment as
+        `MemoryStatUnavailableError`) are turned into `None`; the caller
+        keeps whatever was on screen and tries again later (SPEC.md
+        "Behaviour details"). The directory vanishing is fatal, same as
+        always.
+        """
+        try:
+            # `strict=False`: a transient `memory.stat` read failure on the
+            # user root raises `MemoryStatUnavailableError` (skip the tick)
+            # rather than `CgroupUnavailableError` (fatal) -- only the
+            # directory vanishing is fatal here.
+            return _collect_process_tick(
+                self._root, self._uid, self._include_system, self._scope, self._name
+            )
+        except CgroupUnavailableError as exc:
+            self._fail_cgroup_unavailable(exc)
+            return None
+        except MemoryStatUnavailableError:
+            return None  # transient this tick: keep the last data on screen, try again next tick
+        except (OSError, ValueError):
+            return None  # transient read/parse failure: same treatment, try again next tick
 
     def refresh_now(self, *, scroll: bool = False) -> None:
         """Collect and redraw immediately.
@@ -318,40 +512,24 @@ class ProcessesScreen(Screen[None]):
         `scroll` (default `False`, a tick) says whether restoring the
         cursor's row is also allowed to scroll the viewport: a periodic tick
         must not, or mouse-wheel scrolling would snap back to the cursor on
-        every refresh; an explicit user action (a sort, `g`, entering or
-        leaving a drill-down) passes `True` so the selected row stays visible
-        (SPEC.md "Process view").
+        every refresh; an explicit user action (a sort) passes `True` so the
+        selected row stays visible (SPEC.md "Process view"). Always
+        synchronous, on the calling thread -- unlike the periodic timer tick
+        (`_tick`), which reads in a thread worker so a slow collector never
+        blocks key handling (SPEC.md "Tech").
 
-        Only the collector reads are guarded: a transient OS-level read
-        failure or a parse error from a half-written `/proc`/`/sys` file
-        (`OSError`/`ValueError`, same treatment as `MemoryStatUnavailableError`)
-        skips this tick and keeps the last frame, the next tick recovers
-        (SPEC.md "Behaviour details"). Applying the result to the screen runs
-        outside the `try`, so a programming error there (e.g. `reorder_rows`'s
-        `ValueError` invariant check) still propagates and ends the session,
-        instead of being swallowed alongside a transient read failure.
+        A failing read (`_read_once` returning `None`) is not applied at
+        all, leaving the last frame on screen; applying a successful one
+        runs outside any `try`, so a programming error there (e.g.
+        `reorder_rows`'s `ValueError` invariant check) still propagates and
+        ends the session instead of being swallowed alongside a transient
+        read failure. Switching mode (`g`, Enter, Esc) does not go through
+        here -- see `_switch_mode`.
         """
-        try:
-            # `strict=False`: a transient `memory.stat` read failure on the
-            # user root raises `MemoryStatUnavailableError` (skip the tick)
-            # rather than `CgroupUnavailableError` (fatal) -- only the
-            # directory vanishing is fatal here.
-            unit_paths = collect_find_app_units(
-                self._root, self._uid, self._include_system, self._scope, self._name, strict=False
-            )
-            unit_stats = [
-                stats for path in unit_paths if (stats := collect_read_unit(path)) is not None
-            ]
-            # No unit means no app left to read processes for; `_show_gone`
-            # (outside the try) handles that without a `read_procs` call.
-            procs = collect_read_procs(unit_paths, self._root) if unit_stats else []
-        except CgroupUnavailableError as exc:
-            self._fail_cgroup_unavailable(exc)
+        result = self._read_once()
+        if result is None:
             return
-        except MemoryStatUnavailableError:
-            return  # transient this tick: keep the last data on screen, try again next tick
-        except (OSError, ValueError):
-            return  # transient read/parse failure: same treatment, try again next tick
+        unit_paths, unit_stats, procs = result
         self._apply_refresh(unit_paths, unit_stats, procs, scroll=scroll)
 
     def _apply_refresh(
@@ -405,7 +583,9 @@ class ProcessesScreen(Screen[None]):
         was_drilled = self._drill_command is not None
         self._last_app = None
         self._drill_command = None
-        self._set_rich("#title", Text(f"{self._name}   (app no longer running)"))
+        self._generation += 1
+        name = escape_control_chars(self._name)
+        self._set_rich("#title", Text(f"{name}   (app no longer running)"))
         self._set_rich("#status", Text(""))
         table = self._table()
         self._process_rows = {}
@@ -436,9 +616,11 @@ class ProcessesScreen(Screen[None]):
             return
         app = self._last_app
         name_part = (
-            Text(f"{app.name} › {self._drill_command}")  # noqa: RUF001 -- breadcrumb separator
+            Text(
+                f"{escape_control_chars(app.name)} › {escape_control_chars(self._drill_command)}"  # noqa: RUF001 -- breadcrumb separator
+            )
             if self._drill_command is not None
-            else Text(app.name)
+            else Text(escape_control_chars(app.name))
         )
         parts: list[tuple[str, Text | None]] = [
             ("name", name_part),
@@ -475,7 +657,7 @@ class ProcessesScreen(Screen[None]):
             return Text(row.unit, style="dim italic")
         command = status_line_command(
             self._scope,
-            row.unit,
+            escape_control_chars(row.unit),
             row.pid,
             self.app.size.width,  # pyright: ignore[reportUnknownMemberType]
         )
@@ -494,22 +676,28 @@ class ProcessesScreen(Screen[None]):
             return Text(text, style="dim italic")
         width = self.app.size.width  # pyright: ignore[reportUnknownMemberType]
         if len(row.units) == 1:
-            return Text(status_line_command(self._scope, row.units[0], None, width))
+            unit = escape_control_chars(row.units[0])
+            return Text(status_line_command(self._scope, unit, None, width))
         # Several units share this command name: no single truthful command
         # covers all of them (e.g. the same shell run in two terminals).
         return Text(f"{len(row.units)} units, Enter lists the processes", style="dim")
 
     # --- row diffing: process rows --------------------------------------------
 
-    def _process_cells(self, row: ProcessRow) -> list[str | Text]:
+    def _process_cells(self, row: ProcessRow, table: DataTable[str | Text]) -> list[str | Text]:
+        name_cap = self._name_cap(table)
         return [
-            _cell_value(key, _format_process_cell(key, row), dim=row.dim)
-            for key, _label, _width in self._columns()
+            _cell_value(key, _format_process_cell(key, row, name_cap=name_cap), dim=row.dim)
+            for key, _label, _width in self._columns(table)
         ]
 
     def _apply_process_rows(
         self, procs: list[ProcStats], app: AppStats, *, include_synthetic: bool, scroll: bool
     ) -> None:
+        # The table's columns already match this mode: a mode switch (`g`,
+        # Enter, Esc) only calls this once its own read has succeeded and it
+        # has rebuilt them itself (`_switch_mode`); a periodic tick never
+        # changes the mode (SPEC.md "Process view").
         table = self._table()
         process_key = cast("ProcessSortKey", self._sort_key)
         real_rows = sort_process_rows(build_process_rows(procs), process_key, self._sort_reverse)
@@ -531,7 +719,7 @@ class ProcessesScreen(Screen[None]):
             if old is not None:
                 self._update_process_cells(table, key, old, row)
             else:
-                table.add_row(*self._process_cells(row), key=key)
+                table.add_row(*self._process_cells(row, table), key=key)
         self._process_rows = new_by_key
 
         reorder_rows(table, [row.key for row in ordered])
@@ -541,21 +729,25 @@ class ProcessesScreen(Screen[None]):
     def _update_process_cells(
         self, table: DataTable[str | Text], key: str, old: ProcessRow, row: ProcessRow
     ) -> None:
-        for col_key, _label, _width in self._columns():
-            old_text = _format_process_cell(col_key, old)
-            new_text = _format_process_cell(col_key, row)
+        name_cap = self._name_cap(table)
+        for col_key, _label, _width in self._columns(table):
+            old_text = _format_process_cell(col_key, old, name_cap=name_cap)
+            new_text = _format_process_cell(col_key, row, name_cap=name_cap)
             if old_text != new_text:
                 table.update_cell(key, col_key, _cell_value(col_key, new_text, dim=row.dim))
 
     # --- row diffing: grouped (command) rows -----------------------------------
 
-    def _command_cells(self, row: CommandRow) -> list[str | Text]:
+    def _command_cells(self, row: CommandRow, table: DataTable[str | Text]) -> list[str | Text]:
+        name_cap = self._name_cap(table)
         return [
-            _cell_value(key, _format_command_cell(key, row), dim=row.dim)
-            for key, _label, _width in self._columns()
+            _cell_value(key, _format_command_cell(key, row, name_cap=name_cap), dim=row.dim)
+            for key, _label, _width in self._columns(table)
         ]
 
     def _apply_command_rows(self, procs: list[ProcStats], app: AppStats, *, scroll: bool) -> None:
+        # Same precondition as `_apply_process_rows`: the columns already
+        # match this mode.
         table = self._table()
         group_key = cast("GroupSortKey", self._sort_key)
         real_rows = sort_command_rows(build_command_rows(procs), group_key, self._sort_reverse)
@@ -570,7 +762,7 @@ class ProcessesScreen(Screen[None]):
             if old is not None:
                 self._update_command_cells(table, key, old, row)
             else:
-                table.add_row(*self._command_cells(row), key=key)
+                table.add_row(*self._command_cells(row, table), key=key)
         self._command_rows = new_by_key
 
         reorder_rows(table, [row.key for row in ordered])
@@ -580,9 +772,10 @@ class ProcessesScreen(Screen[None]):
     def _update_command_cells(
         self, table: DataTable[str | Text], key: str, old: CommandRow, row: CommandRow
     ) -> None:
-        for col_key, _label, _width in self._columns():
-            old_text = _format_command_cell(col_key, old)
-            new_text = _format_command_cell(col_key, row)
+        name_cap = self._name_cap(table)
+        for col_key, _label, _width in self._columns(table):
+            old_text = _format_command_cell(col_key, old, name_cap=name_cap)
+            new_text = _format_command_cell(col_key, row, name_cap=name_cap)
             if old_text != new_text:
                 table.update_cell(key, col_key, _cell_value(col_key, new_text, dim=row.dim))
 
@@ -645,25 +838,53 @@ class ProcessesScreen(Screen[None]):
             return
         self._enter_drill(key)
 
-    def _enter_drill(self, command: str) -> None:
-        self._drill_command = command
-        self._process_rows = {}
+    def _switch_mode(
+        self,
+        *,
+        grouped: bool,
+        drill_command: str | None,
+        scroll: bool,
+        cursor_key: str | None = None,
+    ) -> None:
+        """Common path for `g`, Enter and Esc: read once for the new mode
+        first, and only if it succeeds commit the mode change, rebuild the
+        table's columns and apply the fresh rows. A failing read leaves the
+        old mode's state and its table completely untouched -- neither
+        `_grouped`/`_drill_command` nor the table's columns change -- so they
+        never drift out of step with each other; the user can just press the
+        key again (SPEC.md "Process view").
+
+        `cursor_key` is the row the cursor should land on afterwards when
+        it's known in advance (the command just left by Esc), overriding the
+        row-applying methods' own previous-position fallback, which has
+        nothing to fall back to right after a rebuild.
+        """
+        result = self._read_once()
+        if result is None:
+            return
+        unit_paths, unit_stats, procs = result
+        self._grouped = grouped
+        self._drill_command = drill_command
+        self._generation += 1
         self._reset_sort_if_unsupported()
         table = self._table()
         self._rebuild_columns(table)
-        self.refresh_now(scroll=True)  # explicit Enter: a whole new table shape
-        self._update_footer()
-
-    def action_toggle_group(self) -> None:
-        self._grouped = not self._grouped
-        self._drill_command = None
-        self._reset_sort_if_unsupported()
-        table = self._table()
         self._process_rows = {}
         self._command_rows = {}
-        self._rebuild_columns(table)
-        self.refresh_now(scroll=True)  # explicit `g` key press: a whole new table shape
+        self._apply_refresh(unit_paths, unit_stats, procs, scroll=scroll)
+        if cursor_key is not None and cursor_key in self._command_rows:
+            table.move_cursor(row=table.get_row_index(cursor_key), scroll=scroll)
         self._update_footer()
+
+    def _enter_drill(self, command: str) -> None:
+        self._switch_mode(
+            grouped=self._grouped, drill_command=command, scroll=True
+        )  # explicit Enter: a whole new table shape
+
+    def action_toggle_group(self) -> None:
+        self._switch_mode(
+            grouped=not self._grouped, drill_command=None, scroll=True
+        )  # explicit `g` key press: a whole new table shape
 
     def action_back(self) -> None:
         if self._drill_command is not None:
@@ -675,16 +896,9 @@ class ProcessesScreen(Screen[None]):
 
     def _exit_drill(self) -> None:
         command = self._drill_command
-        self._drill_command = None
-        self._process_rows = {}
-        self._command_rows = {}
-        self._reset_sort_if_unsupported()
-        table = self._table()
-        self._rebuild_columns(table)
-        self.refresh_now()  # repopulates `self._command_rows` fresh
-        if command is not None and command in self._command_rows:
-            table.move_cursor(row=table.get_row_index(command))  # explicit Esc: keep it visible
-        self._update_footer()
+        self._switch_mode(
+            grouped=self._grouped, drill_command=None, scroll=False, cursor_key=command
+        )
 
     def action_help(self) -> None:
         self.app.push_screen(HelpScreen())  # pyright: ignore[reportUnknownMemberType]

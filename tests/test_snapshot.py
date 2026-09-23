@@ -195,6 +195,43 @@ def test_system_includes_ram_free_cache_and_shared_bytes(tmp_path: Path) -> None
     assert system["ram_cache_bytes"] == (7_000_000 - 3_000_000) * 1024
 
 
+def test_cjk_unit_name_decodes_correctly_in_the_json_document(tmp_path: Path) -> None:
+    # systemd escapes 微信 byte-by-byte in the unit dirname; the snapshot's
+    # app name must be the decoded UTF-8 text, not mangled bytes.
+    user_root = _base_tree(tmp_path)
+    make_unit(
+        user_root / "app.slice" / "app-\\xe5\\xbe\\xae\\xe4\\xbf\\xa1.service",
+        anon=2 * _MIB,
+        shmem=0,
+        kernel=0,
+        file=0,
+        swap=0,
+    )
+
+    document, _ = snapshot_document(tmp_path, 1000, include_system=False, limit=50, now=_NOW)
+
+    names = [item["name"] for item in document["apps"]["items"]]
+    assert "微信" in names, names
+
+
+def test_ram_slab_bytes_reflects_sreclaimable(tmp_path: Path) -> None:
+    # SReclaimable from /proc/meminfo maps to ram_slab_bytes.
+    user_root = user_service_root(tmp_path, uid=1000)
+    write_memory_stat(user_root, anon=1)
+    write_meminfo(
+        tmp_path,
+        mem_total_kb=32_000_000,
+        mem_available_kb=11_000_000,
+        swap_total_kb=0,
+        swap_free_kb=0,
+        sreclaimable_kb=2_100_000,
+    )
+
+    document, _ = snapshot_document(tmp_path, 1000, include_system=False, limit=50, now=_NOW)
+
+    assert document["system"]["ram_slab_bytes"] == 2_100_000 * 1024
+
+
 def test_elsewhere_is_null_without_the_root_memory_stat(tmp_path: Path) -> None:
     # `_base_tree` never writes `sys/fs/cgroup/memory.stat` (only the user
     # root's own), so `elsewhere_bytes` stays null.

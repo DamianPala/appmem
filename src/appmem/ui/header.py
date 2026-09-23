@@ -70,7 +70,10 @@ def _ram_part(stats: SystemStats, *, show_shared: bool) -> Text:
 def _avail_part(stats: SystemStats, *, show_breakdown: bool) -> Text:
     text = Text(f"avail {size(stats.mem_available)}")
     if show_breakdown:
-        text = text + Text(f" ({size(stats.mem_free)} free, {size(stats.mem_cache)} cache)")
+        text = text + Text(
+            f" ({size(stats.mem_free)} free, {size(stats.mem_cache)} cache, "
+            f"{size(stats.mem_slab)} slab)"
+        )
     return text
 
 
@@ -93,7 +96,7 @@ def _assemble_line1(stats: SystemStats, disabled: frozenset[str]) -> Text:
 
 def format_line1(stats: SystemStats, width: int) -> Text:
     """RAM (used/total, with a shared-memory breakdown), avail (with a
-    free/cache breakdown), swap, pressure (when readable), the hidden
+    free/cache/slab breakdown), swap, pressure (when readable), the hidden
     system.slice total and memory charged outside the walked trees.
 
     Never wraps: built from parts with a priority, dropping the lowest below
@@ -104,8 +107,11 @@ def format_line1(stats: SystemStats, width: int) -> Text:
 
     `shared` (tmpfs, shared memory, GPU buffers -- swappable but not
     reclaimable) is always shown, no threshold. `avail`'s own breakdown into
-    `free` (truly free) and `cache` (reclaimable page cache) sits inside it,
-    the same idea: parts grouped so they sit inside the totals they belong to.
+    `free` (truly free), `cache` (reclaimable page cache) and `slab`
+    (reclaimable kernel caches, `SReclaimable`) sits inside it, the same
+    idea: parts grouped so they sit inside the totals they belong to. The
+    three parts don't sum exactly to `avail` (a kernel estimate that also
+    reserves some headroom), only come close to it.
     Below `width`, parts drop in this order: `elsewhere`, `system`, avail's
     own breakdown, `avail` itself, then RAM's `shared` last (`_DROP_STEPS`)
     -- `shared` is the stickiest droppable part, so it

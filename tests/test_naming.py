@@ -68,3 +68,27 @@ def test_unknown_shape_keeps_normalized_name() -> None:
 
 def test_empty_name() -> None:
     assert app_name("") == ""
+
+
+# --- multi-byte UTF-8 unit names ------------------------------------------------
+
+
+def test_cjk_name_escaped_byte_by_byte_decodes_as_utf8() -> None:
+    # systemd escapes 微信 (WeChat) one UTF-8 byte at a time: each of the two
+    # 3-byte characters becomes three separate \xNN escapes. Decoding the
+    # escapes one at a time (instead of collecting the raw bytes first and
+    # decoding once) would turn each byte into its own mangled character.
+    escaped = "app-\\xe5\\xbe\\xae\\xe4\\xbf\\xa1.service"
+    assert app_name(escaped) == "微信"
+
+
+def test_emoji_name_escaped_byte_by_byte_decodes_as_utf8() -> None:
+    # An emoji outside the BMP (4-byte UTF-8 sequence), same escaping shape.
+    escaped = "app-\\xf0\\x9f\\x9a\\x80.service"
+    assert app_name(escaped) == "🚀"
+
+
+def test_invalid_byte_sequence_decodes_to_replacement_char_without_raising() -> None:
+    # \xff is never valid as the start of a UTF-8 sequence.
+    escaped = "app-\\xff\\xfe.service"
+    assert app_name(escaped) == "��"

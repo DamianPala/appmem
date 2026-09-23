@@ -92,7 +92,7 @@ def write_uptime(root: Path, seconds: float) -> None:
     (proc_dir / "uptime").write_text(f"{seconds} 0\n")
 
 
-def write_meminfo(
+def write_meminfo(  # noqa: PLR0913 -- one keyword-only field per /proc/meminfo line written below
     root: Path,
     *,
     mem_total_kb: int,
@@ -102,6 +102,7 @@ def write_meminfo(
     mem_free_kb: int = 0,
     cached_kb: int = 0,
     shmem_kb: int = 0,
+    sreclaimable_kb: int = 0,
 ) -> None:
     proc_dir = root / "proc"
     proc_dir.mkdir(parents=True, exist_ok=True)
@@ -113,6 +114,7 @@ def write_meminfo(
         f"SwapTotal:      {swap_total_kb} kB",
         f"SwapFree:       {swap_free_kb} kB",
         f"Shmem:          {shmem_kb} kB",
+        f"SReclaimable:   {sreclaimable_kb} kB",
     ]
     (proc_dir / "meminfo").write_text("\n".join(lines) + "\n")
 

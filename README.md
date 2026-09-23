@@ -7,7 +7,7 @@ A browser or a terminal is dozens of them, so "what is eating my swap?" turns in
 appmem reads the memory counters the kernel already keeps for every app (systemd puts each one in its own cgroup), adds them up per app, and shows one sortable row per app, refreshed every second.
 
 ```
-RAM 16.7/30.9 GiB (3.0 GiB shared)  avail 14.2 GiB (8.2 GiB free, 6.0 GiB cache)  Swap 24.0/32.0 GiB  pressure 10s: none  system 652 MiB [x]  elsewhere 116 MiB
+RAM 16.7/30.9 GiB (3.0 GiB shared)  avail 14.2 GiB (8.2 GiB free, 6.0 GiB cache, 2.1 GiB slab)  Swap 24.0/32.0 GiB  pressure 10s: none  system 652 MiB [x]  elsewhere 116 MiB
 Δ since 02:13 (3s)
  APP                         RAM        SWAP        TOTAL ▾     ΔRAM       ΔSWAP      PROCS
  ghostty                       6.6 GiB    11.2 GiB    17.8 GiB     -3 MiB          ·     281
@@ -38,7 +38,8 @@ The main view lists apps by TOTAL (RAM + swap).
 Click a column header or press `r` (RAM), `s` (swap), `t` (total), `d` (swap change) to sort; press again to reverse.
 The header tells you whether memory is a problem right now.
 `pressure 10s: none` with a full swap just means idle pages were moved out of the way; `some` or `high` means programs are waiting for memory.
-`shared` is tmpfs, shared memory and GPU buffers the kernel can only swap out, never drop; `cache` (inside `avail`) is file pages it can drop on demand.
+`shared` is tmpfs, shared memory and GPU buffers the kernel can only swap out, never drop.
+`avail` is what can be allocated before swapping; `free`, `cache` (reclaimable file pages) and `slab` (kernel caches of file names and inodes, dropped on demand) are its main parts and come close to it, but the kernel reserves some headroom so they don't add up to an exact sum.
 
 **Look inside it.**
 Press `Enter` on an app to see its processes, with their age and the systemd unit each one lives in.
@@ -118,7 +119,7 @@ There are no shell completions yet.
 
 ## Cost
 
-About 1 % of a CPU core for reading the counters at the default 1 s interval; with the UI, 3-4 % of one core on a busy desktop.
+About 1 % of a CPU core for reading the counters at the default 1 s interval; with the UI on a busy desktop, about 4 % of one core in the main view and about 5 % in the process view.
 
 ## License
 

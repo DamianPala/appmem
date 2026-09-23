@@ -56,8 +56,11 @@ _HEADER_NOTE = (
 _HEADER_TERMS_NOTE = (
     "shared (in the RAM figure) is tmpfs (/tmp, /dev/shm), shared memory and GPU "
     "buffers: the kernel cannot drop it, only swap it out, and a tmpfs file counts "
-    "toward the app that wrote it. cache (in avail) is file pages the kernel can "
-    "drop on demand. avail is what can be allocated before swapping."
+    "toward the app that wrote it. avail is the kernel's estimate of what can be "
+    "allocated before swapping; free, cache (reclaimable file pages) and slab "
+    "(kernel caches of file names and inodes, dropped on demand) are its main "
+    "parts and come close to it, but are not an exact sum -- the kernel reserves "
+    "some headroom."
 )
 
 _PRESSURE_INTRO = "Memory pressure is the share of the last 10 s spent waiting for memory:"

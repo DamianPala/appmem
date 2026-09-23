@@ -1,4 +1,4 @@
-# appmem: spec v0.4
+# appmem: spec v0.5
 
 A live terminal view of RAM and swap usage **per application**, not per process.
 Think `btm` or `htop`, but rows are apps (Ghostty, Brave, LibreOffice), each summing all of its processes.
@@ -31,7 +31,7 @@ Which app holds the memory and swap? Is memory actually the problem right now? W
 ### Main view
 
 ```
-RAM 21.0/30.9 GiB (2.2 GiB shared)  avail 10.0 GiB (2.2 GiB free, 5.4 GiB cache)  Swap 25.0/32.0 GiB  pressure 10s: none  system 652 MiB [x]
+RAM 20.2/30.9 GiB (3.1 GiB shared)  avail 10.8 GiB (2.1 GiB free, 6.2 GiB cache, 2.9 GiB slab)  Swap 24.0/32.0 GiB  pressure 10s: none  system 652 MiB [x]
 Δ since 02:13 (3s)
  APP                        RAM         SWAP        TOTAL ▾     ΔRAM       ΔSWAP      PROCS
  ghostty                       6.6 GiB    11.2 GiB    17.8 GiB     -3 MiB          ·     281
@@ -43,12 +43,12 @@ RAM 21.0/30.9 GiB (2.2 GiB shared)  avail 10.0 GiB (2.2 GiB free, 5.4 GiB cache)
 
 - **Header line 1** (parts joined by two spaces, each breakdown in parentheses sits inside the total it belongs to):
   - System RAM used (`MemTotal - MemAvailable`) and total, with `shared` (`Shmem`: tmpfs such as `/tmp` and `/dev/shm`, shared memory, GPU buffers; the kernel can only swap it out, never drop it). Always shown.
-  - `avail` (`MemAvailable`, what can be allocated before swapping) with `free` (`MemFree`) and `cache` (`Cached - Shmem`, clamped at 0, the same definition as the CACHE column). The parts don't sum to `avail`: it is a kernel estimate that also counts reclaimable slab.
+  - `avail` (`MemAvailable`, what can be allocated before swapping) with `free` (`MemFree`) and `cache` (`Cached - Shmem`, clamped at 0, the same definition as the CACHE column) and `slab` (`SReclaimable`: kernel caches of file names and inodes, dropped on demand). The three come close to `avail` but are not an exact sum: `avail` is a kernel estimate that also keeps reserves.
   - System swap used and total, or `Swap off` when `SwapTotal` is 0. Coloured yellow above 50 % used, red above 80 %.
   - Memory pressure as a bold word (see Definitions), green/yellow/red; omitted when `/proc/pressure/memory` does not exist.
   - Total of the hidden system services, so the user notices when the culprit is there.
   - `elsewhere`: memory outside the user tree and `system.slice` (root `memory.stat` minus both): VMs, containers, other users, login sessions.
-  - Never wraps: when too narrow, parts drop in the order `elsewhere`, `system`, the `(free, cache)` breakdown, `avail`, `shared`. RAM, Swap and pressure always stay.
+  - Never wraps: when too narrow, parts drop in the order `elsewhere`, `system`, the `(free, cache, slab)` breakdown, `avail`, `shared`. RAM, Swap and pressure always stay; below their width the line is cropped with an ellipsis.
 - **Header line 2:** when the Δ baseline was taken and how long ago.
 - The sort marker `▴`/`▾` sits on the sorted column. Default sort: TOTAL descending.
 - Clicking the sorted column again flips the direction.
@@ -99,6 +99,7 @@ Enter on a command drills into its member processes (title `ghostty › claude`,
   The unit is shortened in the middle only when the line is wider than the terminal.
 - The UNIT column is the last one and may be cut at the screen edge; the status line carries the full name.
 - Under 95 columns AGE is hidden. The title drops `procs`, then `swap`, instead of wrapping.
+- `g`, Enter into a drill-down and Esc out of it switch only after the new view's data was read; if that read fails, the current view stays as it was.
 - All layouts refresh with the same interval as the main view.
 
 ### Help screen (`?`)
@@ -185,7 +186,7 @@ Rows are merged by app name, and the counters are summed.
 Normalization, in order:
 
 1. Take the unit directory name.
-2. Unescape every systemd `\xNN` escape (`\x2d` → `-`).
+2. Unescape every systemd `\xNN` escape (`\x2d` → `-`) and decode the resulting bytes as UTF-8, invalid sequences replaced (`\xe5\xbe\xae\xe4\xbf\xa1` → `微信`).
 3. Strip the `.service` / `.scope` suffix.
 4. Snap: `snap.<name>.<app>-<uuid>` → `<name>`, then go to step 10.
 5. Flatpak: `app-flatpak-<id>-<n>` → `<id>`, then go to step 8.
@@ -255,6 +256,9 @@ Splitting terminal children into their own main-view rows is v2.
 - A row can have PROCS 0 and memory above 0: the unit outlives its processes while it still holds memory. It shows like any other row, and its process view shows only the `kernel` and `unattributed` rows.
 - A tick whose reads fail transiently (`memory.stat` missing, any `OSError`, a parse error from a half-written `/proc` or `/sys` file) is skipped; the screen keeps the last data and the next tick recovers. Errors while applying the data to the screen are bugs and still end the app. Only a missing user tree ends the app as a runtime failure.
 - The cursor follows the selected app across refreshes and re-sorts. If that app disappears, the cursor stays at the same row index, or on the last row.
+- Names (apps, processes, units, titles, status line) show C0/C1 control characters escaped (`\x1b[41m`), in the live view as in the text reports; nothing a process or unit is called can write to the terminal.
+- Widths count terminal cells, not characters: names are cut at 32 cells with `…` and a wide character is never split. No line of any view wraps at any width; below about 70 columns the name column shrinks so the numeric columns stay whole.
+- Periodic reads run off the UI thread, one at a time per screen; keys stay responsive while a read is slow, and a result read for a view the user has since left is dropped.
 
 ## Command line
 
@@ -300,7 +304,7 @@ Every failure writes one JSON error object as the last non-empty stderr line, ne
 ## Errors
 
 - `cgroup_unavailable`, exit `1`: no cgroup v2 at `/sys/fs/cgroup`, no `user@$UID.service` tree (e.g. run as root), or the memory controller is not enabled there (`memory.stat` missing). The message names the missing path. In the live view this can also happen mid-run, when the user tree disappears; the JSON line is printed after the terminal is restored.
-- `SIGINT`/`SIGTERM` from outside (e.g. `kill`) in the live view: restore the terminal and exit with the usual `128 + signal` code, with no JSON line.
+- `SIGINT`/`SIGTERM` from outside (e.g. `kill`) in the live view: restore the terminal and exit promptly (not at the next tick) with the usual `128 + signal` code, with no JSON line. A signal that lands during a read exits once that read returns.
 - Swap disabled: SWAP columns show `0` and the header says `Swap off`. The tool still runs.
 
 ## Tech
@@ -318,7 +322,7 @@ Every failure writes one JSON error object as the last non-empty stderr line, ne
 
 Performance budget: the collector stays under 1 % of one CPU core at a 1 s interval.
 Measured on the dev machine: 4.5 ms per tick for 146 units, 10 ms for `/proc/PID/status` of all 542 user processes.
-Measured with the UI at `-i 1` on the dev machine (2026-09-23): main view 3.0 %, grouped process view of a 281-process app 3.5 %, drill-down 4.1 % of one core. `appmem snapshot` takes about 0.2 s including interpreter start.
+Measured with the UI at `-i 1` on the dev machine (2026-09-23, ~310-process app): main view about 4 %, process views about 5 % of one core. `appmem snapshot` takes about 0.2 s including interpreter start.
 
 ## Tests
 

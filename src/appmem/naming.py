@@ -35,8 +35,23 @@ _ALIAS_PREFIX = {
 
 
 def _unescape(name: str) -> str:
-    """Unescape systemd ``\\xNN`` byte escapes, e.g. ``\\x2d`` -> ``-``."""
-    return _ESCAPE_RE.sub(lambda m: chr(int(m.group(1), 16)), name)
+    """Unescape systemd ``\\xNN`` byte escapes and decode the result as UTF-8.
+
+    systemd escapes a non-ASCII desktop id one byte at a time (``微信``
+    becomes ``\\xe5\\xbe\\xae\\xe4\\xbf\\xa1``), so the escaped bytes are
+    collected into one buffer and decoded together, not mapped one code
+    point per escape -- that would turn each byte into its own character
+    instead of the multi-byte UTF-8 character they spell out together. An
+    invalid byte sequence decodes to U+FFFD instead of raising.
+    """
+    raw = bytearray()
+    pos = 0
+    for match in _ESCAPE_RE.finditer(name):
+        raw += name[pos : match.start()].encode("utf-8", errors="replace")
+        raw.append(int(match.group(1), 16))
+        pos = match.end()
+    raw += name[pos:].encode("utf-8", errors="replace")
+    return raw.decode("utf-8", errors="replace")
 
 
 def _strip_unit_suffix(name: str) -> str:

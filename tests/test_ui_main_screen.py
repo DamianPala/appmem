@@ -9,17 +9,22 @@ calling `MainScreen.refresh_now()` after mutating the fixture on disk.
 from __future__ import annotations
 
 import shutil
+import threading
+import time
 from datetime import timedelta
 from pathlib import Path
 from typing import cast
 
 import pytest
+from rich.cells import cell_len
 from rich.text import Text
 from textual import events
+from textual.coordinate import Coordinate
 from textual.pilot import Pilot
 from textual.widgets import DataTable, Static
 from textual.widgets.data_table import ColumnKey
 
+from appmem.collect import AppStats
 from appmem.ui.app import AppMemApp
 from appmem.ui.rows import row_key
 from appmem.ui.screens import main as main_screen
@@ -928,3 +933,304 @@ async def test_sort_footer_item_drops_d_key_below_95_columns(tmp_path: Path) -> 
         content = footer.content
         assert isinstance(content, Text)
         assert "r s t d sort" in content.plain
+
+
+# --- control characters never reach the terminal --------------------------------
+
+
+@pytest.mark.asyncio
+async def test_control_chars_in_app_name_are_escaped_in_the_table(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-evil\x1b[2Japp.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test() as pilot:
+        await pilot.pause()
+        cell = _table(pilot).get_cell(row_key("evil\x1b[2japp", "user"), "app")
+        assert isinstance(cell, Text)
+        assert "\x1b" not in cell.plain
+        assert "\\x1b[2j" in cell.plain.lower()
+
+
+@pytest.mark.asyncio
+async def test_control_chars_in_system_app_name_are_escaped(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    unit_dir = tmp_path / "sys" / "fs" / "cgroup" / "system.slice" / "evil\x1b[2Jsys.service"
+    make_unit(unit_dir, anon=1 * 1024**2, swap=0, pids=[9999])
+
+    async with _app(root, include_system=True).run_test() as pilot:
+        await pilot.pause()
+        cell = _table(pilot).get_cell(row_key("evil\x1b[2jsys", "system"), "app")
+        assert isinstance(cell, Text)
+        assert "\x1b" not in cell.plain
+        assert "\\x1b[2j" in cell.plain.lower()
+        assert "[sys]" in cell.plain
+
+
+@pytest.mark.asyncio
+async def test_c1_control_in_app_name_is_escaped_in_the_table(tmp_path: Path) -> None:
+    # U+009B (CSI) is a C1 control, not C0: a one-byte-at-a-time systemd
+    # escape of its UTF-8 encoding (0xC2 0x9B) decodes to the real character,
+    # which `escape_control_chars` must still catch (SPEC.md "Behaviour
+    # details").
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-evil\\xc2\\x9b31mred.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test() as pilot:
+        await pilot.pause()
+        table = _table(pilot)
+        keys = [key.value for key in table.rows]
+        assert len(keys) == 1
+        assert keys[0] is not None
+        cell = table.get_cell(keys[0], "app")
+        assert isinstance(cell, Text)
+        assert not any(0x80 <= ord(char) <= 0x9F for char in cell.plain), repr(cell.plain)
+        assert "\\x9b" in cell.plain
+
+
+# --- CJK and other wide-character names -----------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cjk_app_name_decoded_and_shown_in_a_main_view_row(tmp_path: Path) -> None:
+    # systemd escapes a non-ASCII unit name one UTF-8 byte at a time; the
+    # decoded name must reach an actual rendered table row, not just
+    # `app_name()`'s own return value (SPEC.md "Grouping").
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-\\xe5\\xbe\\xae\\xe4\\xbf\\xa1.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test() as pilot:
+        await pilot.pause()
+        table = _table(pilot)
+        assert _row_names(table) == ["微信"]
+        cell = table.get_cell(row_key("微信", "user"), "app")
+        assert isinstance(cell, Text)
+        assert cell.plain == "微信"
+
+
+# --- header and footer never wrap, at any width ---------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("width", [60, 50, 40, 24, 1])
+async def test_header_and_footer_stay_one_line_at_any_width(tmp_path: Path, width: int) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(width, 12)) as pilot:
+        await pilot.pause()
+        header1 = pilot.app.screen.query_one("#header1", Static)
+        footer = pilot.app.screen.query_one("#footer", Static)
+        assert header1.region.height == 1, (width, header1.region.height)
+        assert footer.region.height == 1, (width, footer.region.height)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("width", [60, 40, 24, 1])
+async def test_rendered_header_and_footer_lines_crop_to_width(tmp_path: Path, width: int) -> None:
+    # `region.height == 1` alone doesn't prove the *text* fits: a `Static`
+    # can report one line of height while Rich still wraps or overflows its
+    # content within it. Render the actual strips Textual would paint and
+    # measure their real cell width instead (SPEC.md "Main view").
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(width, 12)) as pilot:
+        await pilot.pause()
+        for selector in ("#header1", "#header2", "#footer"):
+            widget = pilot.app.screen.query_one(selector, Static)
+            lines = widget.render_lines(widget.region.reset_offset)
+            assert len(lines) == 1, (selector, len(lines))
+            text = "".join(segment.text for segment in lines[0])
+            assert cell_len(text) <= width, (selector, text)
+
+
+@pytest.mark.asyncio
+async def test_table_shows_data_rows_at_40x10(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(40, 10)) as pilot:
+        await pilot.pause()
+        table = _table(pilot)
+        assert table.row_count > 0
+        assert table.scrollable_content_region.height >= 1
+
+
+# --- numeric columns fit at 60 columns -------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_total_column_fits_on_screen_at_60_columns_with_a_long_name(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, f"app-{'x' * 40}.service", ram=12 * 1024**3, swap=3 * 1024**3)
+
+    async with _app(root).run_test(size=(60, 24)) as pilot:
+        await pilot.pause()
+        table = _table(pilot)
+        idx = table.get_column_index("total")
+        region = table._get_column_region(idx)  # pyright: ignore[reportPrivateUsage]
+        assert region.right <= table.size.width, (region, table.size.width)
+
+
+@pytest.mark.asyncio
+async def test_total_column_fits_after_resizing_from_90_to_60(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, f"app-{'a' * 25}.service", ram=12 * 1024**3, swap=3 * 1024**3)
+
+    async with _app(root).run_test(size=(90, 24)) as pilot:
+        await pilot.pause()
+        table = _table(pilot)
+        idx = table.get_column_index("app")
+        cell = str(table.get_cell_at(Coordinate(0, idx)))
+        assert "…" not in cell, "already cropped at 90 columns"
+
+        await pilot.resize_terminal(60, 24)
+        await pilot.pause()
+
+        idx = table.get_column_index("total")
+        region = table._get_column_region(idx)  # pyright: ignore[reportPrivateUsage]
+        assert region.right <= table.size.width, (region, table.size.width)
+        idx = table.get_column_index("app")
+        cell = str(table.get_cell_at(Coordinate(0, idx)))
+        assert "…" in cell, "long name not cropped at 60 columns"
+
+
+@pytest.mark.asyncio
+async def test_app_column_widens_back_after_resizing_from_60_to_90(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, f"app-{'a' * 25}.service", ram=12 * 1024**3, swap=3 * 1024**3)
+
+    async with _app(root).run_test(size=(60, 24)) as pilot:
+        await pilot.pause()
+        table = _table(pilot)
+        idx = table.get_column_index("app")
+        cell = str(table.get_cell_at(Coordinate(0, idx)))
+        assert "…" in cell, "long name not cropped at 60 columns"
+
+        await pilot.resize_terminal(90, 24)
+        await pilot.pause()
+
+        idx = table.get_column_index("total")
+        region = table._get_column_region(idx)  # pyright: ignore[reportPrivateUsage]
+        assert region.right <= table.size.width, (region, table.size.width)
+        idx = table.get_column_index("app")
+        cell = str(table.get_cell_at(Coordinate(0, idx)))
+        assert "…" not in cell, "still cropped back at 90 columns"
+
+
+# --- slow reads must not freeze input --------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_slow_tick_does_not_block_key_handling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A synchronous tick blocks the whole event loop for its own blocking
+    # call, so nothing else -- not even this test's polling -- can run
+    # concurrently with it: only the *total* time from "a read started" to
+    # "the key landed" tells the threaded and synchronous versions apart.
+    # Threaded code finishes this in milliseconds; a reverted-to-synchronous
+    # tick can't finish any faster than the collector's own bounded wait.
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+    _app_unit(root, "app-beta.service", ram=2 * 1024**2, swap=0)
+    real_read_system = main_screen.read_system
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocking_read_system(root: Path, uid: int) -> object:
+        started.set()
+        release.wait(timeout=2)  # bounded: the worker thread never hangs forever
+        return real_read_system(root, uid)
+
+    app = AppMemApp(root=root, uid=UID, interval=0.05, include_system=False)
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        monkeypatch.setattr(main_screen, "read_system", blocking_read_system)
+        table = _table(pilot)
+        row = table.cursor_row
+
+        t0 = time.monotonic()
+        deadline = t0 + 5
+        while not started.is_set() and time.monotonic() < deadline:
+            await pilot.pause(0.01)
+        assert started.is_set(), "the tick never started reading"
+
+        await pilot.press("down")
+        deadline = time.monotonic() + 5
+        while table.cursor_row == row and time.monotonic() < deadline:
+            await pilot.pause(0.01)
+        elapsed = time.monotonic() - t0
+        release.set()  # let a still-blocked read finish so the worker thread exits cleanly
+
+        assert table.cursor_row != row, "the key was never handled"
+        assert elapsed < 1.0, f"key handling waited {elapsed:.2f}s for the in-flight read"
+
+        screen = pilot.app.screen
+        assert isinstance(screen, MainScreen)
+        deadline = time.monotonic() + 5
+        while screen._tick_in_flight and time.monotonic() < deadline:  # pyright: ignore[reportPrivateUsage]
+            await pilot.pause(0.01)
+        assert not screen._tick_in_flight, "blocked read never finished"  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.asyncio
+async def test_at_most_one_tick_read_in_flight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+    real_collect_apps = main_screen._collect_apps  # pyright: ignore[reportPrivateUsage]
+    lock = threading.Lock()
+    counts = {"current": 0, "max": 0}
+
+    def slow_collect_apps(root: Path, uid: int, include_system: bool) -> list[AppStats]:
+        with lock:
+            counts["current"] += 1
+            counts["max"] = max(counts["max"], counts["current"])
+        time.sleep(0.3)
+        try:
+            return real_collect_apps(root, uid, include_system)
+        finally:
+            with lock:
+                counts["current"] -= 1
+
+    app = AppMemApp(root=root, uid=UID, interval=0.1, include_system=False)
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        monkeypatch.setattr(main_screen, "_collect_apps", slow_collect_apps)
+        await pilot.pause(0.6)  # several 0.1s intervals elapse while a 0.3s read is in flight
+
+        assert counts["max"] <= 1, "two tick reads were in flight at once"
+
+
+@pytest.mark.asyncio
+async def test_stale_tick_result_is_discarded_after_toggling_system(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A tick starts reading with `include_system=False`; before it finishes,
+    # `x` toggles it on (a synchronous `refresh_now`). The slow tick's result
+    # still carries the old `include_system=False` it was read with, so it
+    # must be discarded on arrival instead of overwriting the just-toggled
+    # table and silently hiding the system row again (SPEC.md "Tech").
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+    _system_unit(root, ram=2 * 1024**2, swap=0)
+    real_collect_apps = main_screen._collect_apps  # pyright: ignore[reportPrivateUsage]
+
+    def slow_collect_apps(root: Path, uid: int, include_system: bool) -> list[AppStats]:
+        if not include_system:
+            time.sleep(0.4)  # the stale (pre-toggle) read: lands after the toggle below
+        return real_collect_apps(root, uid, include_system)
+
+    app = AppMemApp(root=root, uid=UID, interval=0.1, include_system=False)
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        monkeypatch.setattr(main_screen, "_collect_apps", slow_collect_apps)
+        await pilot.pause(0.15)  # a periodic tick is now reading with include_system=False
+        await pilot.press("x")  # explicit toggle: synchronous refresh_now(include_system=True)
+        await pilot.pause()
+        assert "cups" in _row_names(_table(pilot))
+
+        await pilot.pause(0.5)  # let the slow, now-stale background read arrive and try to apply
+        assert "cups" in _row_names(_table(pilot)), "a stale pre-toggle result overwrote the table"

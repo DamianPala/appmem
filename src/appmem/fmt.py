@@ -6,6 +6,8 @@ MiB and KiB are integers; below 1 KiB is shown in bytes.
 
 from __future__ import annotations
 
+from rich.cells import cell_len, set_cell_size
+
 _KIB = 1024
 _MIB = 1024**2
 _GIB = 1024**3
@@ -96,14 +98,20 @@ def format_pair(used: int, total: int) -> str:
 
 
 def truncate_name(name: str, cap: int = 32) -> str:
-    """Cap a display name at `cap` characters, ending a cut name with ``…``.
+    """Cap a display name at `cap` terminal cells, ending a cut name with ``…``.
+
+    Counts cells (`rich.cells.cell_len`), not code points: a name made of
+    wide (CJK, fullwidth) characters would otherwise cost up to twice `cap`
+    columns on screen. Cropping (`rich.cells.set_cell_size`) never splits a
+    wide character in half -- one that would straddle the cut becomes a
+    space instead, so a name is at most `cap` cells including the ellipsis.
 
     Used for the main view's APP column and the process view's NAME column
     (SPEC.md "Behaviour details": "APP column ... cap at 32 characters").
     """
-    if len(name) <= cap:
+    if cell_len(name) <= cap:
         return name
-    return name[: cap - 1] + "…"
+    return set_cell_size(name, cap - 1) + "…"
 
 
 def ellipsize_middle(text: str, max_len: int) -> str:

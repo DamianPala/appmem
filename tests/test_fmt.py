@@ -1,6 +1,7 @@
 """Tests for `appmem.fmt` (SPEC.md "Behaviour details", "Definitions")."""
 
 import pytest
+from rich.cells import cell_len
 
 from appmem.fmt import (
     ellipsize_middle,
@@ -153,6 +154,55 @@ def test_truncate_name_caps_at_32_with_an_ellipsis() -> None:
 def test_truncate_name_exactly_at_cap_is_not_truncated() -> None:
     name = "x" * 32
     assert truncate_name(name) == name
+
+
+# --- truncate_name counts terminal cells, not code points ----------------------
+
+
+def test_truncate_name_counts_cjk_cells_not_code_points() -> None:
+    # Each CJK char is 2 cells wide: 20 of them (40 cells, but only 20 code
+    # points) must be capped by cell width, not by `len()`, or the naive
+    # code-point slice would leave up to 2x `cap` columns on screen.
+    name = "微" * 20
+    result = truncate_name(name, cap=32)
+
+    assert cell_len(result) <= 32
+    assert result.endswith("…")
+    assert len(result) < len(name)  # actually cropped, not left as-is
+
+
+def test_truncate_name_never_splits_a_wide_char_at_the_cut() -> None:
+    # A cap that lands mid-way through a double-wide character must not
+    # produce a truncated/invalid glyph: `set_cell_size` pads with a space
+    # instead of slicing the character in half.
+    name = "微" * 20
+    result = truncate_name(name, cap=17)  # odd cap: an exact half-CJK-char cut
+
+    assert cell_len(result) <= 17
+    assert "微" * 8 in result  # 8 full CJK chars (16 cells) survive intact
+
+
+def test_truncate_name_emoji_zwj_sequence_stays_intact_or_is_dropped_whole() -> None:
+    # A family emoji is a ZWJ sequence (4 code points glued by U+200D): a
+    # code-point-based cut could leave a dangling ZWJ or half the sequence.
+    name = "👨‍👩‍👧‍👦" * 6
+    result = truncate_name(name, cap=12)
+
+    assert cell_len(result) <= 12
+    assert "‍‍" not in result  # no orphaned double ZWJ from a bad cut
+
+
+def test_truncate_name_combining_marks_count_as_their_base_char() -> None:
+    # "e" + combining acute accent (U+0301) is one visual column, two code
+    # points: a code-point cap would cut this name roughly twice as short as
+    # a cell-based cap does.
+    name = "é" * 20  # 20 visual columns, 40 code points
+    result = truncate_name(name, cap=32)
+
+    assert cell_len(result) <= 32
+    # Cell-based capping keeps far more visual characters than a naive
+    # `name[:31]` code-point slice (which would cut mid-pair, at column ~16).
+    assert cell_len(result) > 16
 
 
 def test_ellipsize_middle_keeps_short_text_as_is() -> None:

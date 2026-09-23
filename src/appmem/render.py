@@ -14,19 +14,31 @@ import shlex
 from collections.abc import Sequence
 from typing import Any
 
+from rich.cells import set_cell_size
+
 from appmem.fmt import format_age, format_pair, pressure_word, size, truncate_name
 
 _CONTROL_MAX = 0x1F
 _DEL = 0x7F
+_C1_MAX = 0x9F
 _ELSEWHERE_THRESHOLD = 1024 * 1024
 
 
+def _pad_cell(text: str, width: int) -> str:
+    """Left-align `text` in `width` terminal cells, not code points: `str.format`'s
+    `:<N` counts code points, which would over-pad a CJK name (2 cells/char)
+    and misalign every column after it."""
+    return set_cell_size(text, width)
+
+
 def escape_control_chars(text: str) -> str:
-    """Replace ASCII control characters (including DEL) with a literal
+    """Replace C0 and C1 control characters (and DEL) with a literal
     `\\xNN`, so a unit or process name copied straight from the system can't
-    clear the screen or otherwise act on the terminal it's printed to."""
+    clear the screen or otherwise act on the terminal it's printed to. C1
+    matters too: U+009B is a one-character CSI on terminals that honour it."""
     return "".join(
-        f"\\x{ord(ch):02x}" if ord(ch) <= _CONTROL_MAX or ord(ch) == _DEL else ch for ch in text
+        f"\\x{ord(ch):02x}" if ord(ch) <= _CONTROL_MAX or _DEL <= ord(ch) <= _C1_MAX else ch
+        for ch in text
     )
 
 
@@ -57,7 +69,7 @@ def _snapshot_header_line(document: dict[str, Any]) -> str:
     parts = [
         f"RAM {ram_pair} ({size(system['ram_shared_bytes'])} shared)",
         f"avail {avail_size} ({size(system['ram_free_bytes'])} free, "
-        f"{size(system['ram_cache_bytes'])} cache)",
+        f"{size(system['ram_cache_bytes'])} cache, {size(system['ram_slab_bytes'])} slab)",
         f"Swap {format_pair(system['swap_used_bytes'], system['swap_total_bytes'])}",
         _pressure_line(document["pressure"]),
         f"system {size(system_total)}",
@@ -71,9 +83,9 @@ def _snapshot_header_line(document: dict[str, Any]) -> str:
 def _snapshot_table(items: list[dict[str, Any]]) -> list[str]:
     lines = [f"{'APP':<24}{'RAM':>10}{'SWAP':>10}{'TOTAL':>10}{'PROCS':>7}{'UNITS':>7}"]
     for item in items:
-        name = escape_control_chars(truncate_name(str(item["name"]), 23))
+        name = _pad_cell(escape_control_chars(truncate_name(str(item["name"]), 23)), 24)
         lines.append(
-            f"{name:<24}{size(item['ram_bytes']):>10}{size(item['swap_bytes']):>10}"
+            f"{name}{size(item['ram_bytes']):>10}{size(item['swap_bytes']):>10}"
             f"{size(item['total_bytes']):>10}{item['procs']:>7}{item['units']:>7}"
         )
     return lines
@@ -106,10 +118,10 @@ def _app_title_line(document: dict[str, Any]) -> str:
 def _process_table(items: list[dict[str, Any]]) -> list[str]:
     lines = [f"{'PID':>8}  {'NAME':<20}{'RAM':>10}{'SWAP':>10}{'TOTAL':>10}{'AGE':>8}  UNIT"]
     for item in items:
-        name = escape_control_chars(truncate_name(str(item["name"]), 19))
+        name = _pad_cell(escape_control_chars(truncate_name(str(item["name"]), 19)), 20)
         unit = escape_control_chars(str(item["unit"]))
         lines.append(
-            f"{item['pid']:>8}  {name:<20}{size(item['ram_bytes']):>10}"
+            f"{item['pid']:>8}  {name}{size(item['ram_bytes']):>10}"
             f"{size(item['swap_bytes']):>10}{size(item['total_bytes']):>10}"
             f"{format_age(item['age_seconds']):>8}  {unit}"
         )
@@ -119,9 +131,9 @@ def _process_table(items: list[dict[str, Any]]) -> list[str]:
 def _command_table(items: list[dict[str, Any]]) -> list[str]:
     lines = [f"{'COMMAND':<20}{'RAM':>10}{'SWAP':>10}{'TOTAL':>10}{'PROCS':>7}"]
     for item in items:
-        name = escape_control_chars(truncate_name(str(item["name"]), 19))
+        name = _pad_cell(escape_control_chars(truncate_name(str(item["name"]), 19)), 20)
         lines.append(
-            f"{name:<20}{size(item['ram_bytes']):>10}{size(item['swap_bytes']):>10}"
+            f"{name}{size(item['ram_bytes']):>10}{size(item['swap_bytes']):>10}"
             f"{size(item['total_bytes']):>10}{item['procs']:>7}"
         )
     return lines

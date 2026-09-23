@@ -67,6 +67,10 @@ class SystemStats:
     mem_cache: int = 0
     """Reclaimable page cache: `Cached - Shmem`, clamped at 0 -- the same
     definition as the per-app CACHE column (`file - shmem`)."""
+    mem_slab: int = 0
+    """`/proc/meminfo` `SReclaimable`: kernel caches of file names and inodes
+    (dentries, inodes), reclaimable on demand -- the third part of the header
+    `avail` breakdown, alongside `free` and `cache`."""
 
 
 @dataclass(frozen=True)
@@ -168,6 +172,7 @@ def read_system(root: Path, uid: int) -> SystemStats:
         mem_free=meminfo.get("MemFree", 0),
         mem_shared=shmem,
         mem_cache=max(cached - shmem, 0),
+        mem_slab=meminfo.get("SReclaimable", 0),
     )
 
 

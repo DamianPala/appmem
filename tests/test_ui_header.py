@@ -62,6 +62,16 @@ def test_line1_swap_off_when_swap_total_zero() -> None:
     assert "Swap 0" not in line
 
 
+def test_line1_avail_breakdown_includes_slab_from_sreclaimable() -> None:
+    # SReclaimable joins free/cache inside avail's breakdown, in that
+    # order, still inside the parens.
+    line = _line(
+        mem_free=int(2.1 * 1024**3), mem_cache=int(5.1 * 1024**3), mem_slab=int(2.9 * 1024**3)
+    )
+
+    assert "(2.1 GiB free, 5.1 GiB cache, 2.9 GiB slab)" in line
+
+
 def test_line1_omits_pressure_when_none() -> None:
     line = _line(pressure_some_avg10=None, pressure_some_avg60=None, pressure_full_avg10=None)
 
@@ -179,14 +189,17 @@ def test_line1_at_80_and_60_columns_never_wraps_and_keeps_ram_swap_pressure() ->
 
 
 def test_line1_shared_survives_typical_widths_with_realistic_values() -> None:
-    # With realistic sizes (a 31 GiB machine, 3 GiB shared), a 120-column
-    # terminal shows both breakdowns, and shared must still survive down to
-    # an 80-column terminal even though the bare `avail` figure is gone there.
+    # With realistic sizes (a 31 GiB machine, 3 GiB shared), a 140-column
+    # terminal shows both breakdowns (avail's free/cache/slab is the longest
+    # droppable part, so it needs more room than 120 once slab joined it),
+    # and shared must still survive down to an 80-column terminal even
+    # though the bare `avail` figure is gone there.
     realistic = _stats(
         mem_total=int(30.9 * 1024**3),
         mem_available=int(10.8 * 1024**3),
         mem_free=int(2.5 * 1024**3),
         mem_cache=int(6.1 * 1024**3),
+        mem_slab=int(1.2 * 1024**3),
         mem_shared=int(3.0 * 1024**3),
         swap_total=32 * 1024**3,
         swap_free=4 * 1024**3,
@@ -198,10 +211,10 @@ def test_line1_shared_survives_typical_widths_with_realistic_values() -> None:
         pressure_full_avg10=0.0,
     )
 
-    at_120 = format_line1(realistic, 120)
-    assert at_120.cell_len <= 120
-    assert "shared" in at_120.plain
-    assert "free" in at_120.plain and "cache" in at_120.plain
+    at_140 = format_line1(realistic, 140)
+    assert at_140.cell_len <= 140
+    assert "shared" in at_140.plain
+    assert "free" in at_140.plain and "cache" in at_140.plain and "slab" in at_140.plain
 
     at_80 = format_line1(realistic, 80)
     assert at_80.cell_len <= 80
