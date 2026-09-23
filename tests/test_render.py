@@ -120,6 +120,13 @@ def test_render_next_line_quotes_arguments() -> None:
     assert "\x1b" not in render_next_line(["appmem", "app", "evil\x1b[2J"])
 
 
+def test_snapshot_text_shows_the_short_pressure_qualifier() -> None:
+    pressure = {**_SNAPSHOT_DOCUMENT["pressure"], "some_avg60_percent": 3.2}
+    text = render_snapshot_text({**_SNAPSHOT_DOCUMENT, "pressure": pressure}, total_apps=41)
+
+    assert "pressure 10s: none (was 3.2 %)" in text
+
+
 def test_snapshot_text_has_header_table_cut_notice_and_next_line() -> None:
     text = render_snapshot_text(_SNAPSHOT_DOCUMENT, total_apps=41)
 

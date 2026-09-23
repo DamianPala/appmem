@@ -47,10 +47,10 @@ _LABEL_WIDTH = 10
 
 # Fixed-width slots for parts whose content never depends on machine size,
 # so their literal worst-case text is known up front (SPEC.md "Main view"):
-# `none (some 99.9 % last min)` (27), `system 999.9 GiB [x]`-ish (19), `Δ
-# since HH:MM (elapsed)` with elapsed up to 6 cells (22), `to disk 1023
-# MiB/s` (19), `elsewhere ` plus an 8-cell value (18).
-_PRESSURE_SLOT = 27
+# `none (was 99.9 %)` (17), `system 999.9 GiB [x]`-ish (19), `Δ since
+# HH:MM (elapsed)` with elapsed up to 6 cells (22), `to disk 1023 MiB/s`
+# (19), `elsewhere ` plus an 8-cell value (18).
+_PRESSURE_SLOT = len("none (was 99.9 %)")  # 17: the qualifier's own worst case
 _SYSTEM_SLOT = 19
 _DELTA_SLOT = 22
 _WRITEBACK_SLOT = len("to disk 1023 MiB/s")
@@ -59,8 +59,8 @@ _ELSEWHERE_SLOT = len("elsewhere ") + _ELSEWHERE_VALUE_SLOT
 # A zswap pool is a RAM cost, so its worst case comes from RAM's own total,
 # not Swap's -- at least this flat minimum for a small machine.
 _ZSWAP_POOL_MIN_SLOT = 8  # "1023 MiB" / "99.9 GiB"-ish
-# The H < 18, W >= 80 two-line form's pressure block, right of the RAM line.
-_PRESSURE_BLOCK_SLOT = 36
+# The H < 18, W >= 70 two-line form's pressure block, right of the RAM line.
+_PRESSURE_BLOCK_SLOT = len("Pressure ") + _PRESSURE_SLOT  # 26
 
 # Same threshold as the ΔRAM/ΔSWAP table columns (`ui/screens/main.py`
 # `_NARROW_WIDTH`): Δ is dropped unconditionally below this width, on top of
@@ -76,11 +76,11 @@ _EIGHTHS = "▏▎▍▌▋▊▉"  # 1/8 .. 7/8; a full cell is a plain "█"
 # Height/width thresholds between the three header shapes (SPEC.md "Main
 # view"): 3 lines, the two-line text form, or the compact two-liner. The
 # two-line form's own worst case -- label 10 + bar 10 (its bucket from 70
-# columns up) + 2 + a typical pair 13 + " used" 5 + 3 + the 36-cell pressure
-# block -- comes to 79, so 80 is the narrowest width that can promise not to
-# crop the pressure word.
+# columns up) + 2 + a typical pair 13 + " used" 5 + 3 + the pressure block
+# (_PRESSURE_BLOCK_SLOT, 26) -- comes to 69, so 70 is the narrowest width
+# that can promise not to crop the pressure word.
 _MIN_HEIGHT_FOR_THREE_LINES = 18
-_MIN_WIDTH_FOR_TEXT_TWO_LINE = 80
+_MIN_WIDTH_FOR_TEXT_TWO_LINE = 70
 
 # Per-line drop order, lowest priority first (SPEC.md "Main view"). RAM's
 # `avail_breakdown` step removes only the `(free, cache, slab)` bracket,
@@ -90,7 +90,7 @@ _RAM_STEPS: tuple[str, ...] = ("avail_breakdown", "avail", "shared")
 _SWAP_STEPS: tuple[str, ...] = ("zswap_long", "zswap")
 _PRESSURE_STEPS: tuple[str, ...] = ("elsewhere", "delta", "system")
 _TWO_LINE_SWAP_STEPS: tuple[str, ...] = (*_SWAP_STEPS, "delta", "system")
-# H < 18, W < 80 compact form (SPEC.md "Main view"): "Pressure …, then to
+# H < 18, W < 70 compact form (SPEC.md "Main view"): "Pressure …, then to
 # disk …, then system, as they fit" -- system is the first to go.
 _COMPACT_STEPS: tuple[str, ...] = ("system", "to_disk")
 
@@ -308,6 +308,24 @@ def _system_token(stats: SystemStats) -> str:
     return f"system {size(system_total)} [x]"
 
 
+def _pressure_word_slot(bar_width: int) -> tuple[int, str]:
+    """The Pressure word's own slot width, and the gap text to put before
+    `system` after it (SPEC.md "Main view", "Layout"): one grid for the
+    header's three lines. `bar_width + 2` is the column the RAM/Swap pair
+    starts at, relative to the label -- the same "  " gap `_ram_line` and
+    `_swap_line` put between the bar and the pair. When the qualifier's own
+    worst case fits in that span, the word's padding *is* the gap `system`
+    needs, so `system` lands in the pair's own column, whatever the actual
+    word turns out to be. A bar too short for even the worst case falls
+    back to that worst-case width and the ordinary 3-space gap every other
+    part on this line uses -- `system`'s column then depends only on the
+    width, never on the pressure value."""
+    grid_slot = bar_width + 2
+    if grid_slot >= _PRESSURE_SLOT:
+        return grid_slot, ""
+    return _PRESSURE_SLOT, "   "
+
+
 def format_delta_since(baseline_time: datetime, now: datetime) -> str:
     """`Δ since HH:MM (<elapsed>)`, the Pressure line's Δ part."""
     elapsed = format_elapsed((now - baseline_time).total_seconds())
@@ -324,10 +342,11 @@ def _pressure_line(
     disabled: frozenset[str],
 ) -> Text:
     word = _pressure_word_text(stats, ctx.colors)
-    pad = " " * max(_PRESSURE_SLOT - word.cell_len, 0)
+    slot, gap = _pressure_word_slot(ctx.bar_width)
+    pad = " " * max(slot - word.cell_len, 0)
     text = Text("Pressure".ljust(_LABEL_WIDTH)) + word + Text(pad)
     if "system" not in disabled:
-        text = text + Text("   ") + Text(_system_token(stats).ljust(_SYSTEM_SLOT))
+        text = text + Text(gap) + Text(_system_token(stats).ljust(_SYSTEM_SLOT))
     # Δ is dropped outright below the width the ΔRAM/ΔSWAP columns hide at,
     # on top of the ordinary per-line fit loop (SPEC.md "Main view",
     # Pressure row).
@@ -404,7 +423,7 @@ def _two_line_swap(
 def _two_line_header(
     stats: SystemStats, width: int, ctx: _RenderCtx, baseline_time: datetime, now: datetime
 ) -> list[Text]:
-    # H < 18, W >= 80 (SPEC.md "Main view"): RAM (with pressure fixed at the
+    # H < 18, W >= 70 (SPEC.md "Main view"): RAM (with pressure fixed at the
     # right) then Swap (with system and Δ); `elsewhere` is gone entirely in
     # this mode, not just droppable.
     line1 = _fit_by_steps(lambda d: _two_line_ram(stats, ctx, disabled=d), _RAM_STEPS, width)
@@ -429,7 +448,7 @@ def _compact_status_line(stats: SystemStats, ctx: _RenderCtx, *, disabled: froze
     word = _pressure_word_text(stats, ctx.colors)
     # Same reserved slot as the Pressure line: the word never moves what
     # follows it, and `to disk`/`system` still fit under it at every width
-    # this form is used at (9-cell label + 27 + 3 + 19 = 58 at most).
+    # this form is used at (9-cell label + 17 + 3 + 19 = 48 at most).
     pad = " " * max(_PRESSURE_SLOT - word.cell_len, 0)
     text = Text("Pressure ") + word + Text(pad)
     wb_token = _writeback_token(ctx.writeback_rate, ctx.colors)
@@ -441,7 +460,7 @@ def _compact_status_line(stats: SystemStats, ctx: _RenderCtx, *, disabled: froze
 
 
 def _compact_header(stats: SystemStats, width: int, ctx: _RenderCtx) -> list[Text]:
-    # H < 18, W < 80 (SPEC.md "Main view"): bare RAM/Swap pairs, then
+    # H < 18, W < 70 (SPEC.md "Main view"): bare RAM/Swap pairs, then
     # pressure/to-disk/system "as they fit" -- this shape never draws a bar,
     # no Δ, no elsewhere.
     line1 = _compact_ram_swap_line(stats)
@@ -469,11 +488,11 @@ def render_header(
 
     - `height >= 18`: three lines, RAM / Swap / Pressure, each with its own
       gauge bar and its own priority-drop rules.
-    - `height < 18`, `width >= 80`: two lines, RAM (with Pressure fixed at
+    - `height < 18`, `width >= 70`: two lines, RAM (with Pressure fixed at
       the right) and Swap (with `system` and Δ); `elsewhere` is gone. Below
-      80 columns this form's own worst case can't promise the Pressure word
+      70 columns this form's own worst case can't promise the Pressure word
       won't be cropped, so the compact form takes over instead.
-    - `height < 18`, `width < 80`: two bare lines, no bars, no Δ, no
+    - `height < 18`, `width < 70`: two bare lines, no bars, no Δ, no
       `elsewhere` -- just RAM/Swap pairs and pressure/`to disk`/`system` as
       they fit.
 
@@ -490,7 +509,7 @@ def render_header(
     )
     if height >= _MIN_HEIGHT_FOR_THREE_LINES:
         return _three_line_header(stats, width, ctx, baseline_time, now)
-    # The 80-column floor assumes a 2-digit-GiB RAM total; a wider pair
+    # The 70-column floor assumes a 2-digit-GiB RAM total; a wider pair
     # (`65.7/125.7 GiB`) would crop the pressure word, so check line 1 with
     # every droppable part gone. Every part sits in a fixed slot, so this
     # depends on the machine's RAM total, never on a tick's values.

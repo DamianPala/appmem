@@ -460,13 +460,18 @@ def test_pressure_qualifier_growing_does_not_move_what_follows() -> None:
     assert p_bare.plain.index("system") == p_qualified.plain.index("system")
 
 
-# --- two-line form: never cropped, left-aligned, only from 80 cols up -------
+# --- two-line form: never cropped, left-aligned, only from 70 cols up -------
+#
+# The floor moved from 80 to 70 when the pressure qualifier shrank (SPEC.md
+# "Main view"): the two-line form's own worst case -- label 10 + bar 10 + 2
+# + a typical pair 13 + " used" 5 + 3 + the pressure block (26, was 36) --
+# now comes to 69, one below the new floor.
 
 
-def test_two_line_form_used_only_from_80_columns_up() -> None:
-    assert _MIN_WIDTH_FOR_TEXT_TWO_LINE == 80
-    compact = _render(_DEFAULT_STATS, 79, 15)
-    two_line = _render(_DEFAULT_STATS, 80, 15)
+def test_two_line_form_used_only_from_70_columns_up() -> None:
+    assert _MIN_WIDTH_FOR_TEXT_TWO_LINE == 70
+    compact = _render(_DEFAULT_STATS, 69, 15)
+    two_line = _render(_DEFAULT_STATS, 70, 15)
     assert compact[1].plain.startswith("Pressure")  # compact form's line 2
     assert two_line[1].plain.startswith("Swap")  # two-line form's line 2
 
@@ -481,6 +486,13 @@ def test_two_line_pressure_block_is_left_aligned() -> None:
     assert "1.2" in line1_qualified.plain  # the qualifier actually renders, not cropped
 
 
+def test_two_line_first_line_length_does_not_depend_on_the_pressure_word() -> None:
+    bare = _stats(pressure_some_avg10=0.0, pressure_some_avg60=0.0, pressure_full_avg10=0.0)
+    worst = _stats(pressure_some_avg10=0.0, pressure_some_avg60=99.9, pressure_full_avg10=0.0)
+    for width in (70, 90, 120):
+        assert _render(bare, width, 15)[0].cell_len == _render(worst, width, 15)[0].cell_len
+
+
 def test_two_line_pressure_block_unmoved_by_ram_avail_jitter() -> None:
     low_avail = _stats(mem_available=int(0.5 * _GIB))
     high_avail = _stats(mem_available=int(20.0 * _GIB))
@@ -489,7 +501,7 @@ def test_two_line_pressure_block_unmoved_by_ram_avail_jitter() -> None:
     assert line1_low.plain.index("Pressure") == line1_high.plain.index("Pressure")
 
 
-_LONGEST_PRESSURE_WORD = "none (some 99.9 % last min)"
+_LONGEST_PRESSURE_WORD = "none (was 99.9 %)"
 
 
 def test_longest_pressure_word_never_cropped_at_required_sizes() -> None:
@@ -503,6 +515,58 @@ def test_longest_pressure_word_never_cropped_at_required_sizes() -> None:
         assert holder[0].cell_len <= width, (width, height, holder[0].plain)
 
 
+# --- one grid: `system` in the RAM/Swap pair's own column -------------------
+
+_PRESSURE_LEVELS: dict[str, dict[str, float]] = {
+    "none": {"pressure_some_avg10": 0.0, "pressure_some_avg60": 0.0, "pressure_full_avg10": 0.0},
+    "none_qualified": {
+        "pressure_some_avg10": 0.0,
+        "pressure_some_avg60": 99.9,
+        "pressure_full_avg10": 0.0,
+    },
+    "some": {"pressure_some_avg10": 3.2, "pressure_some_avg60": 0.0, "pressure_full_avg10": 1.0},
+    "high": {"pressure_some_avg10": 25.0, "pressure_some_avg60": 0.0, "pressure_full_avg10": 0.0},
+}
+
+
+def _ram_pair_column(ram: Text, stats: SystemStats) -> int:
+    used = stats.mem_total - stats.mem_available
+    pair = format_pair(used, stats.mem_total)
+    return ram.plain.index(pair)
+
+
+def test_pressure_system_aligns_with_the_ram_swap_pair_column() -> None:
+    # SPEC.md "Main view": one grid for the header's three lines -- `system`
+    # starts in exactly the RAM/Swap pair's own column, for every pressure
+    # level including the qualifier's own worst case, with or without
+    # zswap, at both 120 and 100 columns (100 still fits: its bar column is
+    # wide enough for the new, shorter qualifier).
+    for width in (120, 100):
+        for base in (_DEFAULT_STATS, _ZSWAP_STATS):
+            for fields in _PRESSURE_LEVELS.values():
+                stats = replace(base, **fields)
+                ram, _swap, pressure = _render(stats, width, 40)
+                assert pressure.plain.index("system") == _ram_pair_column(ram, stats), (
+                    width,
+                    fields,
+                )
+
+
+def test_pressure_system_column_is_width_only_where_the_grid_does_not_fit() -> None:
+    # Below the bar column that can hold the qualifier's own worst case
+    # (SPEC.md "Main view"), `system` falls back to a fixed, width-only
+    # column -- the same for every pressure level, not the RAM/Swap pair's
+    # own column (bar_width=10 here, too short for the grid to engage).
+    columns: set[int] = set()
+    for fields in _PRESSURE_LEVELS.values():
+        stats = replace(_DEFAULT_STATS, **fields)
+        ram, _swap, pressure = _render(stats, 80, 40)
+        columns.add(pressure.plain.index("system"))
+        assert pressure.plain.index("system") != _ram_pair_column(ram, stats)
+        assert "   system" in pressure.plain  # the usual 3-space gap, even after the worst case
+    assert len(columns) == 1
+
+
 def test_compact_form_values_never_move_or_drop_parts() -> None:
     base = _stats(pressure_some_avg10=0.0, pressure_some_avg60=0.0, pressure_full_avg10=0.0)
     varied = _stats(
@@ -512,7 +576,7 @@ def test_compact_form_values_never_move_or_drop_parts() -> None:
         pressure_full_avg10=0.0,
         system_ram=5 * _MIB,
     )
-    for width in (40, 58, 79):
+    for width in (40, 47, 69):
         lines_base = _render(base, width, 15, writeback_rate=12 * _MIB)
         lines_varied = _render(varied, width, 15, writeback_rate=900 * 1024)
         for one, other in zip(lines_base, lines_varied, strict=True):

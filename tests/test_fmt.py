@@ -65,11 +65,10 @@ def test_pressure_boundaries_are_exclusive() -> None:
     assert pressure_word(some_avg10=20.0, some_avg60=0.0, full_avg10=0.0) == "some (20.0 %)"
 
 
-def test_pressure_none_mentions_last_minute_when_avg60_above_one_percent() -> None:
-    assert (
-        pressure_word(some_avg10=0.5, some_avg60=1.5, full_avg10=0.0)
-        == "none (some 1.5 % last min)"
-    )
+def test_pressure_none_mentions_the_qualifier_when_avg60_above_one_percent() -> None:
+    assert pressure_word(some_avg10=0.5, some_avg60=1.5, full_avg10=0.0) == "none (was 1.5 %)"
+    assert pressure_word(some_avg10=0.5, some_avg60=100.0, full_avg10=0.0) == "none (was 99.9 %)"
+    assert pressure_word(some_avg10=0.5, some_avg60=99.96, full_avg10=0.0) == "none (was 99.9 %)"
 
 
 def test_pressure_none_bare_when_avg60_at_or_below_one_percent() -> None:

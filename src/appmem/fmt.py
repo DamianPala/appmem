@@ -66,16 +66,17 @@ def pressure_word(some_avg10: float, some_avg60: float, full_avg10: float) -> st
 
     ``high`` when ``full avg10`` > 5 % or ``some avg10`` > 20 % (a lot of tasks
     waiting, even without a full stall yet). ``some (X.X %)`` when ``some
-    avg10`` >= 1 %. Otherwise ``none``, or ``none (some X.X % last min)`` when
-    ``some avg60`` > 1 % -- almost no waiting right now, but there was some in
-    the last minute.
+    avg10`` >= 1 %. Otherwise ``none``, or ``none (was X.X %)`` when ``some
+    avg60`` > 1 % -- no waiting right now, but there was some over the last
+    minute.
     """
     if full_avg10 > 5 or some_avg10 > 20:
         return "high"
     if some_avg10 >= 1:
         return f"some ({some_avg10:.1f} %)"
     if some_avg60 > 1:
-        return f"none (some {some_avg60:.1f} % last min)"
+        # Capped so the text never outgrows the header's fixed pressure slot.
+        return f"none (was {min(some_avg60, 99.9):.1f} %)"
     return "none"
 
 

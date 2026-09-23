@@ -1,4 +1,4 @@
-# appmem: spec v0.11
+# appmem: spec v0.12
 
 A live terminal view of RAM and swap usage **per application**, not per process.
 Think `btm` or `htop`, but rows are apps (Ghostty, Brave, LibreOffice), each summing all of its processes.
@@ -53,7 +53,7 @@ Pressure  none                          system 610 MiB [x]    Δ since 15:58 (12
   - **Swap:** a bar and used/total, or `Swap off` when `SwapTotal` is 0. The pair turns the theme's error colour above 90 % used; a full swap alone is normal, pressure says whether it hurts.
     - With zswap enabled, `(X zswapped into Y RAM)` follows. X is swapped data kept compressed in RAM (`Zswapped`, already part of Swap used); Y is the RAM the pool takes (`Zswap`, already part of RAM used). Without zswap, nothing is shown.
     - While the pool writes back to the disk swap, `to disk N MiB/s` follows, in the theme's warning colour. The rate comes from `/proc/vmstat` `zswpwb` over a ~10 s window. It is shown only while above 0, and never on the first tick.
-  - **Pressure:** the pressure word, bold, in the theme's success/warning/error colour (see Definitions), or `unavailable` without `/proc/pressure/memory`. Then the hidden system services' total (`system N [x]`), the Δ baseline (`Δ since 14:02 (37m)`, whole days from 100 h on; shown only while the Δ columns are, from 95 columns), and `elsewhere` (memory outside the user tree and `system.slice`: VMs, containers, other users, login sessions).
+  - **Pressure:** the pressure word, bold, in the theme's success/warning/error colour (see Definitions), or `unavailable` without `/proc/pressure/memory`. The word sits in the bar column, so the next part starts in the same column as the RAM and Swap pairs whenever the longest word fits (from 90 columns). Narrower, it keeps a fixed slot that depends only on the width. Then the hidden system services' total (`system N [x]`), the Δ baseline (`Δ since 14:02 (37m)`, whole days from 100 h on; shown only while the Δ columns are, from 95 columns), and `elsewhere` (memory outside the user tree and `system.slice`: VMs, containers, other users, login sessions).
   - **Bars:** `█` fill with an eighth-block edge on a dim `░` track. The width steps with the terminal width. The fill uses the theme's accent colour, or its foreground where the accent is under 3:1 contrast. A `#`/`.` ASCII form applies when `LC_ALL`/`LC_CTYPE`/`LANG` names a non-UTF-8 locale. A bare `LANG=C` still gets Unicode bars, because Python coerces it to UTF-8 at startup. Bars carry no information that the numbers don't.
   - **No jitter.** Every part sits in a fixed-width slot sized for its worst case (from the totals, or a literal worst case for rates and durations). Which parts show depends only on the terminal size and state (zswap on, writeback active), never on the values. Nothing moves when only the numbers change.
   - **Narrow widths.** Each line drops its own parts, least important first:
@@ -62,8 +62,8 @@ Pressure  none                          system 610 MiB [x]    Δ since 15:58 (12
     - Pressure: `elsewhere`, then Δ, then `system`.
     The label, the pair and the pressure word always stay; `to disk` stays in the three-line form. Below the width of the fixed parts, a line is cropped with an ellipsis. The pressure word is never cropped.
   - **Short terminals.** Below 18 rows the header takes two lines:
-    - From 80 columns, when the RAM line fits with every droppable part removed: line 1 is the RAM line (same drops as above) plus the pressure word in its own slot. Line 2 is the Swap line plus `to disk`, Δ and `system`; it drops the zswap pool part, then the bracket, then Δ, then `system`.
-    - Otherwise, a compact form. Line 1 is `RAM u/t  Swap u/t`. Line 2 is `Pressure` word, `to disk`, `system`, as far as they fit (`system` drops first). Below ~57 columns neither fits next to the pressure slot.
+    - From 70 columns, when the RAM line fits with every droppable part removed: line 1 is the RAM line (same drops as above) plus the pressure word in its own slot. Line 2 is the Swap line plus `to disk`, Δ and `system`; it drops the zswap pool part, then the bracket, then Δ, then `system`.
+    - Otherwise, a compact form. Line 1 is `RAM u/t  Swap u/t`. Line 2 is `Pressure` word, `to disk`, `system`, as far as they fit (`system` drops first). `to disk` fits from 47 columns, `system` from 48.
     The table takes the freed row.
 - The sort marker `▴`/`▾` sits on the sorted column. Default sort: TOTAL descending.
 - Clicking the sorted column again flips the direction.
@@ -205,7 +205,7 @@ Login-session scopes (`user-$UID.slice/session-N.scope`: the display manager hel
 - **Memory pressure** is the share of time tasks waited for memory over the last 10 s:
   - `high`: `full avg10` > 5 % or `some avg10` > 20 %
   - `some`: `some avg10` ≥ 1 %, shown with the value, e.g. `some (3.2 %)`
-  - `none (some X % last min)`: below that, but `some avg60` > 1 %, so stalls just stopped
+  - `none (was X %)`: below that, but `some avg60` > 1 % (X, capped at 99.9), so stalls just stopped
   - `none`: otherwise
 
   Big swap with pressure `none` means idle pages were paged out, and memory is not why the machine is slow right now.

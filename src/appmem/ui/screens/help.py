@@ -85,7 +85,11 @@ _PRESSURE_INTRO = (
     "spent waiting for memory:"
 )
 _PRESSURE_ITEMS: tuple[tuple[str, str], ...] = (
-    ("none", "few memory stalls in the last 10 s"),
+    (
+        "none",
+        "few memory stalls in the last 10 s; 'none (was X.X %)' means stalls just "
+        "stopped, X.X % over the last minute",
+    ),
     ("some (X.X %)", "some waiting, shown with the percentage"),
     (
         "high",

@@ -61,3 +61,9 @@ def test_body_always_explains_the_bar_glyphs() -> None:
 
     assert "'█' is used" in body
     assert "avail for RAM, free for Swap" in body
+
+
+def test_body_explains_the_none_was_qualifier() -> None:
+    body = _build_body(200)
+
+    assert "'none (was X.X %)' means stalls just stopped" in body
