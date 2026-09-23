@@ -47,6 +47,17 @@ _DEFINITIONS: tuple[tuple[str, str], ...] = (
     ),
 )
 
+_ZSWAP_DEFINITION: tuple[str, str] = (
+    "ZSWAP",
+    "The part of SWAP held compressed in RAM (press w), not extra memory of its own.",
+)
+
+_ZSWAP_HEADER_NOTE = (
+    "In the header, 'X zswap in Y' (inside Swap) is X: swapped data kept compressed in "
+    "RAM, already part of Swap used; Y: the RAM that pool costs, already part of RAM used. "
+    "'wb' next to it means the pool is overflowing to the disk swap, which is slow."
+)
+
 _HEADER_NOTE = (
     "The header counts the whole machine (RAM/Swap/avail). Rows only cover the app "
     "trees appmem walks, plus the hidden system and elsewhere totals -- they won't "
@@ -140,13 +151,18 @@ def _wrap_item(label: str, body: str, width: int, column: int) -> str:
     )
 
 
-def _build_body(width: int) -> str:
+def _build_body(width: int, *, zswap_enabled: bool = False) -> str:
     w = max(width, _MIN_WRAP_WIDTH)
+    # Only mentioned when this machine actually has zswap: nothing to say
+    # about a header bracket and a column that never appear otherwise
+    # (SPEC.md "Main view": "hidden from the footer and help").
+    definitions = (*_DEFINITIONS, _ZSWAP_DEFINITION) if zswap_enabled else _DEFINITIONS
     blocks = [
         _wrap(_INTRO, w),
-        "\n".join(_wrap_item(f"{key}  ", desc, w, column=10) for key, desc in _DEFINITIONS),
+        "\n".join(_wrap_item(f"{key}  ", desc, w, column=10) for key, desc in definitions),
         _wrap(_HEADER_NOTE, w),
         _wrap(_HEADER_TERMS_NOTE, w),
+        *([_wrap(_ZSWAP_HEADER_NOTE, w)] if zswap_enabled else []),
         "\n".join(
             [
                 _wrap(_PRESSURE_INTRO, w),
@@ -191,6 +207,14 @@ class HelpScreen(Screen[None]):
         Binding("q", "close", "close", show=False),
     ]
 
+    def __init__(self, *, zswap_enabled: bool = False) -> None:
+        super().__init__()
+        self._zswap_enabled = zswap_enabled
+        """Whether the caller's machine has zswap on: the ZSWAP column and
+        header definitions only make sense to mention then (SPEC.md "Main
+        view"). Defaults `False` for a caller with no zswap context of its
+        own, such as the process view."""
+
     def compose(self) -> ComposeResult:
         yield Static(TITLE_TEXT, id="help-title")
         # Initial body uses the full app width as a stand-in: `#help-scroll`
@@ -199,7 +223,8 @@ class HelpScreen(Screen[None]):
         with VerticalScroll(id="help-scroll"):
             # `markup=False`: the text shows `"name [sys]"` literally (markup ate it).
             initial_width = self.app.size.width  # pyright: ignore[reportUnknownMemberType]
-            yield Static(_build_body(initial_width), id="help-text", markup=False)
+            body = _build_body(initial_width, zswap_enabled=self._zswap_enabled)
+            yield Static(body, id="help-text", markup=False)
         yield Static(build_footer(_FOOTER_ITEMS), id="footer")
 
     def on_mount(self) -> None:
@@ -220,7 +245,7 @@ class HelpScreen(Screen[None]):
 
     def _refresh_body(self) -> None:
         widget = self.query_one("#help-text", Static)
-        widget.update(_build_body(self._content_width()))
+        widget.update(_build_body(self._content_width(), zswap_enabled=self._zswap_enabled))
 
     def _content_width(self) -> int:
         scroll = self.query_one("#help-scroll", VerticalScroll)

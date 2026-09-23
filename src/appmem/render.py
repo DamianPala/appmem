@@ -16,7 +16,14 @@ from typing import Any
 
 from rich.cells import set_cell_size
 
-from appmem.fmt import format_age, format_pair, pressure_word, size, truncate_name
+from appmem.fmt import (
+    format_age,
+    format_pair,
+    format_zswap_part,
+    pressure_word,
+    size,
+    truncate_name,
+)
 
 _CONTROL_MAX = 0x1F
 _DEL = 0x7F
@@ -61,6 +68,18 @@ def _pressure_line(pressure: dict[str, Any] | None) -> str:
     return f"pressure 10s: {word}"
 
 
+def _swap_line_part(system: dict[str, Any]) -> str:
+    swap = f"Swap {format_pair(system['swap_used_bytes'], system['swap_total_bytes'])}"
+    # No `wb` here: a one-shot snapshot has no rate to show, only the
+    # cumulative `zswap_writeback_bytes` (SPEC.md "Main view" note on
+    # `zswap_writeback_bytes`). Same bracket text as the live header
+    # (`format_zswap_part`), so the Swap part reads the same everywhere.
+    if system["zswap_enabled"]:
+        zswap = format_zswap_part(system["zswapped_bytes"], system["zswap_pool_bytes"])
+        return f"{swap} ({zswap})"
+    return swap
+
+
 def _snapshot_header_line(document: dict[str, Any]) -> str:
     system = document["system"]
     system_total = system["system_services_ram_bytes"] + system["system_services_swap_bytes"]
@@ -70,7 +89,7 @@ def _snapshot_header_line(document: dict[str, Any]) -> str:
         f"RAM {ram_pair} ({size(system['ram_shared_bytes'])} shared)",
         f"avail {avail_size} ({size(system['ram_free_bytes'])} free, "
         f"{size(system['ram_cache_bytes'])} cache, {size(system['ram_slab_bytes'])} slab)",
-        f"Swap {format_pair(system['swap_used_bytes'], system['swap_total_bytes'])}",
+        _swap_line_part(system),
         _pressure_line(document["pressure"]),
         f"system {size(system_total)}",
     ]

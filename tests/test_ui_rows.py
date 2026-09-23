@@ -27,6 +27,7 @@ def _row(name: str, *, scope: str = "user", swap: int = 0, ram: int = 0, total: 
         swap=swap,
         ram=ram,
         cache=0,
+        zswap=0,
         total=total,
         delta_swap=0,
         delta_ram=0,

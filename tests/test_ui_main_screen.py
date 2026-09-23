@@ -12,6 +12,7 @@ import os
 import shutil
 import threading
 import time
+from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 from typing import cast
@@ -33,8 +34,16 @@ from appmem.theme import THEME_NAMES, config_path
 from appmem.ui.app import AppMemApp
 from appmem.ui.rows import row_key
 from appmem.ui.screens import main as main_screen
+from appmem.ui.screens.help import HelpScreen
 from appmem.ui.screens.main import MainScreen
-from helpers import make_unit, user_service_root, write_meminfo, write_memory_stat
+from helpers import (
+    make_unit,
+    user_service_root,
+    write_meminfo,
+    write_memory_stat,
+    write_vmstat,
+    write_zswap_enabled,
+)
 
 UID = 1000
 NO_AUTO_REFRESH_INTERVAL = 100.0
@@ -56,11 +65,41 @@ def _base_tree(tmp_path: Path) -> Path:
     return tmp_path
 
 
+def _zswap_base_tree(tmp_path: Path) -> Path:
+    """Like `_base_tree`, with zswap on machine-wide (SPEC.md "Main view")."""
+    write_memory_stat(user_service_root(tmp_path, UID))
+    write_meminfo(
+        tmp_path,
+        mem_total_kb=32_000_000,
+        mem_available_kb=11_000_000,
+        swap_total_kb=32_000_000,
+        swap_free_kb=12_000_000,
+        zswap_kb=2_000_000,
+        zswapped_kb=7_000_000,
+    )
+    write_zswap_enabled(tmp_path, enabled=True)
+    return tmp_path
+
+
 def _app_unit(
-    root: Path, name: str, *, ram: int, swap: int, cache: int = 0, procs: int = 1
+    root: Path,
+    name: str,
+    *,
+    ram: int,
+    swap: int,
+    cache: int = 0,
+    zswapped: int = 0,
+    procs: int = 1,
 ) -> None:
     unit_dir = user_service_root(root, UID) / "app.slice" / name
-    make_unit(unit_dir, anon=ram, file=cache, swap=swap, pids=list(range(1, procs + 1)))
+    make_unit(
+        unit_dir,
+        anon=ram,
+        file=cache,
+        zswapped=zswapped,
+        swap=swap,
+        pids=list(range(1, procs + 1)),
+    )
 
 
 def _system_unit(root: Path, *, ram: int, swap: int) -> None:
@@ -222,6 +261,186 @@ async def test_c_toggles_the_cache_column(tmp_path: Path) -> None:
 
         await pilot.press("c")
         assert "cache" not in table.columns
+
+
+# --- zswap column (mirrors CACHE, SPEC.md "Main view") -------------------------
+
+
+@pytest.mark.asyncio
+async def test_w_toggles_the_zswap_column(tmp_path: Path) -> None:
+    root = _zswap_base_tree(tmp_path)
+    # zswapped <= swap always: the compressed pool is a subset of the unit's
+    # swap, never more.
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=5 * 1024**2, zswapped=5 * 1024**2)
+
+    async with _app(root).run_test() as pilot:
+        await pilot.pause()
+        table = _table(pilot)
+        assert "zswap" not in table.columns
+
+        await pilot.press("w")
+        assert "zswap" in table.columns
+        zswap_cell = table.get_cell(row_key("alpha", "user"), "zswap")
+        assert isinstance(zswap_cell, Text)
+        assert zswap_cell.plain == "5 MiB"
+
+        await pilot.press("w")
+        assert "zswap" not in table.columns
+
+
+@pytest.mark.asyncio
+async def test_w_does_nothing_when_zswap_is_disabled(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)  # no zswap fixtures: disabled/unsupported
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test() as pilot:
+        await pilot.pause()
+        table = _table(pilot)
+
+        await pilot.press("w")
+
+        assert "zswap" not in table.columns
+
+
+@pytest.mark.asyncio
+async def test_hiding_zswap_while_sorted_by_it_falls_back_to_total_desc(tmp_path: Path) -> None:
+    root = _zswap_base_tree(tmp_path)
+    # zswapped <= swap always, so alpha's swap grows with its zswapped; bravo's
+    # RAM is set high enough that its TOTAL still beats alpha's once ZSWAP
+    # (alpha's own column) is no longer the sort key.
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=9 * 1024**2, zswapped=9 * 1024**2)
+    _app_unit(root, "app-bravo.service", ram=20 * 1024**2, swap=0, zswapped=0)
+
+    async with _app(root).run_test() as pilot:
+        await pilot.pause()
+        table = _table(pilot)
+        screen = pilot.app.screen
+        assert isinstance(screen, MainScreen)
+
+        await pilot.press("w")  # show ZSWAP
+        header_event = DataTable.HeaderSelected(table, ColumnKey("zswap"), 1, Text("ZSWAP"))
+        screen.on_data_table_header_selected(header_event)  # explicit sort by ZSWAP desc
+        assert _row_names(table) == ["alpha", "bravo"]
+
+        await pilot.press("w")  # hide ZSWAP while it's the active sort column
+
+        assert _row_names(table) == ["bravo", "alpha"]  # falls back to TOTAL desc
+
+
+@pytest.mark.asyncio
+async def test_zswap_disabled_mid_session_hides_the_shown_column_and_falls_back_sort(
+    tmp_path: Path,
+) -> None:
+    # zswap is normally a machine fact, not a per-tick one, but if it does
+    # flip off mid-session the column (and its sort, if active) can't stay --
+    # `w` would no longer do anything to hide it by hand.
+    root = _zswap_base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=1 * 1024**2, zswapped=1 * 1024**2)
+
+    async with _app(root).run_test() as pilot:
+        await pilot.pause()
+        table = _table(pilot)
+        screen = pilot.app.screen
+        assert isinstance(screen, MainScreen)
+
+        await pilot.press("w")  # show ZSWAP
+        header_event = DataTable.HeaderSelected(table, ColumnKey("zswap"), 1, Text("ZSWAP"))
+        screen.on_data_table_header_selected(header_event)  # sort by it
+        assert "zswap" in table.columns
+        assert screen._sort_key == "zswap"  # pyright: ignore[reportPrivateUsage]
+
+        write_zswap_enabled(root, enabled=False)
+        screen.refresh_now()
+
+        assert "zswap" not in table.columns
+        assert screen._sort_key != "zswap"  # pyright: ignore[reportPrivateUsage]
+
+        await pilot.press("w")  # a no-op again, same as before zswap ever turned on
+        assert "zswap" not in table.columns
+
+
+@pytest.mark.asyncio
+async def test_footer_hides_w_zswap_when_disabled_and_shows_it_when_enabled(
+    tmp_path: Path,
+) -> None:
+    disabled_root = _base_tree(tmp_path)
+    async with _app(disabled_root).run_test(size=(120, 24)) as pilot:
+        await pilot.pause()
+        footer = pilot.app.query_one("#footer", Static)
+        assert isinstance(footer.content, Text)
+        assert "zswap" not in footer.content.plain
+
+    enabled_root = _zswap_base_tree(tmp_path)
+    async with _app(enabled_root).run_test(size=(120, 24)) as pilot:
+        await pilot.pause()
+        footer = pilot.app.query_one("#footer", Static)
+        assert isinstance(footer.content, Text)
+        assert "w zswap" in footer.content.plain
+
+
+@pytest.mark.asyncio
+async def test_question_mark_passes_the_zswap_flag_to_help(tmp_path: Path) -> None:
+    # `action_help` must actually pass `self._zswap_enabled` through to
+    # `HelpScreen` -- `_build_body`'s own gating on that flag is covered in
+    # test_help.py, not this hand-off from the running screen.
+    zswap_root = _zswap_base_tree(tmp_path)
+    async with _app(zswap_root).run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("?")
+        await pilot.pause()
+        assert isinstance(pilot.app.screen, HelpScreen)
+        body = str(pilot.app.screen.query_one("#help-text", Static).content)
+        assert "ZSWAP" in body
+
+    plain_root = _base_tree(tmp_path)
+    async with _app(plain_root).run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("?")
+        await pilot.pause()
+        assert isinstance(pilot.app.screen, HelpScreen)
+        body = str(pilot.app.screen.query_one("#help-text", Static).content)
+        assert "ZSWAP" not in body
+
+
+@pytest.mark.asyncio
+async def test_column_order_with_cache_and_zswap_shown_is_ram_swap_cache_zswap_total(
+    tmp_path: Path,
+) -> None:
+    root = _zswap_base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(120, 35)) as pilot:
+        await pilot.pause()
+        await pilot.press("c")
+        await pilot.press("w")
+        table = _table(pilot)
+        keys = [column.key.value for column in table.ordered_columns]
+
+        assert keys == [
+            "app",
+            "ram",
+            "swap",
+            "cache",
+            "zswap",
+            "total",
+            "delta_ram",
+            "delta_swap",
+            "procs",
+        ]
+
+
+@pytest.mark.asyncio
+async def test_header_shows_zswap_bracket_when_enabled(tmp_path: Path) -> None:
+    root = _zswap_base_tree(tmp_path)
+
+    # Wide enough that the bracket survives the width-drop order (unit test in
+    # test_ui_header.py covers the drop order itself); 120 already drops it here.
+    async with _app(root).run_test(size=(200, 24)) as pilot:
+        await pilot.pause()
+        header1 = pilot.app.query_one("#header1", Static)
+
+        assert isinstance(header1.content, Text)
+        assert "zswap in" in header1.content.plain
 
 
 @pytest.mark.asyncio
@@ -940,6 +1159,31 @@ async def test_theme_footer_item_shows_wide_and_drops_before_reset_delta(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_zswap_footer_item_drops_right_after_cache(tmp_path: Path) -> None:
+    # "zswap" sits in `_FOOTER_DROP_ORDER` right after "cache" (SPEC.md "Main
+    # view"): it survives "cache" dropping, then drops itself before "system".
+    root = _zswap_base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(60, 24)) as pilot:
+        await pilot.pause()
+        footer = pilot.app.screen.query_one("#footer", Static)
+        content = footer.content
+        assert isinstance(content, Text)
+        assert "cache" not in content.plain
+        assert "w zswap" in content.plain
+        assert "x system" in content.plain
+
+    async with _app(root).run_test(size=(55, 24)) as pilot:
+        await pilot.pause()
+        footer = pilot.app.screen.query_one("#footer", Static)
+        content = footer.content
+        assert isinstance(content, Text)
+        assert "w zswap" not in content.plain
+        assert "x system" in content.plain
+
+
+@pytest.mark.asyncio
 async def test_sort_footer_item_drops_d_key_below_95_columns(tmp_path: Path) -> None:
     # `d` is a no-op while the Δ columns are hidden by width (`action_sort`
     # refuses it), so its key cap doesn't appear at all, rather than sitting
@@ -1353,6 +1597,41 @@ async def test_header_colours_follow_the_running_apps_current_theme(tmp_path: Pa
         assert nord_warning != dracula_warning
         assert nord_warning in _style_at(header_after, pair)
         assert dracula_warning not in _style_at(header_after, pair)
+
+
+@pytest.mark.asyncio
+async def test_writeback_rate_reaches_the_header_in_the_running_theme_colour(
+    tmp_path: Path,
+) -> None:
+    # `_update_header_line1` must actually pass `self._writeback_rate` through
+    # to `format_line1` -- `update_writeback` and `format_line1` are each
+    # tested on their own (test_writeback.py, test_ui_header.py), but nothing
+    # else covers this join, the `wb` token as it runs live.
+    root = _zswap_base_tree(tmp_path)
+    write_vmstat(root, zswpwb=0)
+
+    app = AppMemApp(
+        root=root, uid=UID, interval=NO_AUTO_REFRESH_INTERVAL, include_system=False, theme="dracula"
+    )
+    async with app.run_test(size=(160, 24)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.screen
+        assert isinstance(screen, MainScreen)
+        stats = screen._last_stats  # pyright: ignore[reportPrivateUsage]
+        assert stats is not None
+
+        # Seed a sample from "1 s ago" so this call has a deterministic
+        # elapsed time to compute a rate from, instead of depending on how
+        # much real wall-clock time the test happens to take.
+        screen._writeback_history = ((time.monotonic() - 1.0, 0),)  # pyright: ignore[reportPrivateUsage]
+        screen._update_header(replace(stats, zswap_writeback_bytes=10 * 1024 * 1024))  # pyright: ignore[reportPrivateUsage]
+
+        header = screen.query_one("#header1", Static).content
+        assert isinstance(header, Text)
+        assert "wb " in header.plain
+
+        dracula_warning = Color.parse(BUILTIN_THEMES["dracula"].warning or "").rich_color.name
+        assert dracula_warning in _style_at(header, "wb ")
 
 
 @pytest.mark.asyncio

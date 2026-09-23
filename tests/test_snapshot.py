@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -16,6 +17,8 @@ from helpers import (
     write_meminfo,
     write_memory_stat,
     write_pressure,
+    write_vmstat,
+    write_zswap_enabled,
 )
 
 _NOW = datetime(2026, 9, 23, 0, 30, 39, tzinfo=timezone(timedelta(hours=2)))
@@ -230,6 +233,51 @@ def test_ram_slab_bytes_reflects_sreclaimable(tmp_path: Path) -> None:
     document, _ = snapshot_document(tmp_path, 1000, include_system=False, limit=50, now=_NOW)
 
     assert document["system"]["ram_slab_bytes"] == 2_100_000 * 1024
+
+
+def test_snapshot_zswap_system_fields_and_per_app_zswapped_bytes(tmp_path: Path) -> None:
+    user_root = _base_tree(tmp_path)
+    make_unit(
+        user_root / "app.slice" / "app-ghostty.service",
+        anon=6 * _MIB,
+        swap=11 * _MIB,
+        zswapped=4 * _MIB,
+    )
+    write_meminfo(
+        tmp_path,
+        mem_total_kb=32 * 1024 * 1024,
+        mem_available_kb=12 * 1024 * 1024,
+        swap_total_kb=32 * 1024 * 1024,
+        swap_free_kb=10 * 1024 * 1024,
+        zswap_kb=2_000_000,
+        zswapped_kb=7_000_000,
+    )
+    write_zswap_enabled(tmp_path, enabled=True)
+    write_vmstat(tmp_path, zswpwb=50)
+
+    document, _ = snapshot_document(tmp_path, 1000, include_system=False, limit=50, now=_NOW)
+
+    system = document["system"]
+    assert system["zswap_enabled"] is True
+    assert system["zswap_pool_bytes"] == 2_000_000 * 1024
+    assert system["zswapped_bytes"] == 7_000_000 * 1024
+    assert system["zswap_writeback_bytes"] == 50 * os.sysconf("SC_PAGE_SIZE")
+    item = document["apps"]["items"][0]
+    assert item["zswapped_bytes"] == 4 * _MIB
+
+
+def test_snapshot_zswap_system_fields_are_null_when_disabled(tmp_path: Path) -> None:
+    _base_tree(tmp_path)
+    write_pressure(tmp_path, some_avg10=0.0, full_avg10=0.0)
+    # No zswap fixtures written: the machine simply has no zswap.
+
+    document, _ = snapshot_document(tmp_path, 1000, include_system=False, limit=50, now=_NOW)
+
+    system = document["system"]
+    assert system["zswap_enabled"] is False
+    assert system["zswap_pool_bytes"] is None
+    assert system["zswapped_bytes"] is None
+    assert system["zswap_writeback_bytes"] is None
 
 
 def test_elsewhere_is_null_without_the_root_memory_stat(tmp_path: Path) -> None:

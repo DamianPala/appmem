@@ -82,6 +82,7 @@ Keys:
   g                    process view: toggle grouping by command
   Esc                  back to the main view
   c                    toggle the CACHE column
+  w                    toggle the ZSWAP column (only where zswap is on)
   x                    toggle system services
   z                    reset the Δ baseline to now
   T / Ctrl+P           change the theme (remembered in the config file)

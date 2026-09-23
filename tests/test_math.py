@@ -22,6 +22,7 @@ def _unit(name: str, *, scope: str = "user", **stats_kwargs: int) -> Unit:
         "total": 0,
         "procs": 0,
         "kernel": 0,
+        "zswapped": 0,
     }
     defaults.update(stats_kwargs)
     return Unit(path=Path(f"/fake/{name}"), stats=UnitStats(**defaults), scope=scope)
@@ -37,6 +38,7 @@ def test_group_apps_merges_units_by_app_name_and_sums_counters() -> None:
             total=105,
             procs=3,
             kernel=7,
+            zswapped=2,
         ),
         _unit(
             "app-ghostty-surface-transient-1.scope",
@@ -46,6 +48,7 @@ def test_group_apps_merges_units_by_app_name_and_sums_counters() -> None:
             total=51,
             procs=2,
             kernel=3,
+            zswapped=1,
         ),
         _unit("pipewire.service", ram=20, cache=0, swap=0, total=20, procs=1),
     ]
@@ -60,6 +63,7 @@ def test_group_apps_merges_units_by_app_name_and_sums_counters() -> None:
     assert ghostty.total == 156
     assert ghostty.procs == 5
     assert ghostty.kernel == 10
+    assert ghostty.zswapped == 3
     assert ghostty.scope == "user"
     assert len(ghostty.unit_paths) == 2
 

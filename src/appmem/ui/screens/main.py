@@ -13,6 +13,8 @@ never rebuilds the table (SPEC.md "Tech" notes).
 
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
@@ -63,14 +65,17 @@ from appmem.ui.rows import (
 from appmem.ui.screens.help import HelpScreen
 from appmem.ui.screens.processes import ProcessesScreen
 from appmem.ui.table_order import reorder_rows
+from appmem.writeback import Sample, update_writeback
 
 # Key caps (reverse video); at full width the plain text is exactly
-# " r s t d sort  enter procs  x system  c cache  z reset Δ  T theme  ? help  q quit".
-# `d` (sort by ΔSWAP) drops out of the "sort" item's own key caps -- not the
-# whole item -- while the Δ columns are hidden by width (SPEC.md "Main view":
-# a key that does nothing in the current view doesn't appear). `theme` is the
-# lowest priority of all, dropped before `reset Δ` (SPEC.md "Command line").
-_FOOTER_DROP_ORDER = ("theme", "reset Δ", "cache", "system", "procs", "sort")
+# " r s t d sort  enter procs  x system  c cache  w zswap  z reset Δ  T theme  ? help  q quit"
+# (the "w zswap" item only where zswap is enabled). `d` (sort by ΔSWAP) drops
+# out of the "sort" item's own key caps -- not the whole item -- while the Δ
+# columns are hidden by width (SPEC.md "Main view": a key that does nothing
+# in the current view doesn't appear). `theme` is the lowest priority of
+# all, dropped before `reset Δ` (SPEC.md "Command line"); `zswap` drops right
+# after `cache` (SPEC.md "Main view").
+_FOOTER_DROP_ORDER = ("theme", "reset Δ", "cache", "zswap", "system", "procs", "sort")
 
 # Below this width, ΔSWAP/ΔRAM are hidden (SPEC.md "Main view"). Re-shown
 # above it.
@@ -93,6 +98,7 @@ _BASE_COLUMNS: tuple[tuple[SortKey, str, int | None], ...] = (
     ("swap", "SWAP", 10),
 )
 _CACHE_COLUMN: tuple[SortKey, str, int | None] = ("cache", "CACHE", 10)
+_ZSWAP_COLUMN: tuple[SortKey, str, int | None] = ("zswap", "ZSWAP", 10)
 _TOTAL_COLUMN: tuple[SortKey, str, int | None] = ("total", "TOTAL", 10)
 _DELTA_COLUMNS: tuple[tuple[SortKey, str, int | None], ...] = (
     ("delta_ram", "ΔRAM", 9),
@@ -104,24 +110,30 @@ _DELTA_KEYS = frozenset({"delta_swap", "delta_ram"})
 _TICK_GROUP = "collect"
 
 
+def _format_app_cell(row: Row, app_cap: int) -> str:
+    name = escape_control_chars(row.name)
+    label = name if row.scope == "user" else f"{name} [sys]"
+    return truncate_name(label, app_cap)
+
+
+# One entry per non-"app" `SortKey`, keeping `_format_cell` itself a flat
+# lookup instead of a long if-chain (ruff C901).
+_CELL_FORMATTERS: dict[SortKey, Callable[[Row], str]] = {
+    "swap": lambda row: size(row.swap),
+    "ram": lambda row: size(row.ram),
+    "cache": lambda row: size(row.cache),
+    "zswap": lambda row: size(row.zswap),
+    "total": lambda row: size(row.total),
+    "delta_swap": lambda row: format_delta(row.delta_swap),
+    "delta_ram": lambda row: format_delta(row.delta_ram),
+    "procs": lambda row: str(row.procs),
+}
+
+
 def _format_cell(key: SortKey, row: Row, *, app_cap: int = _APP_MAX_WIDTH) -> str:
     if key == "app":
-        name = escape_control_chars(row.name)
-        label = name if row.scope == "user" else f"{name} [sys]"
-        return truncate_name(label, app_cap)
-    if key == "swap":
-        return size(row.swap)
-    if key == "ram":
-        return size(row.ram)
-    if key == "cache":
-        return size(row.cache)
-    if key == "total":
-        return size(row.total)
-    if key == "delta_swap":
-        return format_delta(row.delta_swap)
-    if key == "delta_ram":
-        return format_delta(row.delta_ram)
-    return str(row.procs)  # "procs"
+        return _format_app_cell(row, app_cap)
+    return _CELL_FORMATTERS[key](row)
 
 
 def _key_str(key: RowKey | ColumnKey) -> str:
@@ -199,6 +211,7 @@ class MainScreen(Screen[None]):
         Binding("t", "sort('total')", "sort TOTAL", show=False),
         Binding("d", "sort('delta_swap')", "sort ΔSWAP", show=False),
         Binding("c", "toggle_cache", "toggle CACHE", show=False),
+        Binding("w", "toggle_zswap", "toggle ZSWAP", show=False),
         Binding("x", "toggle_system", "toggle system", show=False),
         Binding("z", "reset_delta", "reset Δ", show=False),
         Binding("?", "help", "help", show=False),
@@ -211,6 +224,14 @@ class MainScreen(Screen[None]):
         self._interval = interval
         self._show_system = include_system
         self._show_cache = False
+        self._show_zswap = False
+        self._zswap_enabled = False
+        """Whether this machine has zswap on (`SystemStats.zswap_enabled`
+        from the last tick): gates the `w` key, the ZSWAP column, and the
+        footer/help mentions of it (SPEC.md "Main view"). Starts `False`
+        (unknown) until the first tick lands."""
+        self._writeback_history: tuple[Sample, ...] = ()
+        self._writeback_rate: int | None = None
         self._sort_key: SortKey = DEFAULT_SORT_KEY
         self._sort_reverse = DEFAULT_SORT_REVERSE
         self._baseline: dict[tuple[str, str], AppStats] = {}
@@ -245,16 +266,23 @@ class MainScreen(Screen[None]):
         # item's own key caps rather than staying as dead text (SPEC.md
         # "Main view").
         sort_keys = ("r", "s", "t", "d") if self._delta_columns_shown else ("r", "s", "t")
-        return (
+        items: list[tuple[tuple[str, ...], str]] = [
             (sort_keys, "sort"),
             (("enter",), "procs"),
             (("x",), "system"),
             (("c",), "cache"),
-            (("z",), "reset Δ"),
-            (("T",), "theme"),
-            (("?",), "help"),
-            (("q",), "quit"),
+        ]
+        if self._zswap_enabled:  # `w` does nothing when zswap is off or unsupported
+            items.append((("w",), "zswap"))
+        items.extend(
+            [
+                (("z",), "reset Δ"),
+                (("T",), "theme"),
+                (("?",), "help"),
+                (("q",), "quit"),
+            ]
         )
+        return tuple(items)
 
     def _footer_text(self) -> Text:
         width = self.app.size.width  # pyright: ignore[reportUnknownMemberType]
@@ -390,6 +418,23 @@ class MainScreen(Screen[None]):
 
     def _update_header(self, stats: SystemStats) -> None:
         self._last_stats = stats
+        self._writeback_history, self._writeback_rate = update_writeback(
+            self._writeback_history, time.monotonic(), stats.zswap_writeback_bytes
+        )
+        if stats.zswap_enabled != self._zswap_enabled:
+            # A footer item (and `w`'s effect) appears or disappears with it:
+            # rare in practice (zswap is a machine fact, not a per-tick one),
+            # but cheap to keep in step rather than assume it once at mount.
+            self._zswap_enabled = stats.zswap_enabled
+            self._update_footer()
+            if not self._zswap_enabled and self._show_zswap:
+                # The column's data source just vanished, and `w` no longer
+                # does anything to hide it by hand -- same fallback as hiding
+                # it explicitly (`action_toggle_zswap`).
+                self._show_zswap = False
+                if self._sort_key == "zswap":
+                    self._sort_key, self._sort_reverse = DEFAULT_SORT_KEY, DEFAULT_SORT_REVERSE
+                self._rebuild_table(scroll=False)  # automatic, not a user selection
         self._update_header_line1()
         self._update_header_line2()
 
@@ -412,6 +457,7 @@ class MainScreen(Screen[None]):
             self._last_stats,
             self.app.size.width,  # pyright: ignore[reportUnknownMemberType]
             self._theme_colors(),
+            self._writeback_rate,
         )
         if widget.content != content:
             widget.update(content)
@@ -467,6 +513,8 @@ class MainScreen(Screen[None]):
         specs = list(_BASE_COLUMNS)
         if self._show_cache:
             specs.append(_CACHE_COLUMN)
+        if self._show_zswap:
+            specs.append(_ZSWAP_COLUMN)
         specs.append(_TOTAL_COLUMN)
         if self._delta_columns_shown:
             specs.extend(_DELTA_COLUMNS)
@@ -647,6 +695,16 @@ class MainScreen(Screen[None]):
             self._sort_key, self._sort_reverse = DEFAULT_SORT_KEY, DEFAULT_SORT_REVERSE
         self._rebuild_table(scroll=True)  # explicit `c` key press
 
+    def action_toggle_zswap(self) -> None:
+        if not self._zswap_enabled:
+            return  # zswap off or unsupported here: `w` does nothing (SPEC.md "Main view")
+        self._show_zswap = not self._show_zswap
+        # Mirrors `action_toggle_cache`: the active sort column can go away
+        # with the ZSWAP column, so fall back instead of an invisible sort.
+        if not self._show_zswap and self._sort_key == "zswap":
+            self._sort_key, self._sort_reverse = DEFAULT_SORT_KEY, DEFAULT_SORT_REVERSE
+        self._rebuild_table(scroll=True)  # explicit `w` key press
+
     def action_toggle_system(self) -> None:
         self._show_system = not self._show_system
         self._generation += 1
@@ -676,7 +734,9 @@ class MainScreen(Screen[None]):
     def action_help(self) -> None:
         # Textual's `Screen.app` is typed from a contextvar pyright can't fully
         # resolve; the call itself is fine (SPEC.md "Tech" notes).
-        self.app.push_screen(HelpScreen())  # pyright: ignore[reportUnknownMemberType]
+        self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
+            HelpScreen(zswap_enabled=self._zswap_enabled)
+        )
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         key = _key_str(event.row_key)

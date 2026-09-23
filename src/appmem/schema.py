@@ -142,7 +142,11 @@ SNAPSHOT_DESCRIPTION = (
 SNAPSHOT_OUTPUT_DESCRIPTION = (
     "Apps with total_bytes >= 1048576, sorted by total_bytes descending, then scope, "
     "then name. pressure is null when /proc/pressure/memory is missing; elsewhere_bytes "
-    "is null when the root memory.stat is missing. next names the first item "
+    "is null when the root memory.stat is missing. zswapped_bytes (system and per app) "
+    "is already inside swap, zswap_pool_bytes already inside ram_used_bytes; both are "
+    "null when zswap_enabled is false. zswap_writeback_bytes is cumulative since boot, "
+    "null without the kernel counter: one sample has no rate, so diff two snapshots. "
+    "next names the first item "
     "(appmem app NAME [--scope system]) and is omitted when there are no items; it "
     "repeats --json when the call passed it. Failures return no result."
 )
@@ -167,6 +171,10 @@ SNAPSHOT_OUTPUT: dict[str, object] = {
                 "system_services_ram_bytes",
                 "system_services_swap_bytes",
                 "elsewhere_bytes",
+                "zswap_enabled",
+                "zswap_pool_bytes",
+                "zswapped_bytes",
+                "zswap_writeback_bytes",
             ],
             "properties": {
                 "ram_total_bytes": {"type": "integer"},
@@ -181,6 +189,10 @@ SNAPSHOT_OUTPUT: dict[str, object] = {
                 "system_services_ram_bytes": {"type": "integer"},
                 "system_services_swap_bytes": {"type": "integer"},
                 "elsewhere_bytes": {"type": ["integer", "null"]},
+                "zswap_enabled": {"type": "boolean"},
+                "zswap_pool_bytes": {"type": ["integer", "null"]},
+                "zswapped_bytes": {"type": ["integer", "null"]},
+                "zswap_writeback_bytes": {"type": ["integer", "null"]},
             },
         },
         "pressure": {
@@ -215,6 +227,7 @@ SNAPSHOT_OUTPUT: dict[str, object] = {
                             "swap_bytes",
                             "total_bytes",
                             "cache_bytes",
+                            "zswapped_bytes",
                             "procs",
                             "units",
                         ],
@@ -225,6 +238,7 @@ SNAPSHOT_OUTPUT: dict[str, object] = {
                             "swap_bytes": {"type": "integer"},
                             "total_bytes": {"type": "integer"},
                             "cache_bytes": {"type": "integer"},
+                            "zswapped_bytes": {"type": "integer"},
                             "procs": {"type": "integer"},
                             "units": {"type": "integer"},
                         },
@@ -270,7 +284,8 @@ APP_OUTPUT_DESCRIPTION = (
     "processes.items sorted by total_bytes descending, ties by name then pid; "
     "commands.items computed over all processes, sorted by total_bytes descending, "
     "ties by name. units lists every unit directory name of the app, raw. "
-    "kernel_bytes is inside ram_bytes. unattributed_* are clamped at 0. "
+    "kernel_bytes is inside ram_bytes; zswapped_bytes is inside swap_bytes. "
+    "unattributed_* are clamped at 0. "
     "Failures return no result."
 )
 
@@ -284,6 +299,7 @@ APP_OUTPUT: dict[str, object] = {
         "swap_bytes",
         "total_bytes",
         "cache_bytes",
+        "zswapped_bytes",
         "kernel_bytes",
         "procs",
         "units",
@@ -300,6 +316,7 @@ APP_OUTPUT: dict[str, object] = {
         "swap_bytes": {"type": "integer"},
         "total_bytes": {"type": "integer"},
         "cache_bytes": {"type": "integer"},
+        "zswapped_bytes": {"type": "integer"},
         "kernel_bytes": {"type": "integer"},
         "procs": {"type": "integer"},
         "units": {"type": "array", "items": {"type": "string"}},

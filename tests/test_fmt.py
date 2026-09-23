@@ -9,6 +9,8 @@ from appmem.fmt import (
     format_delta,
     format_elapsed,
     format_pair,
+    format_rate,
+    format_zswap_part,
     pressure_word,
     size,
     status_line_command,
@@ -231,6 +233,17 @@ def test_status_line_command_system_scope() -> None:
 def test_status_line_command_adds_kill_pid_for_a_process_row() -> None:
     line = status_line_command("user", "app-ghostty.service", 12345, width=200)
     assert line == "systemctl --user stop 'app-ghostty.service'   kill 12345"
+
+
+def test_format_rate_reuses_size_and_appends_per_second() -> None:
+    assert format_rate(12 * 1024 * 1024) == "12 MiB/s"
+    assert format_rate(0) == "0 B/s"
+
+
+def test_format_zswap_part_reads_x_zswap_in_y() -> None:
+    zswapped = int(6.7 * 1024**3)
+    pool = int(1.9 * 1024**3)
+    assert format_zswap_part(zswapped, pool) == "6.7 GiB zswap in 1.9 GiB"
 
 
 def test_status_line_command_ellipsizes_unit_when_wider_than_terminal() -> None:

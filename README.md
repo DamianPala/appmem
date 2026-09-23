@@ -70,6 +70,7 @@ The `kernel` and `unattributed` rows at the bottom of the process view explain w
 | `g` | processes | group by command |
 | `Esc` | processes, help | back |
 | `c` / `x` / `z` | main | show page cache / show system services / reset the Δ baseline |
+| `w` | main | show the ZSWAP column, only where zswap is on |
 | `T`, `Ctrl+P` | main, processes | change the theme (Textual's own picker; remembered for next time) |
 | `?` | all | what the numbers mean |
 | `q`, `Ctrl+C` | all | quit (`q` in help closes help) |
@@ -90,6 +91,9 @@ A broken or unreadable config file, or an unknown name in `APPMEM_THEME`/`TEXTUA
   Page cache is reclaimable and makes an app that read a big file look like a hog, so it has its own column (`c`).
 - **SWAP** is what the kernel moved out of RAM for that app.
   With zswap it also includes pages kept compressed in RAM.
+  The header shows that machine-wide as `X zswap in Y`: X is kept compressed, already part of Swap used; Y is the RAM the pool costs, already part of RAM used.
+  A `wb` marker next to it means the pool is overflowing to the disk swap, which is slow.
+  Per app, the compressed part of SWAP has its own column (`w`), not extra memory.
 - **TOTAL** is SWAP + RAM: an accounting sum, not a promise of what closing the app frees.
 - **pressure** is the share of the last 10 s that programs spent waiting for memory.
   It tells you whether memory stalls are happening, not which app causes them.

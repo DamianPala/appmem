@@ -83,6 +83,20 @@ def format_age(seconds: float) -> str:
     return f"{total // 86400}d"
 
 
+def format_rate(bytes_per_second: int) -> str:
+    """Format a byte rate, e.g. ``12 MiB/s`` (zswap writeback, SPEC.md "Main view")."""
+    return f"{size(bytes_per_second)}/s"
+
+
+def format_zswap_part(zswapped_bytes: int, zswap_pool_bytes: int) -> str:
+    """``X zswap in Y``: `X` is swapped data kept compressed in RAM, already
+    part of SWAP used; `Y` is the RAM the pool costs, already part of RAM
+    used (SPEC.md "Main view"). Shared by the live header and the snapshot
+    text report, so the Swap part reads the same wherever it's rendered.
+    """
+    return f"{size(zswapped_bytes)} zswap in {size(zswap_pool_bytes)}"
+
+
 def format_pair(used: int, total: int) -> str:
     """Format a used/total byte pair, sharing the unit when both render to it.
 

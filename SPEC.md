@@ -1,4 +1,4 @@
-# appmem: spec v0.6
+# appmem: spec v0.7
 
 A live terminal view of RAM and swap usage **per application**, not per process.
 Think `btm` or `htop`, but rows are apps (Ghostty, Brave, LibreOffice), each summing all of its processes.
@@ -32,24 +32,34 @@ Which app holds the memory and swap? Is memory actually the problem right now? W
 ### Main view
 
 ```
-RAM 20.2/30.9 GiB (3.1 GiB shared)  avail 10.8 GiB (2.1 GiB free, 6.2 GiB cache, 2.9 GiB slab)  Swap 24.0/32.0 GiB  pressure 10s: none  system 652 MiB [x]
+RAM 20.2/30.9 GiB (3.1 GiB shared)  avail 10.8 GiB (2.1 GiB free, 6.2 GiB cache, 2.9 GiB slab)  Swap 24.0/32.0 GiB (6.7 GiB zswap in 1.9 GiB)  pressure 10s: none  system 652 MiB [x]
 Δ since 02:13 (3s)
  APP                        RAM         SWAP        TOTAL ▾     ΔRAM       ΔSWAP      PROCS
  ghostty                       6.6 GiB    11.2 GiB    17.8 GiB     -3 MiB          ·     281
  plasma                        1.6 GiB     2.3 GiB     3.9 GiB          ·          ·      17
  chrome                        1.6 GiB     2.2 GiB     3.7 GiB     -1 MiB          ·      35
  ...
- r s t d sort  enter procs  x system  c cache  z reset Δ  T theme  ? help  q quit
+ r s t d sort  enter procs  x system  c cache  w zswap  z reset Δ  T theme  ? help  q quit
 ```
 
 - **Header line 1** (parts joined by two spaces, each breakdown in parentheses sits inside the total it belongs to):
   - System RAM used (`MemTotal - MemAvailable`) and total, with `shared` (`Shmem`: tmpfs such as `/tmp` and `/dev/shm`, shared memory, GPU buffers; the kernel can only swap it out, never drop it). Always shown.
   - `avail` (`MemAvailable`, what can be allocated before swapping) with `free` (`MemFree`) and `cache` (`Cached - Shmem`, clamped at 0, the same definition as the CACHE column) and `slab` (`SReclaimable`: kernel caches of file names and inodes, dropped on demand). The three come close to `avail` but are not an exact sum: `avail` is a kernel estimate that also keeps reserves.
   - System swap used and total, or `Swap off` when `SwapTotal` is 0. Coloured with the theme's warning colour above 50 % used, its error colour above 80 %.
+  - With zswap enabled, `(X zswap in Y)` follows Swap: X is swapped data kept compressed in RAM (`Zswapped`, already part of Swap used), Y is the RAM the pool takes (`Zswap`, already part of RAM used). While the pool writes back to the disk swap, `wb N MiB/s` joins the bracket in the theme's warning colour. The rate is taken from `/proc/vmstat` `zswpwb` over a ~10 s window, shown only while it is above 0, and never on the first tick. Without zswap, nothing is shown.
   - Memory pressure as a bold word (see Definitions) in the theme's success/warning/error colour; omitted when `/proc/pressure/memory` does not exist.
   - Total of the hidden system services, so the user notices when the culprit is there.
   - `elsewhere`: memory outside the user tree and `system.slice` (root `memory.stat` minus both): VMs, containers, other users, login sessions.
-  - Never wraps: when too narrow, parts drop in the order `elsewhere`, `system`, the `(free, cache, slab)` breakdown, `avail`, `shared`. RAM, Swap and pressure always stay; below their width the line is cropped with an ellipsis.
+  - Never wraps. When the line is too narrow, parts drop in this order:
+    1. `elsewhere`;
+    2. `system`;
+    3. the `(free, cache, slab)` breakdown;
+    4. the zswap bracket;
+    5. `avail`;
+    6. `shared`.
+
+    Then dropped parts are put back, most important first, wherever they still fit, so a small part is not lost only because a bigger one had to go. As a result, what is visible does not only grow with the width.
+    RAM, Swap, pressure and the `wb` token always stay. When the zswap bracket drops, `wb` stays next to Swap as `(wb N MiB/s)`. Below the width of the fixed parts, the line is cropped with an ellipsis.
 - **Header line 2:** when the Δ baseline was taken and how long ago.
 - The sort marker `▴`/`▾` sits on the sorted column. Default sort: TOTAL descending.
 - Clicking the sorted column again flips the direction.
@@ -106,7 +116,7 @@ Enter on a command drills into its member processes (title `ghostty › claude`,
 ### Help screen (`?`)
 
 A scrolling screen with the definitions below in plain words, soft-wrapped to the width, with `esc/?/q close` in its title line.
-It covers what RAM, CACHE, SWAP, TOTAL, pressure and the header's shared/free/cache/avail mean (tmpfs files count toward the app that wrote them), why rows don't add up to the header, why a closed app can still have a row, and how to act on what you see, plus one line on `T` and where the theme is saved.
+It covers what RAM, CACHE, SWAP, TOTAL, pressure and the header's shared/free/cache/avail mean (tmpfs files count toward the app that wrote them), why rows don't add up to the header, why a closed app can still have a row, and how to act on what you see, plus one line on `T` and where the theme is saved. When zswap is enabled, it also defines the zswap bracket, `wb` and ZSWAP.
 
 ## Keys
 
@@ -119,6 +129,7 @@ It covers what RAM, CACHE, SWAP, TOTAL, pressure and the header's shared/free/ca
 | `g` | process view: toggle grouping by command |
 | `Esc` | back to the main view |
 | `c` | toggle the CACHE column |
+| `w` | toggle the ZSWAP column (main view, only while zswap is enabled) |
 | `x` | toggle system services |
 | `z` | reset the Δ baseline to now |
 | `T` / `Ctrl+P` → Theme | theme picker (all views); the chosen theme is saved |
@@ -135,6 +146,8 @@ All reads are plain, world-readable files. No root needed.
 | SWAP per app | `memory.swap.current` of the unit |
 | RAM per app | `memory.stat` of the unit: `anon + shmem + kernel` (kernels before 5.18 have no `kernel` field: `slab + kernel_stack + pagetables + percpu`) |
 | CACHE per app | `memory.stat` of the unit: `file - shmem` |
+| ZSWAP per app | `memory.stat` of the unit: `zswapped` |
+| zswap | `/sys/module/zswap/parameters/enabled` (`Y`; missing = off), `/proc/meminfo` `Zswap`/`Zswapped`, `/proc/vmstat` `zswpwb` |
 | Processes of an app | `cgroup.procs` of the unit and every directory below it |
 | SWAP per process | `/proc/PID/status` → `VmSwap` |
 | RAM per process | `/proc/PID/status` → `RssAnon + RssShmem` |
@@ -166,7 +179,8 @@ Login-session scopes (`user-$UID.slice/session-N.scope`: the display manager hel
   In cgroup v2, `shmem` is counted inside `file`, not `anon`, so it is added explicitly.
   `kernel` is page tables, slab and kernel stacks charged to the app (tens of MiB for a browser).
 - **CACHE = file - shmem.** Reclaimable page cache. Hidden by default, and never part of TOTAL.
-- **SWAP = memory.swap.current.** With zswap enabled this includes pages held compressed in RAM. v1 does not separate them.
+- **SWAP = memory.swap.current.** With zswap enabled this includes pages held compressed in RAM.
+- **ZSWAP = zswapped** (optional column, `w`): the part of the app's SWAP held compressed in RAM, not extra memory. The RAM the compressed pool takes is charged to the app as `kernel` memory, so it is already inside its RAM (verified live).
 - **TOTAL = SWAP + RAM.**
 - **Per-process RAM and SWAP** come from `/proc/PID/status`, the same numbers htop uses. They are readable for every process, including sandboxed browser processes and other users' processes.
   They don't add up to the app row, for two reasons. A shared page counts once in every process that maps it, so rows can add up to more than the app. Memory the app holds without any process mapping it (GPU buffers, memfd, tmpfs) belongs to no process, so rows can fall short. The `kernel` and `unattributed` rows show the gap.
@@ -286,7 +300,11 @@ The command line conforms to the house CLI Design Standard 0.1.0 (claimed in `ap
   5. `textual-dark`.
 
   An unknown `--theme` name is `invalid_input`, and the message lists the valid names. A bad env value, or an unreadable, malformed or wrong-typed file, falls back to the next source with a notification, never a crash; unknown keys in the file are ignored. The file is written only when a theme pick in the app changes the theme (never for previews, a cancelled picker, `--theme` or env), atomically, with mode 0600. A write failure is a notification. Agent commands ignore the file and the env vars.
-- **snapshot**: one sample with the same numbers as the main view and header. Apps ≥ 1 MiB TOTAL, sorted by TOTAL, at most `--limit` (default 50) with `has_more`; `next` names the largest app.
+- **snapshot**: one sample with the same numbers as the main view and header. Apps ≥ 1 MiB TOTAL, sorted by TOTAL, at most `--limit` (default 50) with `has_more`; `next` names the largest app. zswap fields:
+  - `zswap_enabled`;
+  - `zswap_pool_bytes` and `zswapped_bytes`, both null without zswap;
+  - `zswap_writeback_bytes`, cumulative since boot. A one-shot command has no rate, so diff two snapshots. It is null only on kernels without the counter;
+  - `zswapped_bytes` per app.
 - **app NAME**: resolves (scope, name) exactly like the process view. `units` (raw names), `processes` and `commands` (each paged by `--limit`, default 100), `kernel_bytes` and `unattributed_*`. No match, or every unit gone before it is read: `not_found`, exit 1.
 - **schema**: the index (commands, global flags, format defaults, exit codes, conformance) or one command's detail (flags, args, output schema). Always JSON.
 - Output: text on a terminal, JSON otherwise; `--json` forces JSON. Sizes are integer bytes (`_bytes`), percentages `_percent`, ages `age_seconds`, `taken_at` is RFC 3339 with the local offset. Text reports contain no escape sequences, and names with control characters are shown escaped.

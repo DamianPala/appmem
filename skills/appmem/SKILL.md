@@ -75,7 +75,7 @@ You use its non-interactive commands; the live TUI is for the human.
   `swapoff` needs free RAM for everything paged out, and under `none` swap is doing its job.
 - `high` with most swap in one app: free that app.
   `high` with swap spread thin and `ram_available_bytes` near zero: the machine needs fewer things running or more RAM.
-- With zswap enabled, swap includes pages kept compressed in RAM; appmem does not separate them.
+- With zswap enabled (`zswap_enabled`), swap includes pages kept compressed in RAM: `zswapped_bytes` (system and per app) is the part of swap held that way, and `zswap_pool_bytes` is the RAM this costs, already inside RAM used. `zswap_writeback_bytes` is cumulative since boot. If it grows between two snapshots, the pool is overflowing to the disk swap, which is slow.
 
 ## Errors
 

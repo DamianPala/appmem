@@ -17,7 +17,9 @@ from appmem.naming import app_name
 
 _REQUIRED_MEMORY_STAT_KEYS = ("anon", "shmem", "file")
 _KERNEL_FALLBACK_KEYS = ("slab", "kernel_stack", "pagetables", "percpu")
-_MEMORY_STAT_KEYS = frozenset({"anon", "shmem", "kernel", "file", *_KERNEL_FALLBACK_KEYS})
+_MEMORY_STAT_KEYS = frozenset(
+    {"anon", "shmem", "kernel", "file", "zswapped", *_KERNEL_FALLBACK_KEYS}
+)
 _USER_SLICES = ("app.slice", "session.slice", "background.slice")
 _STATUS_KEYS = ("VmSwap", "RssAnon", "RssShmem")
 
@@ -71,6 +73,24 @@ class SystemStats:
     """`/proc/meminfo` `SReclaimable`: kernel caches of file names and inodes
     (dentries, inodes), reclaimable on demand -- the third part of the header
     `avail` breakdown, alongside `free` and `cache`."""
+    zswap_enabled: bool = False
+    """`/sys/module/zswap/parameters/enabled` is `Y` and `/proc/meminfo` has
+    the `Zswap`/`Zswapped` fields (a missing file or missing fields both mean
+    "off": no knob, or no support to turn on). Gates the header's whole zswap
+    bracket and the per-app ZSWAP column (SPEC.md "Main view")."""
+    zswap_pool_bytes: int | None = None
+    """`/proc/meminfo` `Zswap`: RAM the compressed pool itself costs. `None`
+    whenever `zswap_enabled` is `False`."""
+    zswapped_bytes: int | None = None
+    """`/proc/meminfo` `Zswapped`: swapped data kept compressed in the pool,
+    uncompressed size -- already part of `SWAP` used. `None` whenever
+    `zswap_enabled` is `False`."""
+    zswap_writeback_bytes: int | None = None
+    """`/proc/vmstat` `zswpwb` (pages written back from the pool to disk
+    swap) times the page size, cumulative since boot. `None` when the kernel
+    has no `zswpwb` counter at all. A single snapshot has no rate of its own;
+    the live view turns two ticks of this into the `wb` MiB/s token, and an
+    agent can do the same by diffing two snapshots."""
 
 
 @dataclass(frozen=True)
@@ -86,6 +106,13 @@ class UnitStats:
     """The app's charged kernel memory (page tables, slab, stacks), already
     included in `ram`. Carried separately so the process view can show it as
     its own row (SPEC.md "Definitions": RAM = anon + shmem + kernel)."""
+    zswapped: int = 0
+    """`memory.stat` `zswapped`: this unit's swapped data held compressed in
+    the pool, already included in `swap` -- not extra memory (SPEC.md
+    "Definitions"). The pool's own RAM cost (`memory.stat` `zswap`) already
+    sits inside this unit's `kernel` on kernels that report it there
+    (confirmed by live measurement), so it is already inside `ram` too -- no
+    separate per-app figure is needed or shown here."""
 
 
 @dataclass(frozen=True)
@@ -112,6 +139,9 @@ class AppStats:
     unit_paths: tuple[Path, ...]
     kernel: int = 0
     scope: str = "user"
+    zswapped: int = 0
+    """Sum of the merged units' `zswapped` (SPEC.md "Definitions"), already
+    included in `swap`."""
 
 
 @dataclass(frozen=True)
@@ -157,6 +187,12 @@ def read_system(root: Path, uid: int) -> SystemStats:
     system_stats = _read_unit_stats(system_slice, count_procs=False)
     shmem = meminfo.get("Shmem", 0)
     cached = meminfo.get("Cached", 0)
+    zswap_enabled = (
+        _read_zswap_enabled(root / "sys" / "module" / "zswap" / "parameters" / "enabled")
+        and "Zswap" in meminfo
+        and "Zswapped" in meminfo
+    )
+    zswpwb = _read_vmstat_zswpwb(root / "proc" / "vmstat")
     return SystemStats(
         mem_total=meminfo.get("MemTotal", 0),
         mem_available=meminfo.get("MemAvailable", 0),
@@ -173,6 +209,10 @@ def read_system(root: Path, uid: int) -> SystemStats:
         mem_shared=shmem,
         mem_cache=max(cached - shmem, 0),
         mem_slab=meminfo.get("SReclaimable", 0),
+        zswap_enabled=zswap_enabled,
+        zswap_pool_bytes=meminfo.get("Zswap") if zswap_enabled else None,
+        zswapped_bytes=meminfo.get("Zswapped") if zswap_enabled else None,
+        zswap_writeback_bytes=(zswpwb * os.sysconf("SC_PAGE_SIZE") if zswpwb is not None else None),
     )
 
 
@@ -226,6 +266,31 @@ def _read_pressure(
     some = values.get("some", {})
     full = values.get("full", {})
     return some.get("avg10"), some.get("avg60"), full.get("avg10"), full.get("avg60")
+
+
+def _read_zswap_enabled(path: Path) -> bool:
+    """`Y`/`N` from `/sys/module/zswap/parameters/enabled`; a missing file
+    (no zswap module, or an ancient kernel) reads as `N` (SPEC.md "Data
+    sources")."""
+    try:
+        return path.read_text().strip() == "Y"
+    except FileNotFoundError:
+        return False
+
+
+def _read_vmstat_zswpwb(path: Path) -> int | None:
+    """The `zswpwb` counter from `/proc/vmstat`: pages written back from the
+    zswap pool to disk swap, cumulative since boot. `None` when the file or
+    the line is missing (no zswap support)."""
+    try:
+        content = path.read_text()
+    except FileNotFoundError:
+        return None
+    for line in content.splitlines():
+        key, _, value = line.partition(" ")
+        if key == "zswpwb" and value.strip().isdigit():
+            return int(value.strip())
+    return None
 
 
 # --- finding units ----------------------------------------------------------
@@ -345,7 +410,10 @@ def _read_unit_stats(unit_dir: str, *, count_procs: bool = True) -> UnitStats | 
     ram = anon + shmem + kernel
     cache = file_ - shmem
     total = swap + ram
-    return UnitStats(ram=ram, cache=cache, swap=swap, total=total, procs=procs, kernel=kernel)
+    zswapped = stat.get("zswapped", 0)  # absent on a kernel/cgroup without zswap accounting
+    return UnitStats(
+        ram=ram, cache=cache, swap=swap, total=total, procs=procs, kernel=kernel, zswapped=zswapped
+    )
 
 
 def _read_small_file(path: str) -> str:
@@ -481,6 +549,7 @@ def group_apps(units: Iterable[Unit]) -> list[AppStats]:
                 total=sum(u.stats.total for u in unit_list),
                 procs=sum(u.stats.procs for u in unit_list),
                 kernel=sum(u.stats.kernel for u in unit_list),
+                zswapped=sum(u.stats.zswapped for u in unit_list),
                 unit_paths=tuple(u.path for u in unit_list),
             )
         )

@@ -93,6 +93,10 @@ def _system_dict(stats: SystemStats) -> dict[str, Any]:
         "system_services_ram_bytes": stats.system_ram,
         "system_services_swap_bytes": stats.system_swap,
         "elsewhere_bytes": stats.elsewhere,
+        "zswap_enabled": stats.zswap_enabled,
+        "zswap_pool_bytes": stats.zswap_pool_bytes,
+        "zswapped_bytes": stats.zswapped_bytes,
+        "zswap_writeback_bytes": stats.zswap_writeback_bytes,
     }
 
 
@@ -104,6 +108,7 @@ def _app_item(app: AppStats) -> dict[str, Any]:
         "swap_bytes": app.swap,
         "total_bytes": app.total,
         "cache_bytes": app.cache,
+        "zswapped_bytes": app.zswapped,
         "procs": app.procs,
         "units": len(app.unit_paths),
     }
@@ -189,6 +194,7 @@ def _build_app_stats(name: str, scope: str, unit_paths: list[Path]) -> AppStats 
         total=sum(s.total for s in unit_stats),
         procs=sum(s.procs for s in unit_stats),
         kernel=sum(s.kernel for s in unit_stats),
+        zswapped=sum(s.zswapped for s in unit_stats),
         unit_paths=tuple(unit_paths),
     )
 
@@ -234,6 +240,7 @@ def app_document(
         "swap_bytes": app.swap,
         "total_bytes": app.total,
         "cache_bytes": app.cache,
+        "zswapped_bytes": app.zswapped,
         "kernel_bytes": app.kernel,
         "procs": app.procs,
         "units": [path.name for path in unit_paths],

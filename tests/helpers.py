@@ -10,10 +10,18 @@ from pathlib import Path
 
 
 def write_memory_stat(
-    unit_dir: Path, *, anon: int = 0, shmem: int = 0, kernel: int = 0, file: int = 0
+    unit_dir: Path,
+    *,
+    anon: int = 0,
+    shmem: int = 0,
+    kernel: int = 0,
+    file: int = 0,
+    zswapped: int | None = None,
 ) -> None:
     unit_dir.mkdir(parents=True, exist_ok=True)
     lines = [f"anon {anon}", f"shmem {shmem}", f"kernel {kernel}", f"file {file}"]
+    if zswapped is not None:
+        lines.append(f"zswapped {zswapped}")
     (unit_dir / "memory.stat").write_text("\n".join(lines) + "\n")
 
 
@@ -35,11 +43,14 @@ def make_unit(
     shmem: int = 0,
     kernel: int = 0,
     file: int = 0,
+    zswapped: int | None = None,
     swap: int | None = 0,
     pids: list[int] | None = None,
 ) -> Path:
     """Create a full unit dir: memory.stat, memory.swap.current, cgroup.procs."""
-    write_memory_stat(unit_dir, anon=anon, shmem=shmem, kernel=kernel, file=file)
+    # zswapped pages are a subset of the unit's swap on a real kernel.
+    assert zswapped is None or zswapped <= (swap or 0), "fixture: zswapped > swap"
+    write_memory_stat(unit_dir, anon=anon, shmem=shmem, kernel=kernel, file=file, zswapped=zswapped)
     if swap is not None:
         write_swap_current(unit_dir, swap)
     write_cgroup_procs(unit_dir, pids or [])
@@ -103,6 +114,8 @@ def write_meminfo(  # noqa: PLR0913 -- one keyword-only field per /proc/meminfo 
     cached_kb: int = 0,
     shmem_kb: int = 0,
     sreclaimable_kb: int = 0,
+    zswap_kb: int | None = None,
+    zswapped_kb: int | None = None,
 ) -> None:
     proc_dir = root / "proc"
     proc_dir.mkdir(parents=True, exist_ok=True)
@@ -116,7 +129,36 @@ def write_meminfo(  # noqa: PLR0913 -- one keyword-only field per /proc/meminfo 
         f"Shmem:          {shmem_kb} kB",
         f"SReclaimable:   {sreclaimable_kb} kB",
     ]
+    # Omitted by default: a missing pair means "no zswap support" (SPEC.md
+    # "Data sources"), tested separately from the enabled/disabled knob below.
+    if zswap_kb is not None:
+        lines.append(f"Zswap:          {zswap_kb} kB")
+    if zswapped_kb is not None:
+        # Zswapped is part of swap used on a real kernel.
+        assert zswapped_kb <= swap_total_kb - swap_free_kb, "fixture: Zswapped > swap used"
+        lines.append(f"Zswapped:       {zswapped_kb} kB")
     (proc_dir / "meminfo").write_text("\n".join(lines) + "\n")
+
+
+def write_zswap_enabled(root: Path, enabled: bool) -> None:
+    """`/sys/module/zswap/parameters/enabled`: `Y` or `N`. Not writing it at
+    all (the default fixture state) reads as disabled, same as a real
+    machine without the zswap module (SPEC.md "Data sources")."""
+    param_dir = root / "sys" / "module" / "zswap" / "parameters"
+    param_dir.mkdir(parents=True, exist_ok=True)
+    (param_dir / "enabled").write_text(("Y" if enabled else "N") + "\n")
+
+
+def write_vmstat(root: Path, *, zswpwb: int | None = None) -> None:
+    """`/proc/vmstat`, with just the `zswpwb` line this suite cares about.
+    `zswpwb=None` omits the line, same as a kernel with no zswap writeback
+    counter (SPEC.md "Data sources")."""
+    proc_dir = root / "proc"
+    proc_dir.mkdir(parents=True, exist_ok=True)
+    lines = ["nr_free_pages 1000"]  # a harmless unrelated line, for realism
+    if zswpwb is not None:
+        lines.append(f"zswpwb {zswpwb}")
+    (proc_dir / "vmstat").write_text("\n".join(lines) + "\n")
 
 
 def write_pressure(

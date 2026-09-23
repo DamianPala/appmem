@@ -51,6 +51,28 @@ def test_processes_and_commands_sorted_and_cut_independently(tmp_path: Path) -> 
     assert node_command["ram_bytes"] == 5 * 1024 * 1024
 
 
+def test_app_document_sums_zswapped_bytes_across_units(tmp_path: Path) -> None:
+    user_root = _base_tree(tmp_path)
+    make_unit(
+        user_root / "app.slice" / "app-ghostty.service",
+        anon=10 * _MIB,
+        swap=5 * _MIB,
+        zswapped=2 * _MIB,
+        pids=[],
+    )
+    make_unit(
+        user_root / "app.slice" / "app-ghostty@1.service",
+        anon=1 * _MIB,
+        swap=1 * _MIB,
+        zswapped=1 * _MIB,
+        pids=[],
+    )
+
+    document, _, _ = app_document(tmp_path, 1000, "ghostty", "user", limit=100, now=_NOW)
+
+    assert document["zswapped_bytes"] == 3 * _MIB
+
+
 def test_kernel_and_unattributed_math_with_clamp(tmp_path: Path) -> None:
     user_root = _base_tree(tmp_path)
     unit = user_root / "app.slice" / "app-ghostty.service"

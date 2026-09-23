@@ -27,6 +27,8 @@ from helpers import (
     write_pressure,
     write_proc,
     write_uptime,
+    write_vmstat,
+    write_zswap_enabled,
 )
 
 _MIB = 1024 * 1024
@@ -78,15 +80,28 @@ def _tree(root: Path, *, with_pressure: bool, with_root_stat: bool) -> None:
     user_root = user_service_root(root, uid=1000)
     write_memory_stat(user_root, anon=1)
     write_meminfo(
-        root, mem_total_kb=32 * 1024, mem_available_kb=16 * 1024, swap_total_kb=8, swap_free_kb=4
+        root,
+        mem_total_kb=32 * 1024,
+        mem_available_kb=16 * 1024,
+        swap_total_kb=8 * 1024,
+        swap_free_kb=4 * 1024,
+        # `with_root_stat` also exercises the non-null zswap fields, so the
+        # schema check covers both shapes (SPEC.md "Main view"). zswapped
+        # stays <= swap used (4096 kB) -- the pool is always a subset of swap.
+        zswap_kb=1024 if with_root_stat else None,
+        zswapped_kb=2048 if with_root_stat else None,
     )
     write_uptime(root, 1000)
     if with_pressure:
         write_pressure(root, some_avg10=2.5, full_avg10=0.0, some_avg60=1.25)
     if with_root_stat:
         write_memory_stat(root / "sys" / "fs" / "cgroup", anon=64 * _MIB)
+        write_zswap_enabled(root, enabled=True)
+        write_vmstat(root, zswpwb=7)
     unit = user_root / "app.slice" / "app-ghostty.service"
-    make_unit(unit, anon=8 * _MIB, kernel=_MIB, file=2 * _MIB, swap=3 * _MIB, pids=[10, 11])
+    make_unit(
+        unit, anon=8 * _MIB, kernel=_MIB, file=2 * _MIB, swap=3 * _MIB, zswapped=_MIB, pids=[10, 11]
+    )
     write_proc(root, 10, cmdline="ghostty", comm="ghostty", rss_anon_kb=2048, vm_swap_kb=512)
     write_proc(root, 11, cmdline="node", comm="node", rss_anon_kb=1024, vm_swap_kb=0)
     make_unit(root / "sys" / "fs" / "cgroup" / "system.slice" / "cups.service", anon=4 * _MIB)

@@ -21,3 +21,25 @@ def test_body_mentions_theme_key_and_the_config_file() -> None:
 
     assert "T (or Ctrl+P)" in body
     assert "config.toml" in body
+
+
+# --- zswap definitions, only when this session has zswap (SPEC.md "Main view") --
+
+
+def test_body_omits_zswap_definitions_by_default() -> None:
+    body = _build_body(200)
+
+    # The SWAP definition already mentions zswap in passing (pre-existing);
+    # what must be absent is the ZSWAP column and the header-bracket note.
+    assert "ZSWAP" not in body
+    assert "zswap in Y" not in body
+    assert "overflowing to the disk swap" not in body
+
+
+def test_body_includes_zswap_definitions_when_enabled() -> None:
+    body = _build_body(200, zswap_enabled=True)
+
+    assert "ZSWAP" in body
+    assert "not extra memory" in body
+    assert "zswap in Y" in body
+    assert "overflowing to the disk swap" in body

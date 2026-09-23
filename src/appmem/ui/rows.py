@@ -12,7 +12,9 @@ from typing import Literal
 
 from appmem.collect import AppStats
 
-SortKey = Literal["app", "swap", "ram", "cache", "total", "delta_swap", "delta_ram", "procs"]
+SortKey = Literal[
+    "app", "swap", "ram", "cache", "zswap", "total", "delta_swap", "delta_ram", "procs"
+]
 """A `Literal`, not a plain `str`: pyright strict then catches a typo'd column
 name at the call site instead of it surfacing as a runtime `KeyError` in
 `_DEFAULT_REVERSE`. Still doubles as a `DataTable` column key, which only
@@ -39,6 +41,7 @@ class Row:
     swap: int
     ram: int
     cache: int
+    zswap: int
     total: int
     delta_swap: int
     delta_ram: int
@@ -101,6 +104,7 @@ def build_rows(apps: Iterable[AppStats], baseline: Mapping[Identity, AppStats]) 
                 swap=app.swap,
                 ram=app.ram,
                 cache=app.cache,
+                zswap=app.zswapped,
                 total=app.total,
                 delta_swap=app.swap - base.swap,
                 delta_ram=app.ram - base.ram,
@@ -115,6 +119,7 @@ _SORT_GETTERS: dict[SortKey, Callable[[Row], int | str]] = {
     "swap": lambda row: row.swap,
     "ram": lambda row: row.ram,
     "cache": lambda row: row.cache,
+    "zswap": lambda row: row.zswap,
     "total": lambda row: row.total,
     "delta_swap": lambda row: row.delta_swap,
     "delta_ram": lambda row: row.delta_ram,
@@ -129,6 +134,7 @@ _DEFAULT_REVERSE: dict[SortKey, bool] = {
     "swap": True,
     "ram": True,
     "cache": True,
+    "zswap": True,
     "total": True,
     "delta_swap": True,
     "delta_ram": True,

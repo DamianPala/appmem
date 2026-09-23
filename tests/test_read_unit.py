@@ -31,6 +31,26 @@ def test_ram_cache_swap_total_math(tmp_path: Path) -> None:
     assert stats.kernel == 5
 
 
+def test_zswapped_read_from_memory_stat(tmp_path: Path) -> None:
+    unit_dir = make_unit(tmp_path / "unit.service", anon=100, swap=30, zswapped=12)
+
+    stats = read_unit(unit_dir)
+
+    assert stats is not None
+    assert stats.zswapped == 12
+
+
+def test_zswapped_defaults_to_zero_when_the_field_is_absent(tmp_path: Path) -> None:
+    # A kernel/cgroup without zswap accounting: no `zswapped` line at all,
+    # not an error (SPEC.md "Data sources").
+    unit_dir = make_unit(tmp_path / "unit.service", anon=100, swap=30)
+
+    stats = read_unit(unit_dir)
+
+    assert stats is not None
+    assert stats.zswapped == 0
+
+
 def test_kernel_missing_falls_back_to_slab_stack_pagetables_percpu(tmp_path: Path) -> None:
     # Linux < 5.18 has no `kernel` line in memory.stat.
     unit_dir = tmp_path / "unit.service"

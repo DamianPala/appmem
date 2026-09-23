@@ -30,6 +30,10 @@ _SNAPSHOT_DOCUMENT: dict[str, Any] = {
         "system_services_ram_bytes": 300 * 1024 * 1024,
         "system_services_swap_bytes": 86 * 1024 * 1024,
         "elsewhere_bytes": 213200896,
+        "zswap_enabled": False,
+        "zswap_pool_bytes": None,
+        "zswapped_bytes": None,
+        "zswap_writeback_bytes": None,
     },
     "pressure": {
         "level": "none",
@@ -136,6 +140,30 @@ def test_snapshot_text_header_line_shows_shared_and_avail_breakdown() -> None:
     assert "cache" in header_line
     assert header_line.index("RAM") < header_line.index("shared")
     assert header_line.index("avail") < header_line.index("free")
+
+
+def test_snapshot_text_header_shows_zswap_bracket_when_enabled() -> None:
+    document = {
+        **_SNAPSHOT_DOCUMENT,
+        "system": {
+            **_SNAPSHOT_DOCUMENT["system"],
+            "zswap_enabled": True,
+            "zswap_pool_bytes": int(1.9 * 1024**3),
+            "zswapped_bytes": int(6.7 * 1024**3),
+        },
+    }
+    text = render_snapshot_text(document, total_apps=41)
+    header_line = text.splitlines()[0]
+
+    assert "6.7 GiB zswap in 1.9 GiB" in header_line
+    assert "wb" not in header_line  # a one-shot snapshot never has a rate
+
+
+def test_snapshot_text_header_omits_zswap_bracket_when_disabled() -> None:
+    text = render_snapshot_text(_SNAPSHOT_DOCUMENT, total_apps=41)
+    header_line = text.splitlines()[0]
+
+    assert "zswap" not in header_line
 
 
 def test_snapshot_table_column_order_is_app_ram_swap_total() -> None:

@@ -8,14 +8,25 @@ from datetime import datetime
 from rich.text import Text
 
 from appmem.collect import SystemStats
-from appmem.fmt import format_elapsed, format_pair, pressure_word, size
+from appmem.fmt import (
+    format_elapsed,
+    format_pair,
+    format_rate,
+    format_zswap_part,
+    pressure_word,
+    size,
+)
 
 _ELSEWHERE_THRESHOLD = 1024 * 1024
 
 # Main header drop order when the line doesn't fit. `shared` goes last of the
 # droppable parts (RAM/Swap/pressure never drop), so it stays visible at
-# typical widths even once the bare `avail` figure is gone.
-_DROP_STEPS = ("elsewhere", "system", "avail_breakdown", "avail", "shared")
+# typical widths even once the bare `avail` figure is gone. `zswap` (the "X
+# zswap in Y" bracket) outlives avail's breakdown: it is a separate fact, while
+# the breakdown only explains a figure that stays on screen, so the bracket
+# fits at 140-160 columns. The `wb` writeback token is never in this list --
+# it's short and only shows up when something is actually wrong.
+_DROP_STEPS = ("elsewhere", "system", "avail_breakdown", "zswap", "avail", "shared")
 
 
 @dataclass(frozen=True)
@@ -63,14 +74,46 @@ def _swap_style(used: int, total: int, colors: ThemeColors) -> str | None:
     return None
 
 
-def _swap_part(stats: SystemStats, colors: ThemeColors) -> Text:
+def _zswap_bracket_parts(
+    stats: SystemStats, colors: ThemeColors, *, show_zswap: bool, writeback_rate: int | None
+) -> list[Text]:
+    """The Swap part's trailing `(X zswap in Y, wb N MiB/s)` bracket, both
+    halves gated on `stats.zswap_enabled` -- when zswap is off or
+    unsupported, neither the pool figures nor a stale writeback rate has
+    anything to say (SPEC.md "Main view"). `show_zswap` is the header's own
+    width-drop decision for the "X zswap in Y" half only; `wb` never drops
+    for width (SPEC.md "Main view": "short... only appears when something is
+    wrong")."""
+    if not stats.zswap_enabled:
+        return []
+    parts: list[Text] = []
+    if show_zswap and stats.zswapped_bytes is not None and stats.zswap_pool_bytes is not None:
+        parts.append(Text(format_zswap_part(stats.zswapped_bytes, stats.zswap_pool_bytes)))
+    if writeback_rate is not None and writeback_rate > 0:
+        parts.append(Text(f"wb {format_rate(writeback_rate)}", style=colors.warning))
+    return parts
+
+
+def _swap_part(
+    stats: SystemStats,
+    colors: ThemeColors,
+    *,
+    show_zswap: bool = True,
+    writeback_rate: int | None = None,
+) -> Text:
     if stats.swap_total == 0:
         return Text("Swap off")
     used = stats.swap_total - stats.swap_free
     pair = format_pair(used, stats.swap_total)
     # Swap used/total coloured theme warning > 50 %, theme error > 80 %.
     style = _swap_style(used, stats.swap_total, colors)
-    return Text("Swap ") + Text(pair, style=style or "")
+    text = Text("Swap ") + Text(pair, style=style or "")
+    bracket_parts = _zswap_bracket_parts(
+        stats, colors, show_zswap=show_zswap, writeback_rate=writeback_rate
+    )
+    if bracket_parts:
+        text = text + Text(" (") + Text(", ").join(bracket_parts) + Text(")")
+    return text
 
 
 def _ram_part(stats: SystemStats, *, show_shared: bool) -> Text:
@@ -91,11 +134,15 @@ def _avail_part(stats: SystemStats, *, show_breakdown: bool) -> Text:
     return text
 
 
-def _assemble_line1(stats: SystemStats, disabled: frozenset[str], colors: ThemeColors) -> Text:
+def _assemble_line1(
+    stats: SystemStats, disabled: frozenset[str], colors: ThemeColors, writeback_rate: int | None
+) -> Text:
     parts: list[Text] = [_ram_part(stats, show_shared="shared" not in disabled)]
     if "avail" not in disabled:
         parts.append(_avail_part(stats, show_breakdown="avail_breakdown" not in disabled))
-    parts.append(_swap_part(stats, colors))
+    parts.append(
+        _swap_part(stats, colors, show_zswap="zswap" not in disabled, writeback_rate=writeback_rate)
+    )
     pressure_part = _pressure_part(stats, colors)
     if pressure_part is not None:
         parts.append(pressure_part)
@@ -108,10 +155,13 @@ def _assemble_line1(stats: SystemStats, disabled: frozenset[str], colors: ThemeC
     return Text("  ").join(parts)
 
 
-def format_line1(stats: SystemStats, width: int, colors: ThemeColors) -> Text:
+def format_line1(
+    stats: SystemStats, width: int, colors: ThemeColors, writeback_rate: int | None = None
+) -> Text:
     """RAM (used/total, with a shared-memory breakdown), avail (with a
-    free/cache/slab breakdown), swap, pressure (when readable), the hidden
-    system.slice total and memory charged outside the walked trees.
+    free/cache/slab breakdown), swap (with zswap, when enabled), pressure
+    (when readable), the hidden system.slice total and memory charged
+    outside the walked trees.
 
     Never wraps: built from parts with a priority, dropping the lowest below
     `width` and recomputed on every resize (SPEC.md "Main view"). Parts are
@@ -127,10 +177,28 @@ def format_line1(stats: SystemStats, width: int, colors: ThemeColors) -> Text:
     three parts don't sum exactly to `avail` (a kernel estimate that also
     reserves some headroom), only come close to it.
     Below `width`, parts drop in this order: `elsewhere`, `system`, avail's
-    own breakdown, `avail` itself, then RAM's `shared` last (`_DROP_STEPS`)
-    -- `shared` is the stickiest droppable part, so it
-    stays visible at typical widths even once `avail` is gone entirely. RAM,
-    Swap and pressure never drop.
+    own breakdown, the zswap `(X zswap in Y)` bracket, `avail` itself,
+    then RAM's `shared` last (`_DROP_STEPS`) -- `shared` is the stickiest
+    droppable part, so it stays visible at typical widths even once `avail`
+    is gone entirely. RAM, Swap and pressure never drop.
+
+    Dropping only ever removes whole parts, so it can overshoot: a part
+    dropped early can free more room than it needed once a later, bigger
+    part also drops. After the drop loop settles, a refill pass tries to put
+    dropped parts back, most important first (`_DROP_STEPS` in reverse),
+    keeping each one that still fits. This can only ever re-show parts the
+    plain drop loop would have hidden; it never changes which width first
+    needs a drop at all.
+
+    When `stats.zswap_enabled`, the Swap part grows a trailing bracket:
+    `(X zswap in Y)` (`format_zswap_part`), `X` = data held compressed in
+    the pool (already part of Swap used), `Y` = the RAM the pool costs
+    (already part of RAM used). While `writeback_rate` (bytes/sec, computed
+    tick to tick by the caller -- a one-shot read has no rate of its own) is
+    positive, a `wb N MiB/s` token joins it, styled in the theme's warning
+    colour: the pool is overflowing to the slower disk swap. `wb` never
+    drops for width and disappears on its own once the rate goes back to 0;
+    when zswap is disabled or unsupported, neither ever appears.
 
     The system.slice total is shown regardless of whether system rows are
     currently displayed (`x`): it is a summary hint, not a duplicate of the
@@ -148,13 +216,23 @@ def format_line1(stats: SystemStats, width: int, colors: ThemeColors) -> Text:
     `App.current_theme` once per render.
     """
     disabled: set[str] = set()
-    text = _assemble_line1(stats, frozenset(disabled), colors)
+    text = _assemble_line1(stats, frozenset(disabled), colors, writeback_rate)
     while text.cell_len > width:
         remaining = [step for step in _DROP_STEPS if step not in disabled]
         if not remaining:
             break
         disabled.add(remaining[0])
-        text = _assemble_line1(stats, frozenset(disabled), colors)
+        text = _assemble_line1(stats, frozenset(disabled), colors, writeback_rate)
+    # Refill: dropping whole parts can overshoot (a big later drop frees more
+    # room than a small earlier one needed). Offer dropped parts back, most
+    # important first, and keep whichever still fit.
+    for step in reversed(_DROP_STEPS):
+        if step not in disabled:
+            continue
+        candidate = _assemble_line1(stats, frozenset(disabled - {step}), colors, writeback_rate)
+        if candidate.cell_len <= width:
+            disabled.discard(step)
+            text = candidate
     # Belt and braces: even the never-dropped parts could still overflow an
     # extreme width. Never wrap; crop with an ellipsis instead (SPEC.md "Main
     # view": the line must never wrap).
