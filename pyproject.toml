@@ -47,7 +47,7 @@ venvPath = "."
 venv = ".venv"
 
 [tool.pytest.ini_options]
-addopts = "--strict-markers --strict-config -q"
+addopts = "--strict-markers --strict-config"
 testpaths = ["tests"]
 filterwarnings = ["error"]
 asyncio_mode = "strict"
