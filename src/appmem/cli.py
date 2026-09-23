@@ -30,6 +30,17 @@ from appmem.ui.app import AppMemApp
 
 MIN_INTERVAL = 0.2
 
+ERROR_KINDS: tuple[str, ...] = (
+    "invalid_input",
+    "terminal_required",
+    "cgroup_unavailable",
+    "not_found",
+    "interrupted",
+)
+"""Every `kind` an error object can carry. The single source for both the
+runtime check below and `tests/test_docs.py`, so a kind renamed here without
+updating README.md or SKILL.md fails the build instead of drifting quietly."""
+
 _HELP_TEXT = """\
 appmem: live terminal view of RAM and swap usage per application, not per process.
 
@@ -51,7 +62,7 @@ Flags:
 Commands:
   snapshot   One sample of the machine and every app
   app NAME   One app's units, processes, commands and remainder
-  schema     Describe the commands, flags, output shapes and error kinds as JSON
+  schema     Describe the commands, flags, output shapes and exit codes as JSON
 
 Run `appmem schema` for the full machine-readable interface, or
 `appmem snapshot --help` (any command works the same way) for that command's own flags.
@@ -61,7 +72,8 @@ Keys:
   s / r / t / d        sort by SWAP / RAM / TOTAL / ΔSWAP (repeat to reverse);
                        other columns sort by click
   up/down PgUp PgDn    move
-  Enter                open the process view for the selected app
+  Enter                open the process view for the selected app;
+                       grouped: the processes of the selected command
   g                    process view: toggle grouping by command
   Esc                  back to the main view
   c                    toggle the CACHE column
@@ -117,7 +129,7 @@ Text on a terminal, JSON otherwise. `appmem schema app` describes the JSON shape
 """
 
 _SCHEMA_HELP_TEXT = """\
-appmem schema: describe the commands, flags, output shapes and error kinds as JSON.
+appmem schema: describe the commands, flags, output shapes and exit codes as JSON.
 
 Usage:
   appmem schema [COMMAND]
@@ -315,6 +327,7 @@ def _print_error_json(
     hint: str | None = None,
     next_argv: list[str] | None = None,
 ) -> None:
+    assert kind in ERROR_KINDS, f"undeclared error kind: {kind!r}"
     print(f"appmem: {message}", file=sys.stderr)
     error: dict[str, object] = {"kind": kind, "message": message}
     if action is not None:
