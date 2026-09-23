@@ -29,7 +29,7 @@ You use its non-interactive commands; the live TUI is for the human.
 2. Decide whether memory is the problem right now (next section) before naming a culprit.
 3. Drill into the top 1-3 apps: `appmem app NAME --json`, adding `--scope system` when the item's `scope` is `system`.
    The snapshot's `next` field already holds the command for the biggest one.
-   Read `commands.items` first, then `processes.items`.
+   Read `commands.items` first (the app's processes already summed per command name, like the TUI's `g`), then `processes.items`.
    To act on one command, find its PIDs and units in `processes.items` by `name`.
    If `processes.has_more` is true, rerun with `--limit` at least the app's `procs`.
 4. Growth needs two samples: run `snapshot` again a few minutes later and compare the same apps.
@@ -57,6 +57,8 @@ You use its non-interactive commands; the live TUI is for the human.
   Compare within appmem, not across tools.
 - A process with large `swap_bytes`, small `ram_bytes` and an `age_seconds` of days is an idle sleeper that was paged out.
   Harmless under `none`; the first thing to free under `high`.
+- Swap always belongs to a live process or cgroup: the kernel frees it when the owner exits, so there is no swap "left over" from processes long gone.
+  Long uptime is not a reason to reboot; closing or restarting the holder frees the same memory.
 
 ## What to recommend
 
