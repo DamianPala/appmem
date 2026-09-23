@@ -103,9 +103,10 @@ ROOT_SYSTEM = Flag(
 ROOT_THEME = Flag(
     name="theme",
     description=(
-        "Open the live view with this Textual theme, overriding APPMEM_THEME and the "
-        "config file for this run only; never written back. Only the live view uses "
-        "it, a named command rejects it."
+        "Open the live view with this theme (terminal-dark/terminal-light use your "
+        "terminal's own colours, the rest are Textual's built-in themes), overriding "
+        "APPMEM_THEME and the config file for this run only; never written back. Only "
+        "the live view uses it, a named command rejects it."
     ),
     type="string",
     required=False,

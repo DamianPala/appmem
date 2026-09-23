@@ -1,100 +1,169 @@
-"""Theme picker (SPEC.md "Command line"): Textual 8.2.8's own `ThemeProvider`/
-`CommandPalette` (what `App.search_themes` pushes) always opens with the
-alphabetically first theme highlighted and gives no hint which theme is
-already running. `AppMemApp.search_themes` pushes `ThemePalette` instead,
-which starts the cursor on the current theme and marks it -- everything else
-(fuzzy search, the full theme list, apply-and-close on Enter, Esc cancels and
-writes nothing) is untouched, inherited straight from Textual's own classes.
+"""Theme panel (SPEC.md "Command line", "Main view"): `T` / `Ctrl+P` ->
+Theme opens `ThemePanel`, a small panel docked to the right, instead of
+Textual's own `CommandPalette`/`ThemeProvider` pair, which always opened
+full width (covering most of the app), started on the alphabetically first
+theme, and only applied a pick on Enter -- no way to see a theme before
+picking it.
 
-Two small subclasses cover it, the least invasive route available: Textual
-has no hook to seed the initial highlight or annotate a hit's display text,
-so `ThemePalette` overrides `CommandPalette._refresh_command_list` (the one
-place that sets the initial highlight) to move it, reading the option list
-back through `query_one`/`options` -- the same public API a caller outside
-Textual would use -- rather than trusting the private method's own
-parameters. `pyproject.toml` puts no upper bound on `textual`, so this is
-the one place in the app leaning on an internal: the override accepts any
-signature and forwards it to `super()` unchanged, and any shape it doesn't
-recognise leaves the default highlight (the first theme) instead of raising,
-so a future Textual rename or signature change degrades this one detail
-rather than crashing the app on `T`. `MarkedThemeProvider` wraps
-`ThemeProvider`'s own `discover`/`search` to prefix a mark, leaving
-`Hit.text` (used to match a hit back to its theme) exactly as Textual sets
-it.
+An own `ModalScreen` holding an `OptionList` covers it: no fuzzy search
+(~20 names fit without one, so arrows/PgUp/PgDn/Home/End are enough), no
+dimming (`background: transparent` overrides `ModalScreen`'s own 60% dim --
+the rest of the app stays visible behind the panel, since that's where the
+live preview shows), and every highlight change applies the theme to the
+app at once instead of waiting for Enter. This also removes the app's only
+dependency on a Textual internal: the previous version overrode the private
+`CommandPalette._refresh_command_list` to seed the initial highlight,
+which Textual's own `OptionList.highlighted` now does directly.
 """
 
 from __future__ import annotations
 
-from contextlib import suppress
-from typing import Any
+from typing import ClassVar
 
-from rich.text import Text
-from textual.command import Command, CommandList, CommandPalette, DiscoveryHit, Hit, Hits
-from textual.content import Content
-from textual.theme import ThemeProvider
-from textual.visual import VisualType
+from textual import events
+from textual.app import ComposeResult
+from textual.binding import Binding, BindingType
+from textual.containers import Vertical
+from textual.screen import ModalScreen
+from textual.widgets import OptionList, Static
+from textual.widgets.option_list import Option
+
+from appmem.theme import TERMINAL_THEME_NAMES, THEME_NAMES
 
 _CURRENT_MARK = "✓ "
 _NO_MARK = "  "
 """Same cell width as `_CURRENT_MARK`, so every row's theme name still lines
 up whether or not it's the current one."""
 
+_TITLE = "Theme"
+_TERMINAL_INFO = "your terminal's colours"
+_HINT_MOVE = "↑↓ preview"
+_HINT_KEYS = "enter keep  esc cancel"
+"""Two lines rather than one: joined, they are 35 cells and would crop at
+every panel width. Each fits the panel's ~24-cell text width on its own."""
 
-def _marked(display: VisualType, *, current: bool) -> Content:
-    # A search hit's display is `Content` carrying the fuzzy-match highlight
-    # as spans; going through `str()` would drop it.
-    mark = _CURRENT_MARK if current else _NO_MARK
-    if isinstance(display, Text):
-        return mark + Content.from_rich_text(display)
-    if isinstance(display, (str, Content)):
-        return mark + Content.from_markup(display)
-    return mark + Content(str(display))
+_SCROLLBAR_WIDTH = 2
 
-
-class MarkedThemeProvider(ThemeProvider):
-    """`ThemeProvider`, with a mark on the app's current theme."""
-
-    async def discover(self) -> Hits:
-        current = self.app.theme
-        async for hit in super().discover():
-            assert isinstance(hit, DiscoveryHit)
-            hit.display = _marked(hit.display, current=hit.text == current)
-            yield hit
-
-    async def search(self, query: str) -> Hits:
-        current = self.app.theme
-        async for hit in super().search(query):
-            assert isinstance(hit, Hit)
-            hit.match_display = _marked(hit.match_display, current=hit.text == current)
-            yield hit
+_PANEL_WIDTH = max(len(name) for name in THEME_NAMES) + len(_CURRENT_MARK) + 4 + _SCROLLBAR_WIDTH
+"""As narrow as the longest theme name, the mark, the option list's own
+`0 1` padding, its scrollbar and the panel's own `round` border allow
+(SPEC.md "Main view": the rest of the app stays visible, not just dimmed).
+The scrollbar counts too: on a terminal too short for the whole list it
+takes its cells from the names, and the longest one would wrap."""
 
 
-class ThemePalette(CommandPalette):
-    """`CommandPalette`, opening with the cursor already on the app's
-    current theme instead of always the first one alphabetically."""
+def _labelled(name: str, *, current: bool) -> str:
+    return (_CURRENT_MARK if current else _NO_MARK) + name
 
-    def _refresh_command_list(self, *args: Any, **kwargs: Any) -> None:
-        # `*args`/`**kwargs`, forwarded unchanged: whatever signature this
-        # private method has in the installed Textual, `super()` gets called
-        # with it exactly as Textual itself called us. See the module
-        # docstring for why.
-        super()._refresh_command_list(*args, **kwargs)  # pyright: ignore[reportPrivateUsage]
-        # Unrecognised shape: leave whatever Textual's own logic just highlighted.
-        with suppress(Exception):
-            self._highlight_current_theme()
 
-    def _highlight_current_theme(self) -> None:
-        # Reads the option list back through public API (`query_one`,
-        # `options`) instead of trusting this private method's own
-        # arguments, which Textual could rename or reshape independently.
-        command_list = self.query_one(CommandList)
-        options = list(command_list.options)
-        if not options or not isinstance(options[0], Command):
-            return
-        if not isinstance(options[0].hit, DiscoveryHit):
-            return  # a typed search, not the full list: leave the top match highlighted
-        current = self.app.theme  # pyright: ignore[reportUnknownMemberType]
-        for index, option in enumerate(options):
-            if isinstance(option, Command) and option.hit.text == current:
-                command_list.highlighted = index
-                return
+class ThemePanel(ModalScreen[None]):
+    """Right-docked, full-height, live-preview theme panel.
+
+    Every highlight change applies that theme to the app at once
+    (`AppMemApp.watch_theme` re-renders the themed screens on every
+    change); only Enter, or a click on an option, persists the pick, to
+    the config file when it differs from the file's own current value.
+    Esc, `T` pressed again, or a click outside the panel restores the
+    theme that was running when the panel opened and writes nothing.
+    """
+
+    DEFAULT_CSS = f"""
+    ThemePanel {{
+        background: transparent;
+    }}
+    ThemePanel > #panel {{
+        dock: right;
+        width: {_PANEL_WIDTH};
+        height: 100%;
+        border: round $primary;
+        background: $panel;
+    }}
+    ThemePanel #panel-title {{
+        height: 1;
+        padding: 0 1;
+        text-align: center;
+        text-style: bold;
+    }}
+    ThemePanel #theme-list {{
+        height: 1fr;
+        border: none;
+        scrollbar-size-vertical: {_SCROLLBAR_WIDTH};
+        background: transparent;
+    }}
+    ThemePanel .panel-line {{
+        height: 1;
+        padding: 0 1;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
+    }}
+    ThemePanel #panel-info {{
+        text-style: dim;
+    }}
+    """
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("escape", "cancel", "cancel", show=False),
+        # `T` while the panel is open does the same as Esc, rather than
+        # bubbling up to `AppMemApp`'s own binding and pushing a second
+        # panel on top of this one (SPEC.md "Command line").
+        Binding("T", "cancel", "cancel", show=False),
+    ]
+
+    def __init__(self, current_theme: str) -> None:
+        super().__init__()
+        self._original_theme = current_theme
+        """The theme running when the panel opened: restored on cancel, and
+        the baseline the cursor opens on and marks `✓`."""
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="panel"):
+            yield Static(_TITLE, id="panel-title")
+            yield OptionList(
+                *(
+                    Option(_labelled(name, current=name == self._original_theme), id=name)
+                    for name in THEME_NAMES
+                ),
+                id="theme-list",
+            )
+            yield Static("", id="panel-info", classes="panel-line")
+            yield Static(_HINT_MOVE, id="panel-hint-move", classes="panel-line")
+            yield Static(_HINT_KEYS, id="panel-hint-keys", classes="panel-line")
+
+    def on_mount(self) -> None:
+        option_list = self.query_one("#theme-list", OptionList)
+        option_list.highlighted = THEME_NAMES.index(self._original_theme)
+        option_list.focus()
+
+    def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        self._apply(event.option_id)
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        self._apply(event.option_id)
+        self.app.persist_theme(  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType]
+            event.option_id
+        )
+        self.dismiss()
+
+    def on_click(self, event: events.Click) -> None:
+        # Bubbles here from every descendant (`OptionList` included) since
+        # nothing below stops it; `event.widget` is the widget actually
+        # under the pointer, not whichever node is handling the bubble, so
+        # this still tells inside from outside correctly either way.
+        panel = self.query_one("#panel")
+        if event.widget is None or panel not in event.widget.ancestors_with_self:
+            self.action_cancel()
+
+    def action_cancel(self) -> None:
+        self.app.theme = self._original_theme  # pyright: ignore[reportUnknownMemberType]
+        self.dismiss()
+
+    def _apply(self, theme_name: str | None) -> None:
+        assert theme_name is not None  # every `Option` above is built with an `id`
+        self.app.theme = theme_name  # pyright: ignore[reportUnknownMemberType]
+        self._update_info_line(theme_name)
+
+    def _update_info_line(self, theme_name: str) -> None:
+        # Fixed height either way (`.panel-line` CSS above): blank rather
+        # than removed, so the hint lines below never move.
+        text = _TERMINAL_INFO if theme_name in TERMINAL_THEME_NAMES else ""
+        self.query_one("#panel-info", Static).update(text)

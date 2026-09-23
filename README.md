@@ -73,19 +73,20 @@ The `kernel` and `unattributed` rows at the bottom of the process view explain w
 | `Esc` | processes, help | back |
 | `c` / `x` / `b` | main | show page cache / show system services / reset the Δ baseline |
 | `w` | main | show/hide the ZSWAP column (shown by default where zswap is on) |
-| `T`, `Ctrl+P` | main, processes | change the theme (opens on the current theme, marked; `Enter`/`Esc` and remembering it work as Textual's own picker does) |
+| `T`, `Ctrl+P` | main, processes | change the theme: a right-docked panel with a live preview, opens on the current theme, marked (`↑`/`↓` preview, `Enter` keeps, `Esc` cancels) |
 | `?` | all | what the numbers mean |
 | `q`, `Ctrl+C` | all | quit (`q` in help closes help) |
 
-Options: `appmem -i SECONDS` sets the refresh interval (default 1, minimum 0.2), `appmem --system` starts with system services shown, `appmem --theme NAME` opens with one of Textual's built-in themes, `appmem --version` prints the version.
+Options: `appmem -i SECONDS` sets the refresh interval (default 1, minimum 0.2), `appmem --system` starts with system services shown, `appmem --theme NAME` opens with one of appmem's themes, `appmem --version` prints the version.
 
 ## Theme
 
-`T` (or `Ctrl+P` -> "Theme") opens the theme picker on the current theme, marked with `✓`: any of Textual's built-in themes, `Enter` to confirm, `Esc` to cancel without changing anything.
-Picking one saves it to `$XDG_CONFIG_HOME/appmem/config.toml` (default `~/.config/appmem/config.toml`), so it's back next time you start appmem.
-Only a pick that changes the theme is saved: confirming the theme you started with (from `--theme`, `APPMEM_THEME` or the default) saves nothing, so pick another one and back to save it.
+`T` (or `Ctrl+P` -> "Theme") opens a small panel docked to the right, on the current theme, marked with `✓`: any of Textual's built-in themes, plus `terminal-dark` and `terminal-light`, which use your terminal's own colours instead of one of appmem's built-in palettes (a dim `your terminal's colours` line marks them while highlighted).
+`↑`/`↓` (or `PgUp`/`PgDn`/`Home`/`End`) previews a theme on the running app right away; `Enter`, or a click on a theme, keeps it and closes the panel; `Esc`, `T` again, or a click outside the panel restores the theme that was running when it opened.
+Keeping a theme saves it to `$XDG_CONFIG_HOME/appmem/config.toml` (default `~/.config/appmem/config.toml`), so it's back next time you start appmem -- unless it's already the file's own value, which saves nothing.
 Startup order: `--theme NAME` on the command line, then the `APPMEM_THEME` environment variable, then that config file, then the `TEXTUAL_THEME` environment variable (Textual's own setting), then Textual's built-in default -- `--theme` and `APPMEM_THEME` never write the file.
 A broken or unreadable config file, or an unknown name in `APPMEM_THEME`/`TEXTUAL_THEME`, falls back to the next source and shows a notification instead of crashing.
+`ansi-dark`/`ansi-light`, Textual's own names for the same two themes, still work everywhere a theme name is read (`--theme`, `APPMEM_THEME`, `TEXTUAL_THEME`, the config file) -- they just don't appear in the panel or in any list of valid names, since `terminal-dark`/`terminal-light` say what they actually do.
 
 ## What the numbers mean
 

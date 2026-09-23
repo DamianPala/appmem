@@ -27,7 +27,14 @@ from typing import Any, NoReturn, Protocol
 from appmem import __version__, report, schema
 from appmem.collect import CgroupUnavailableError, find_units
 from appmem.render import render_app_text, render_snapshot_text
-from appmem.theme import APPMEM_THEME_ENV, TEXTUAL_THEME_ENV, config_path, resolve_theme
+from appmem.theme import (
+    APPMEM_THEME_ENV,
+    TEXTUAL_THEME_ENV,
+    THEME_NAMES,
+    canonical_theme_name,
+    config_path,
+    resolve_theme,
+)
 from appmem.ui.app import AppMemApp
 
 MIN_INTERVAL = 0.2
@@ -57,9 +64,10 @@ Usage:
 Flags:
   -i, --interval SECONDS   Refresh interval, a number >= 0.2 (default: 1); the live view only
   --system                 Start with system services shown (same as pressing x)
-  --theme NAME             One of Textual's built-in themes (appmem schema lists them);
-                           overrides APPMEM_THEME and the config file for this run, the live
-                           view only, never written back
+  --theme NAME             One of appmem's theme names (appmem schema lists them; terminal-dark
+                           and terminal-light use your terminal's own colours); overrides
+                           APPMEM_THEME and the config file for this run, the live view only,
+                           never written back
   --json                   Write JSON instead of text; the default when stdout isn't a terminal
   -h, --help               Show this help and exit
   -V, --version            Show the version and exit
@@ -212,6 +220,14 @@ def _interval(value: str) -> float:
     return parsed
 
 
+def _theme_name(value: str) -> str:
+    canonical = canonical_theme_name(value)
+    if canonical not in THEME_NAMES:
+        valid = ", ".join(THEME_NAMES)
+        raise argparse.ArgumentTypeError(f"invalid theme {value!r}: must be one of {valid}")
+    return canonical
+
+
 def _positive_int(value: str) -> int:
     try:
         parsed = int(value)
@@ -259,7 +275,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         *_option_strings(schema.ROOT_THEME),
-        choices=schema.ROOT_THEME.enum,
+        # Not `choices=`: that would list `ansi-dark`/`ansi-light` (still
+        # accepted, see `_theme_name`) in argparse's own usage/error text
+        # right alongside the honest names, or reject them outright if left
+        # out of `choices` -- `_theme_name` accepts both and only ever
+        # reports the canonical `THEME_NAMES` on a real miss.
+        type=_theme_name,
         default=None,  # None means "not given"; a named command rejects an explicit value
         metavar="NAME",
         help=schema.ROOT_THEME.description,

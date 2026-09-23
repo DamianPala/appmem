@@ -22,23 +22,21 @@ from rich.cells import cell_len
 from rich.text import Text
 from textual import events
 from textual.color import Color
-from textual.command import Command, CommandList
-from textual.content import Content
 from textual.coordinate import Coordinate
 from textual.pilot import Pilot
-from textual.theme import BUILTIN_THEMES
-from textual.widgets import DataTable, Static
+from textual.theme import BUILTIN_THEMES, Theme
+from textual.widgets import DataTable, OptionList, Static
 from textual.widgets.data_table import ColumnKey
 
 from appmem.collect import AppStats
 from appmem.fmt import format_pair
-from appmem.theme import THEME_NAMES, config_path
+from appmem.theme import TERMINAL_THEMES, THEME_NAMES, config_path, resolve_theme
 from appmem.ui.app import AppMemApp
 from appmem.ui.rows import row_key
 from appmem.ui.screens import main as main_screen
 from appmem.ui.screens.help import HelpScreen
 from appmem.ui.screens.main import MainScreen
-from appmem.ui.theme_picker import ThemePalette
+from appmem.ui.theme_picker import ThemePanel
 from helpers import (
     make_unit,
     user_service_root,
@@ -1917,8 +1915,248 @@ async def test_writeback_rate_reaches_the_header_in_the_running_theme_colour(
         assert dracula_warning in _style_at(header, "to disk ")
 
 
+def _panel(pilot: Pilot[None]) -> ThemePanel:
+    screen = pilot.app.screen
+    assert isinstance(screen, ThemePanel)
+    return screen
+
+
+def _theme_list(pilot: Pilot[None]) -> OptionList:
+    return _panel(pilot).query_one("#theme-list", OptionList)
+
+
+def _highlighted_theme_name(option_list: OptionList) -> str:
+    assert option_list.highlighted is not None
+    return THEME_NAMES[option_list.highlighted]
+
+
+async def _highlight(pilot: Pilot[None], theme_name: str) -> None:
+    """Move the panel's cursor straight to `theme_name` (like
+    `table.move_cursor(row=...)` elsewhere in this file) instead of
+    counting arrow presses -- the arrow/PgUp/PgDn/Home/End navigation
+    itself is `OptionList`'s own, not appmem's, so a handful of plain
+    `down` presses (below) already covers that appmem wires it up."""
+    _theme_list(pilot).highlighted = THEME_NAMES.index(theme_name)
+    await pilot.pause()
+
+
+def _marks(pilot: Pilot[None]) -> list[str | None]:
+    options = _theme_list(pilot).options
+    return [option.id for option in options if str(option.prompt).startswith("✓")]
+
+
 @pytest.mark.asyncio
-async def test_t_opens_the_picker_and_picking_a_theme_sets_and_writes_it(tmp_path: Path) -> None:
+async def test_t_opens_the_panel_on_the_current_theme_marked(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    app = AppMemApp(
+        root=root, uid=UID, interval=NO_AUTO_REFRESH_INTERVAL, include_system=False, theme="dracula"
+    )
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+
+        await pilot.press("T")
+        await pilot.pause()
+
+        option_list = _theme_list(pilot)
+        # Cursor opens on the current theme, marked -- exactly one mark.
+        assert _highlighted_theme_name(option_list) == "dracula"
+        assert _marks(pilot) == ["dracula"]
+
+
+@pytest.mark.asyncio
+async def test_ctrl_p_theme_opens_the_same_panel(tmp_path: Path) -> None:
+    # `T` and Ctrl+P -> Theme both call `App.search_themes` (SPEC.md
+    # "Command line"): this covers the second entry point.
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    app = AppMemApp(
+        root=root, uid=UID, interval=NO_AUTO_REFRESH_INTERVAL, include_system=False, theme="nord"
+    )
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        await pilot.press(*"Theme")
+        await pilot.pause()
+        await pilot.press("enter")  # select the "Theme" system command
+        await pilot.pause()
+
+        option_list = _theme_list(pilot)
+        assert _highlighted_theme_name(option_list) == "nord"
+        assert _marks(pilot) == ["nord"]
+
+
+@pytest.mark.asyncio
+async def test_ctrl_p_theme_while_the_panel_is_open_adds_no_second_panel(
+    tmp_path: Path,
+) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    app = AppMemApp(
+        root=root, uid=UID, interval=NO_AUTO_REFRESH_INTERVAL, include_system=False, theme="nord"
+    )
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        await pilot.press("T")
+        await pilot.pause()
+        await _highlight(pilot, "dracula")
+
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        await pilot.press(*"Theme")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert sum(isinstance(s, ThemePanel) for s in pilot.app.screen_stack) == 1
+        await pilot.press("escape")
+        await pilot.pause()
+        assert pilot.app.theme == "nord"  # the one panel still restores its opening theme
+        assert not any(isinstance(s, ThemePanel) for s in pilot.app.screen_stack)
+
+
+@pytest.mark.asyncio
+async def test_arrow_preview_changes_theme_and_header_colours_and_writes_nothing(
+    tmp_path: Path,
+) -> None:
+    # Swap 92 % used, above the header's 90 % threshold, so the Swap line's
+    # pair carries the theme's error colour.
+    write_memory_stat(user_service_root(tmp_path, UID))
+    write_meminfo(
+        tmp_path,
+        mem_total_kb=32_000_000,
+        mem_available_kb=11_000_000,
+        swap_total_kb=32_000_000,
+        swap_free_kb=2_560_000,
+    )
+    _app_unit(tmp_path, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    app = AppMemApp(
+        root=tmp_path,
+        uid=UID,
+        interval=NO_AUTO_REFRESH_INTERVAL,
+        include_system=False,
+        theme="dracula",
+    )
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        before = pilot.app.theme
+        main_screen = pilot.app.screen_stack[0]
+        assert isinstance(main_screen, MainScreen)
+        swap_total = 32_000_000 * 1024
+        swap_free = 2_560_000 * 1024
+        pair = format_pair(swap_total - swap_free, swap_total)
+        before_error = Color.parse(BUILTIN_THEMES[before].error or "").rich_color.name
+
+        await pilot.press("T")
+        await pilot.pause()
+        await pilot.press("down")
+        await pilot.pause()
+
+        after = pilot.app.theme
+        assert after != before  # a highlight change previews at once
+        assert not config_path().exists()
+
+        header = main_screen.query_one("#header2", Static).content
+        assert isinstance(header, Text)
+        after_error = Color.parse(BUILTIN_THEMES[after].error or "").rich_color.name
+        assert after_error != before_error
+        assert after_error in _style_at(header, pair)  # MainScreen's own colours follow too
+
+
+@pytest.mark.asyncio
+async def test_esc_restores_the_original_theme_and_writes_nothing(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        before = pilot.app.theme
+
+        await pilot.press("T")
+        await pilot.pause()
+        await _highlight(pilot, "dracula")  # previewed, never confirmed
+        assert pilot.app.theme == "dracula"
+
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert pilot.app.theme == before
+        assert not config_path().exists()
+        assert pilot.app.screen_stack == [pilot.app.screen]  # panel actually closed
+
+
+@pytest.mark.asyncio
+async def test_t_again_while_open_also_cancels(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        before = pilot.app.theme
+
+        await pilot.press("T")
+        await pilot.pause()
+        await _highlight(pilot, "dracula")
+
+        await pilot.press("T")  # `T` while open: same as Esc, not a second panel
+        await pilot.pause()
+
+        assert pilot.app.theme == before
+        assert not config_path().exists()
+        assert pilot.app.screen_stack == [pilot.app.screen]
+
+
+@pytest.mark.asyncio
+async def test_click_outside_the_panel_cancels(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        before = pilot.app.theme
+
+        await pilot.press("T")
+        await pilot.pause()
+        await _highlight(pilot, "dracula")
+
+        # The panel is docked right (see the geometry tests below); the
+        # top-left corner is always outside it.
+        await pilot.click(offset=(0, 0))
+        await pilot.pause()
+
+        assert pilot.app.theme == before
+        assert not config_path().exists()
+        assert pilot.app.screen_stack == [pilot.app.screen]
+
+
+@pytest.mark.asyncio
+async def test_click_inside_the_panel_but_off_the_list_keeps_it_open(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+
+        await pilot.press("T")
+        await pilot.pause()
+        await _highlight(pilot, "dracula")
+
+        await pilot.click("#panel-title")
+        await pilot.pause()
+
+        assert isinstance(pilot.app.screen, ThemePanel)
+        assert pilot.app.theme == "dracula"  # the preview stays
+        assert not config_path().exists()
+
+
+@pytest.mark.asyncio
+async def test_enter_writes_the_highlighted_theme(tmp_path: Path) -> None:
     root = _base_tree(tmp_path)
     _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
 
@@ -1929,57 +2167,102 @@ async def test_t_opens_the_picker_and_picking_a_theme_sets_and_writes_it(tmp_pat
 
         await pilot.press("T")
         await pilot.pause()
-        await pilot.press(*"dracula")
-        await pilot.pause()
+        await _highlight(pilot, "dracula")
         await pilot.press("enter")
         await pilot.pause()
 
         assert pilot.app.theme == "dracula"
         assert config_path().read_text() == 'theme = "dracula"\n'
-
-
-@pytest.mark.asyncio
-async def test_esc_in_the_picker_reverts_and_writes_nothing(tmp_path: Path) -> None:
-    root = _base_tree(tmp_path)
-    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
-
-    async with _app(root).run_test(size=(100, 30)) as pilot:
-        await pilot.pause()
-        before = pilot.app.theme
-
-        await pilot.press("T")
-        await pilot.pause()
-        await pilot.press(*"dracula")  # typed into the picker's filter, never confirmed
-        await pilot.pause()
-        await pilot.press("escape")
-        await pilot.pause()
-
-        assert pilot.app.theme == before
-        assert not config_path().exists()
-        assert pilot.app.screen_stack == [pilot.app.screen]  # picker actually closed
-
-
-@pytest.mark.asyncio
-async def test_browsing_the_picker_without_confirming_writes_nothing(tmp_path: Path) -> None:
-    root = _base_tree(tmp_path)
-    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
-
-    async with _app(root).run_test(size=(100, 30)) as pilot:
-        await pilot.pause()
-        before = pilot.app.theme
-
-        await pilot.press("T")
-        await pilot.pause()
-        await pilot.press("down")
-        await pilot.press("down")
-        await pilot.pause()
-
-        assert pilot.app.theme == before
-        assert not config_path().exists()
-
-        await pilot.press("escape")
-        await pilot.pause()
         assert pilot.app.screen_stack == [pilot.app.screen]
+
+
+@pytest.mark.asyncio
+async def test_click_on_an_option_confirms_it(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+
+        await pilot.press("T")
+        await pilot.pause()
+        option_list = _theme_list(pilot)
+        index = THEME_NAMES.index("dracula")
+        # `OptionList` has no public "region of option N", but every option
+        # is one line with no border above it, so option N sits N lines
+        # below the top of the scrolled content.
+        assert option_list.virtual_size.height == len(THEME_NAMES)
+        line = index - option_list.scroll_offset.y
+        await pilot.click(option_list, offset=(1, line))
+        await pilot.pause()
+
+        assert pilot.app.theme == "dracula"
+        assert config_path().read_text() == 'theme = "dracula"\n'
+        assert pilot.app.screen_stack == [pilot.app.screen]
+
+
+@pytest.mark.asyncio
+async def test_enter_on_the_files_own_value_writes_nothing(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+    config_path().parent.mkdir(parents=True)
+    config_path().write_text('theme = "gruvbox"\n')
+
+    app = AppMemApp(
+        root=root,
+        uid=UID,
+        interval=NO_AUTO_REFRESH_INTERVAL,
+        include_system=False,
+        theme="gruvbox",
+        config_theme="gruvbox",
+    )
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        mtime_before = config_path().stat().st_mtime_ns
+
+        await pilot.press("T")
+        await pilot.pause()
+        assert _highlighted_theme_name(_theme_list(pilot)) == "gruvbox"  # already highlighted
+        await pilot.press("enter")  # confirming the theme it started with
+        await pilot.pause()
+
+        assert pilot.app.theme == "gruvbox"
+        assert config_path().read_text() == 'theme = "gruvbox"\n'
+        assert config_path().stat().st_mtime_ns == mtime_before  # not rewritten
+
+
+@pytest.mark.asyncio
+async def test_enter_on_the_startup_theme_that_differs_from_the_file_writes_it(
+    tmp_path: Path,
+) -> None:
+    # This is the behaviour change from Textual's own picker (SPEC.md
+    # "Command line"): confirming the theme started from `--theme` (never
+    # written by itself) now saves it too, because Enter is an explicit
+    # choice -- not just "a pick that changes the running theme".
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+    config_path().parent.mkdir(parents=True)
+    config_path().write_text('theme = "gruvbox"\n')
+
+    app = AppMemApp(
+        root=root,
+        uid=UID,
+        interval=NO_AUTO_REFRESH_INTERVAL,
+        include_system=False,
+        theme="dracula",  # e.g. from --theme; differs from the file
+        config_theme="gruvbox",
+    )
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+
+        await pilot.press("T")
+        await pilot.pause()
+        assert _highlighted_theme_name(_theme_list(pilot)) == "dracula"
+        await pilot.press("enter")  # confirming the startup value, unchanged
+        await pilot.pause()
+
+        assert pilot.app.theme == "dracula"
+        assert config_path().read_text() == 'theme = "dracula"\n'
 
 
 @pytest.mark.asyncio
@@ -1998,8 +2281,7 @@ async def test_write_failure_notifies_and_the_app_keeps_running(tmp_path: Path) 
 
             await pilot.press("T")
             await pilot.pause()
-            await pilot.press(*"dracula")
-            await pilot.pause()
+            await _highlight(pilot, "dracula")
             await pilot.press("enter")
             await pilot.pause()
         finally:
@@ -2020,212 +2302,190 @@ async def test_write_failure_notifies_and_the_app_keeps_running(tmp_path: Path) 
         assert "alpha" in _row_names(_table(pilot))
 
 
-# --- picker opens on the current theme, marked ----------------------------------
-
-
-def _prompt_text(option: Command) -> str:
-    """An option's rendered prompt as plain text: `Command.prompt` is a
-    `Content` in practice (built by `CommandPalette._gather_commands`), but
-    typed as the broader `VisualType`, hence the `isinstance` narrowing
-    rather than a bare `.plain` access."""
-    prompt = option.prompt
-    return prompt.plain if isinstance(prompt, Content) else str(prompt)
-
-
-def _highlighted_theme(palette: ThemePalette) -> tuple[str | None, str]:
-    """`(theme name, its rendered prompt text)` of the picker's highlighted
-    row, or `(None, "")` if nothing is highlighted."""
-    command_list = palette.query_one(CommandList)
-    option = command_list.highlighted_option
-    if not isinstance(option, Command):
-        return None, ""
-    return option.hit.text, _prompt_text(option)
-
-
 @pytest.mark.asyncio
-async def test_picker_opens_with_the_cursor_on_the_current_theme(tmp_path: Path) -> None:
-    root = _base_tree(tmp_path)
-    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
-
-    app = AppMemApp(
-        root=root, uid=UID, interval=NO_AUTO_REFRESH_INTERVAL, include_system=False, theme="dracula"
-    )
-    async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.pause()
-
-        await pilot.press("T")
-        await pilot.pause()
-
-        screen = pilot.app.screen
-        assert isinstance(screen, ThemePalette)
-        name, prompt = _highlighted_theme(screen)
-        assert name == "dracula"
-        assert prompt == "✓ dracula"
-
-
-@pytest.mark.asyncio
-async def test_picker_via_ctrl_p_theme_also_opens_on_the_current_theme(tmp_path: Path) -> None:
-    # `T` and Ctrl+P -> Theme both call `App.search_themes` (SPEC.md
-    # "Command line"): this covers the second entry point.
-    root = _base_tree(tmp_path)
-    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
-
-    app = AppMemApp(
-        root=root, uid=UID, interval=NO_AUTO_REFRESH_INTERVAL, include_system=False, theme="nord"
-    )
-    async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.pause()
-
-        await pilot.press("ctrl+p")
-        await pilot.pause()
-        await pilot.press(*"Theme")
-        await pilot.pause()
-        await pilot.press("enter")  # select the "Theme" system command
-        await pilot.pause()
-
-        screen = pilot.app.screen
-        assert isinstance(screen, ThemePalette)
-        name, prompt = _highlighted_theme(screen)
-        assert name == "nord"
-        assert prompt == "✓ nord"
-
-
-@pytest.mark.asyncio
-async def test_picker_cursor_moves_with_a_new_pick(tmp_path: Path) -> None:
+async def test_quit_while_previewing_writes_nothing(tmp_path: Path) -> None:
     root = _base_tree(tmp_path)
     _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
 
     async with _app(root).run_test(size=(100, 30)) as pilot:
         await pilot.pause()
-        assert pilot.app.theme != "dracula"
 
         await pilot.press("T")
         await pilot.pause()
-        await pilot.press(*"dracula")
+        await pilot.press("down")
         await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
-        assert pilot.app.theme == "dracula"
 
-        await pilot.press("T")  # reopen: the cursor follows the just-made pick
+        await pilot.press("q")
         await pilot.pause()
-        screen = pilot.app.screen
-        assert isinstance(screen, ThemePalette)
-        name, prompt = _highlighted_theme(screen)
-        assert name == "dracula"
-        assert prompt == "✓ dracula"
+
+        assert not config_path().exists()
+
+
+# --- panel geometry (SPEC.md "Main view": leaves the rest of the app visible) ----
 
 
 @pytest.mark.asyncio
-async def test_picker_cursor_on_a_config_theme_after_restart(tmp_path: Path) -> None:
-    # A theme resolved from the config file (or `--theme`/`APPMEM_THEME`) is
-    # `App.theme` before the picker ever opens, same as an in-app pick --
-    # `search_themes` reads `self.app.theme` fresh, so no separate wiring is
-    # needed for "restart with a config theme" to work.
+async def test_panel_docks_right_and_leaves_most_of_the_width_free(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+
+        await pilot.press("T")
+        await pilot.pause()
+
+        panel = _panel(pilot).query_one("#panel")
+        assert panel.region.width <= 32
+        assert panel.region.x + panel.region.width == 120  # flush with the right edge
+        assert panel.region.height == 30  # full height
+
+        # Not full-screen dimming: MainScreen's own content is still there,
+        # right behind the panel.
+        main_screen = pilot.app.screen_stack[0]
+        assert isinstance(main_screen, MainScreen)
+        footer = main_screen.query_one("#footer", Static).content
+        assert isinstance(footer, Text)
+        assert footer.plain
+        # ...and shown as is: a `ModalScreen` dims everything under it
+        # unless its own background is fully transparent.
+        assert _panel(pilot).styles.background.a == 0
+
+
+@pytest.mark.asyncio
+async def test_panel_fits_a_narrow_screen(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(40, 10)) as pilot:
+        await pilot.pause()
+
+        await pilot.press("T")
+        await pilot.pause()
+
+        panel = _panel(pilot).query_one("#panel")
+        assert panel.region.x >= 0
+        assert panel.region.width <= 40
+        assert panel.region.right <= 40
+
+        # Too short for the whole list, so it scrolls, and its scrollbar
+        # must not squeeze the longest name onto a second line.
+        option_list = _theme_list(pilot)
+        assert option_list.max_scroll_y > 0
+        assert option_list.virtual_size.height == len(THEME_NAMES)
+
+
+# --- terminal-dark/terminal-light, info line, hint lines ------------------------
+
+
+@pytest.mark.asyncio
+async def test_panel_shows_terminal_names_not_the_ansi_aliases(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        await pilot.press("T")
+        await pilot.pause()
+
+        option_ids = [option.id for option in _theme_list(pilot).options]
+        assert "terminal-dark" in option_ids
+        assert "terminal-light" in option_ids
+        assert "ansi-dark" not in option_ids
+        assert "ansi-light" not in option_ids
+
+
+@pytest.mark.asyncio
+async def test_ansi_dark_still_opens_the_panel_on_terminal_dark(tmp_path: Path) -> None:
+    # A config file (or --theme/APPMEM_THEME) still holding the old
+    # `ansi-dark` name (SPEC.md "Command line") must open the panel on the
+    # renamed row, not fail to find a match for the running theme.
     root = _base_tree(tmp_path)
     _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
     config_path().parent.mkdir(parents=True)
-    config_path().write_text('theme = "gruvbox"\n')
+    config_path().write_text('theme = "ansi-dark"\n')
+    resolution = resolve_theme(cli_theme=None, env_theme=None, config_path=config_path())
 
     app = AppMemApp(
         root=root,
         uid=UID,
         interval=NO_AUTO_REFRESH_INTERVAL,
         include_system=False,
-        theme="gruvbox",
-        config_theme="gruvbox",
+        theme=resolution.effective,
+        config_theme=resolution.config_theme,
     )
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause()
-        assert pilot.app.theme == "gruvbox"
-
+        assert pilot.app.theme == "terminal-dark"
         await pilot.press("T")
         await pilot.pause()
 
-        screen = pilot.app.screen
-        assert isinstance(screen, ThemePalette)
-        name, prompt = _highlighted_theme(screen)
-        assert name == "gruvbox"
-        assert prompt == "✓ gruvbox"
+        assert _highlighted_theme_name(_theme_list(pilot)) == "terminal-dark"
+        assert _marks(pilot) == ["terminal-dark"]
+        # The info line reflects the opening theme too, not only a later move.
+        info = _panel(pilot).query_one("#panel-info", Static)
+        assert info.content == "your terminal's colours"
+
+        # Keeping the same theme is not a change: the old name stays on disk.
+        await pilot.press("enter")
+        await pilot.pause()
+        assert config_path().read_text() == 'theme = "ansi-dark"\n'
 
 
 @pytest.mark.asyncio
-async def test_picker_marks_only_the_current_theme(tmp_path: Path) -> None:
-    root = _base_tree(tmp_path)
-    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
-
-    app = AppMemApp(
-        root=root, uid=UID, interval=NO_AUTO_REFRESH_INTERVAL, include_system=False, theme="dracula"
-    )
-    async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.pause()
-
-        await pilot.press("T")
-        await pilot.pause()
-
-        screen = pilot.app.screen
-        assert isinstance(screen, ThemePalette)
-        command_list = screen.query_one(CommandList)
-        marks: list[str | None] = []
-        for index in range(command_list.option_count):
-            option = command_list.get_option_at_index(index)
-            assert isinstance(option, Command)
-            if _prompt_text(option).startswith("✓"):
-                marks.append(option.hit.text)
-        assert marks == ["dracula"]  # exactly one mark, on the current theme
-
-
-@pytest.mark.asyncio
-async def test_picker_search_keeps_the_fuzzy_match_highlight(tmp_path: Path) -> None:
+async def test_info_line_shows_only_while_a_terminal_theme_is_highlighted(
+    tmp_path: Path,
+) -> None:
     root = _base_tree(tmp_path)
     _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
 
     async with _app(root).run_test(size=(100, 30)) as pilot:
         await pilot.pause()
-        await pilot.press("T", *"drac")
+        await pilot.press("T")
         await pilot.pause()
 
-        screen = pilot.app.screen
-        assert isinstance(screen, ThemePalette)
-        option = screen.query_one(CommandList).get_option_at_index(0)
-        assert isinstance(option, Command)
-        assert isinstance(option.prompt, Content)
-        assert option.prompt.plain == "  dracula"
-        assert option.prompt.spans  # the matched letters stay highlighted after the mark
+        info = _panel(pilot).query_one("#panel-info", Static)
+        panel_height_before = _panel(pilot).query_one("#panel").region.height
+
+        await _highlight(pilot, "dracula")
+        assert info.content == ""  # blank for a built-in theme
+
+        await _highlight(pilot, "terminal-dark")
+        assert info.content == "your terminal's colours"
+
+        await _highlight(pilot, "terminal-light")
+        assert info.content == "your terminal's colours"
+
+        await _highlight(pilot, "nord")
+        assert info.content == ""  # back to blank, moving off a terminal theme
+
+        # Fixed height throughout: the hint lines below never move.
+        assert _panel(pilot).query_one("#panel").region.height == panel_height_before
 
 
 @pytest.mark.asyncio
-async def test_picker_still_previews_confirms_and_cancels_as_before(tmp_path: Path) -> None:
-    # The cursor-on-current-theme change must not touch the rest of the
-    # picker's behaviour (SPEC.md "Command line"): typed search still
-    # filters, Enter still applies and persists, Esc still cancels and
-    # writes nothing -- this is `test_t_opens_the_picker_...`/
-    # `test_esc_in_the_picker_...` above, just via the new `ThemePalette`.
+@pytest.mark.parametrize("size", [(120, 30), (40, 10)])
+async def test_hint_lines_are_fully_visible_and_not_cropped(
+    tmp_path: Path, size: tuple[int, int]
+) -> None:
     root = _base_tree(tmp_path)
     _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
 
-    async with _app(root).run_test(size=(100, 30)) as pilot:
+    async with _app(root).run_test(size=size) as pilot:
         await pilot.pause()
-        before = pilot.app.theme
-
         await pilot.press("T")
         await pilot.pause()
-        assert isinstance(pilot.app.screen, ThemePalette)
-        await pilot.press(*"dracula")  # typed filter still narrows the list
-        await pilot.pause()
-        await pilot.press("escape")
-        await pilot.pause()
-        assert pilot.app.theme == before  # Esc: cancelled, nothing applied
-        assert not config_path().exists()
 
-        await pilot.press("T")
-        await pilot.pause()
-        await pilot.press(*"dracula")
-        await pilot.pause()
-        await pilot.press("enter")  # Enter: applies and persists
-        await pilot.pause()
-        assert pilot.app.theme == "dracula"
-        assert config_path().read_text() == 'theme = "dracula"\n'
+        panel = _panel(pilot)
+        move = panel.query_one("#panel-hint-move", Static)
+        keys = panel.query_one("#panel-hint-keys", Static)
+
+        assert move.content == "↑↓ preview"
+        assert keys.content == "enter keep  esc cancel"
+        # `0 1` padding either side (theme_picker.py's `.panel-line` CSS):
+        # the text itself must fit inside what's left of the region.
+        assert cell_len(str(move.content)) <= move.region.width - 2
+        assert cell_len(str(keys.content)) <= keys.region.width - 2
 
 
 # --- header locale/contrast detection (SPEC.md "Main view") ------------------
@@ -2364,8 +2624,12 @@ def test_bar_fill_colour_falls_back_to_foreground_on_flexoki() -> None:
     assert fill == foreground.rich_color.name
 
 
-def test_bar_fill_colour_skips_contrast_math_for_ansi_themes() -> None:
-    theme = BUILTIN_THEMES["ansi-dark"]
+@pytest.mark.parametrize(
+    "theme", [BUILTIN_THEMES["ansi-dark"], *TERMINAL_THEMES], ids=lambda theme: theme.name
+)
+def test_bar_fill_colour_skips_contrast_math_for_ansi_themes(theme: Theme) -> None:
+    # The terminal themes are the ansi ones renamed; they must still take
+    # this branch through `theme.ansi`, not through their name.
     fill = main_screen._bar_fill_colour(theme)  # pyright: ignore[reportPrivateUsage]
     assert fill == Color.parse(theme.primary).rich_color.name
 

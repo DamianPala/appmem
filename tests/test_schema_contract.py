@@ -40,7 +40,11 @@ def _action_by_dest(parser: argparse.ArgumentParser, dest: str) -> argparse.Acti
 
 
 def _assert_flag_matches(
-    parser: argparse.ArgumentParser, flag: schema.Flag, *, check_default: bool = True
+    parser: argparse.ArgumentParser,
+    flag: schema.Flag,
+    *,
+    check_default: bool = True,
+    check_enum: bool = True,
 ) -> None:
     action = _action_by_dest(parser, flag.name)
     option_strings = {s.lstrip("-") for s in action.option_strings}
@@ -49,7 +53,7 @@ def _assert_flag_matches(
         assert alias in option_strings
     if check_default and action.default is not argparse.SUPPRESS:
         assert action.default == flag.default
-    if flag.enum is not None:
+    if flag.enum is not None and check_enum:
         assert tuple(action.choices) == flag.enum  # pyright: ignore[reportArgumentType]
 
 
@@ -61,8 +65,16 @@ def test_root_parser_matches_root_descriptors() -> None:
     _assert_flag_matches(root, schema.ROOT_INTERVAL, check_default=False)
     _assert_flag_matches(root, schema.ROOT_SYSTEM)
     # No fixed default (the effective one depends on APPMEM_THEME/the config
-    # file), same reasoning as `-i/--interval` above.
-    _assert_flag_matches(root, schema.ROOT_THEME, check_default=False)
+    # file), same reasoning as `-i/--interval` above. No `choices=` either
+    # (`check_enum=False`): `--theme` validates through `_theme_name` instead,
+    # since it also accepts the `ansi-dark`/`ansi-light` aliases that
+    # `flag.enum` (== `THEME_NAMES`) deliberately leaves out (SPEC.md
+    # "Command line") -- `test_cli.py` covers `_theme_name`'s own behaviour.
+    _assert_flag_matches(root, schema.ROOT_THEME, check_default=False, check_enum=False)
+    assert _action_by_dest(root, "theme").choices is None
+    assert schema.ROOT_THEME.enum is not None
+    for name in schema.ROOT_THEME.enum:  # the parser still takes every listed name as is
+        assert root.parse_args(["--theme", name]).theme == name
     _assert_flag_matches(root, schema.JSON_FLAG)
 
 

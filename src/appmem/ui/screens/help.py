@@ -139,8 +139,10 @@ _SYSTEM_ROWS_NOTE = (
 )
 
 _THEME_NOTE = (
-    "T (or Ctrl+P) opens Textual's own theme picker; the choice is remembered in "
-    "~/.config/appmem/config.toml (or $XDG_CONFIG_HOME/appmem/config.toml)."
+    "T (or Ctrl+P) opens a theme panel with a live preview; Enter keeps the highlighted "
+    "theme, remembered in ~/.config/appmem/config.toml (or $XDG_CONFIG_HOME/appmem/config.toml). "
+    "terminal-dark and terminal-light use your terminal's own colours instead of one of "
+    "appmem's built-in palettes."
 )
 
 _ACTIONS_INTRO = "What to do about it:"

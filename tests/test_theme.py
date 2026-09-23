@@ -13,7 +13,10 @@ from pathlib import Path
 import pytest
 
 from appmem.theme import (
+    TERMINAL_THEME_NAMES,
+    TERMINAL_THEMES,
     THEME_NAMES,
+    canonical_theme_name,
     config_path,
     read_config_theme,
     resolve_theme,
@@ -323,8 +326,97 @@ def test_resolve_theme_never_reads_config_warning_when_cli_overrides(tmp_path: P
     assert result.warnings == ()
 
 
-def test_every_theme_name_is_a_real_builtin_theme() -> None:
+def test_every_theme_name_is_a_real_builtin_theme_or_a_terminal_theme() -> None:
     from textual.theme import BUILTIN_THEMES
 
-    assert set(THEME_NAMES) == set(BUILTIN_THEMES)
     assert tuple(sorted(THEME_NAMES)) == THEME_NAMES
+    for name in THEME_NAMES:
+        assert name in BUILTIN_THEMES or name in TERMINAL_THEME_NAMES
+    # `ansi-dark`/`ansi-light` are still real `BUILTIN_THEMES` entries --
+    # just not ones `THEME_NAMES` shows, since `terminal-dark`/`terminal-light`
+    # stand in for them (SPEC.md "Command line").
+    assert "ansi-dark" not in THEME_NAMES
+    assert "ansi-light" not in THEME_NAMES
+    assert {"terminal-dark", "terminal-light"} == TERMINAL_THEME_NAMES
+
+
+# --- terminal-dark/terminal-light: honest names for ansi-dark/ansi-light --------
+
+
+def test_terminal_themes_clone_the_ansi_colours_under_the_new_name() -> None:
+    from textual.theme import BUILTIN_THEMES
+
+    by_name = {theme.name: theme for theme in TERMINAL_THEMES}
+    assert set(by_name) == {"terminal-dark", "terminal-light"}
+    pairs = (("terminal-dark", "ansi-dark"), ("terminal-light", "ansi-light"))
+    for terminal_name, ansi_name in pairs:
+        terminal_theme = by_name[terminal_name]
+        ansi_theme = BUILTIN_THEMES[ansi_name]
+        assert terminal_theme.ansi is True  # so the header's `:ansi` CSS still applies
+        assert terminal_theme.primary == ansi_theme.primary
+        assert terminal_theme.foreground == ansi_theme.foreground
+        assert terminal_theme.background == ansi_theme.background
+
+
+def test_canonical_theme_name_maps_the_old_ansi_aliases() -> None:
+    assert canonical_theme_name("ansi-dark") == "terminal-dark"
+    assert canonical_theme_name("ansi-light") == "terminal-light"
+
+
+def test_canonical_theme_name_leaves_other_names_alone() -> None:
+    assert canonical_theme_name("nord") == "nord"
+    assert canonical_theme_name("terminal-dark") == "terminal-dark"
+    assert canonical_theme_name("bogus-theme") == "bogus-theme"
+
+
+def test_read_config_theme_accepts_the_ansi_dark_alias(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text('theme = "ansi-dark"\n')
+
+    theme, warning = read_config_theme(path)
+
+    assert theme == "terminal-dark"
+    assert warning is None
+
+
+def test_write_then_read_config_theme_round_trips_terminal_dark(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+
+    error = write_config_theme(path, "terminal-dark")
+
+    assert error is None
+    theme, warning = read_config_theme(path)
+    assert theme == "terminal-dark"
+    assert warning is None
+
+
+def test_resolve_theme_cli_alias_resolves_to_the_terminal_name(tmp_path: Path) -> None:
+    result = resolve_theme(
+        cli_theme="ansi-light", env_theme=None, config_path=tmp_path / "config.toml"
+    )
+
+    assert result.effective == "terminal-light"
+    assert result.warnings == ()
+
+
+def test_resolve_theme_env_alias_resolves_to_the_terminal_name(tmp_path: Path) -> None:
+    result = resolve_theme(
+        cli_theme=None, env_theme="ansi-light", config_path=tmp_path / "config.toml"
+    )
+
+    assert result.effective == "terminal-light"
+    assert result.warnings == ()
+
+
+def test_resolve_theme_textual_theme_alias_resolves_to_the_terminal_name(
+    tmp_path: Path,
+) -> None:
+    result = resolve_theme(
+        cli_theme=None,
+        env_theme=None,
+        config_path=tmp_path / "config.toml",
+        textual_theme="ansi-dark",
+    )
+
+    assert result.effective == "terminal-dark"
+    assert result.warnings == ()

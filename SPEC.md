@@ -1,4 +1,4 @@
-# appmem: spec v0.10
+# appmem: spec v0.11
 
 A live terminal view of RAM and swap usage **per application**, not per process.
 Think `btm` or `htop`, but rows are apps (Ghostty, Brave, LibreOffice), each summing all of its processes.
@@ -22,10 +22,10 @@ Which app holds the memory and swap? Is memory actually the problem right now? W
 - One row per app, sortable by clicking a column header or by key.
 - Enter on a row opens the app's process view, which can also group processes by command and drill into one command.
 - A `?` screen explaining the numbers.
-- Textual's built-in themes: `T` opens the picker, and the choice is remembered in a config file.
+- Themes: Textual's built-in themes, with `terminal-dark`/`terminal-light` for the terminal's own colours. `T` opens a side panel with a live preview, and the choice is remembered in a config file.
 - Non-interactive commands for scripts and agents: `appmem snapshot`, `appmem app NAME`, `appmem schema`, plus an agent skill in `skills/appmem/SKILL.md`.
 
-**Not in v1:** recording/history, charts over time, a streaming `watch` command, CPU or I/O stats, killing processes, settings other than the theme, custom themes, login-session scopes, running as root, macOS/Windows, cgroup v1.
+**Not in v1:** recording/history, charts over time, a streaming `watch` command, CPU or I/O stats, killing processes, settings other than the theme, custom themes (the terminal themes cover a tuned terminal palette), login-session scopes, running as root, macOS/Windows, cgroup v1.
 
 ## Screens
 
@@ -139,7 +139,7 @@ It covers what RAM, CACHE, SWAP, TOTAL, pressure and the header's shared/free/ca
 | `w` | toggle the ZSWAP column (main view, only while zswap is enabled; the choice lasts for the session) |
 | `x` | toggle system services |
 | `b` | reset the Δ baseline to now |
-| `T` / `Ctrl+P` → Theme | theme picker (all views), opening on the current theme, marked `✓`; the chosen theme is saved |
+| `T` / `Ctrl+P` → Theme | theme panel (all views, see "Theme panel"); opening it again while open does nothing |
 | `?` | help screen |
 | `q` / `Ctrl+C` | quit |
 
@@ -317,7 +317,12 @@ The command line conforms to the house CLI Design Standard 0.1.0 (claimed in `ap
   4. `TEXTUAL_THEME`;
   5. `textual-dark`.
 
-  An unknown `--theme` name is `invalid_input`, and the message lists the valid names. A bad env value, or an unreadable, malformed or wrong-typed file, falls back to the next source with a notification, never a crash; unknown keys in the file are ignored. The file is written only when a theme pick in the app changes the theme (never for previews, a cancelled picker, `--theme` or env), atomically, with mode 0600. A write failure is a notification. Agent commands ignore the file and the env vars.
+  Valid names: Textual's built-in themes, except that `ansi-dark`/`ansi-light` appear as `terminal-dark`/`terminal-light`, the same themes under names that say what they do: they use the terminal's own palette. The old names stay accepted as aliases from every source but are never listed. An unknown `--theme` name is `invalid_input`, and the message lists the valid names. A bad env value, or an unreadable, malformed or wrong-typed file, falls back to the next source with a notification, never a crash; unknown keys in the file are ignored. The file is written only by a confirm in the theme panel, and only when it holds a different value (never for previews, a cancelled panel, `--theme` or env), atomically, with mode 0600. A write failure is a notification. Agent commands ignore the file and the env vars.
+- **Theme panel.** A narrow panel docked at the right edge, full height, with no dimming, so the app behind it is the preview. It lists the themes, opens with the cursor on the current one marked `✓`, and has no search.
+  - Moving the cursor applies the highlighted theme to the whole app at once, but never writes the file.
+  - Enter, or a click on an item, keeps the theme and saves it. Esc, `T` again, or a click outside the panel restores the theme from before it opened. Quitting while the panel is open saves nothing.
+  - At the bottom are fixed-height lines, which never wrap and don't move the panel: an info line (`your terminal's colours` on `terminal-*`, blank otherwise), then `↑↓ preview` and `enter keep  esc cancel`.
+- **Colour contrast.** Table header text reaches at least 4.5:1 against its background in every theme: black or white, whichever contrasts more. In terminal themes, table headers use the terminal's default colours, bold and underlined, since any other pair of palette slots can be unreadable in some palette.
 - **snapshot**: one sample with the same numbers as the main view and header. Apps ≥ 1 MiB TOTAL, sorted by TOTAL, at most `--limit` (default 50) with `has_more`; `next` names the largest app. zswap fields:
   - `zswap_enabled`;
   - `zswap_pool_bytes` and `zswapped_bytes`, both null without zswap;

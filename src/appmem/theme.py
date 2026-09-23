@@ -2,9 +2,13 @@
 line"), the only setting appmem keeps in a config file.
 
 Only `theme = "<name>"` is ever written, and only by a theme choice made in
-the running app (`AppMemApp.watch_theme`); `--theme`/`APPMEM_THEME` read the
-file but never write it. Every name is one of Textual's own built-in themes
-(`textual.theme.BUILTIN_THEMES`) -- no custom themes.
+the running app (`AppMemApp.persist_theme`, when the theme panel keeps a
+pick); `--theme`/`APPMEM_THEME` read the file but never write it. Every name
+is one of Textual's own built-in themes (`textual.theme.BUILTIN_THEMES`) --
+no custom themes -- except `terminal-dark`/`terminal-light`, appmem's own
+names for Textual's `ansi-dark`/`ansi-light` (`TERMINAL_THEMES` below); the
+old `ansi-*` names still work everywhere a theme name is read, resolved to
+the new ones by `canonical_theme_name`.
 """
 
 from __future__ import annotations
@@ -12,15 +16,59 @@ from __future__ import annotations
 import os
 import tempfile
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
-from textual.theme import BUILTIN_THEMES
+from textual.theme import BUILTIN_THEMES, Theme
 
-THEME_NAMES: tuple[str, ...] = tuple(sorted(BUILTIN_THEMES))
-"""Every accepted theme name, for `--theme`'s choices and the config/env
-validation below. Sorted so `--theme bogus`'s error message and argparse's
-own usage line list them in a stable order."""
+_TERMINAL_THEME_ALIASES: dict[str, str] = {
+    "terminal-dark": "ansi-dark",
+    "terminal-light": "ansi-light",
+}
+"""appmem's own names for Textual's `ansi-dark`/`ansi-light` (SPEC.md
+"Command line"): same colours -- the running terminal's own palette -- under
+a name that says so, since "ansi" doesn't tell a user that. `TERMINAL_THEMES`
+below re-registers each `Theme` under the new name; `AppMemApp.__init__`
+calls `App.register_theme` for both before `self.theme` is ever set."""
+
+_ALIAS_TO_TERMINAL_NAME: dict[str, str] = {
+    ansi_name: terminal_name for terminal_name, ansi_name in _TERMINAL_THEME_ALIASES.items()
+}
+
+TERMINAL_THEMES: tuple[Theme, ...] = tuple(
+    replace(BUILTIN_THEMES[ansi_name], name=terminal_name)
+    for terminal_name, ansi_name in _TERMINAL_THEME_ALIASES.items()
+)
+"""`Theme` clones of Textual's `ansi-dark`/`ansi-light`, renamed. Cloned
+rather than mutated so `BUILTIN_THEMES` itself, and the `ansi-*` names
+Textual still knows internally, are untouched -- `theme.ansi` stays `True`
+on the clones, so any colour logic that branches on it (SPEC.md "Main
+view": the header bar, swap colours) keeps working unchanged."""
+
+TERMINAL_THEME_NAMES: frozenset[str] = frozenset(_TERMINAL_THEME_ALIASES)
+"""`{"terminal-dark", "terminal-light"}` -- the theme panel shows its dim
+info line ("your terminal's colours") while one of these is highlighted."""
+
+_NAMES_WITHOUT_ANSI = set(BUILTIN_THEMES) - set(_TERMINAL_THEME_ALIASES.values())
+THEME_NAMES: tuple[str, ...] = tuple(sorted(_NAMES_WITHOUT_ANSI | set(_TERMINAL_THEME_ALIASES)))
+"""Every theme name appmem shows or accepts as *the* name of a theme:
+Textual's own built-ins, with `ansi-dark`/`ansi-light` swapped out for the
+honest `terminal-dark`/`terminal-light` -- for `--theme`'s choices, the
+config/env validation below, and the panel's own list. Sorted so
+`--theme bogus`'s error message and argparse's own usage line list them in
+a stable order. The old `ansi-*` names still work everywhere a theme name is
+read (see `canonical_theme_name` below); they just never appear here."""
+
+
+def canonical_theme_name(name: str) -> str:
+    """`name`, or its honest replacement if `name` is one of the old
+    `ansi-*` names. Every reader of a theme name (`--theme`, `APPMEM_THEME`,
+    `TEXTUAL_THEME`, the config file) runs a value through this before
+    comparing it against `THEME_NAMES`, so a saved or typed `ansi-dark`
+    still resolves and the app itself always ends up running the honest
+    name, never the alias."""
+    return _ALIAS_TO_TERMINAL_NAME.get(name, name)
+
 
 APPMEM_THEME_ENV = "APPMEM_THEME"
 TEXTUAL_THEME_ENV = "TEXTUAL_THEME"
@@ -73,9 +121,10 @@ def read_config_theme(path: Path) -> tuple[str | None, str | None]:
     value = data["theme"]
     if not isinstance(value, str):
         return None, f"{path}: 'theme' must be a string, not {type(value).__name__}"
-    if value not in THEME_NAMES:
+    canonical = canonical_theme_name(value)
+    if canonical not in THEME_NAMES:
         return None, f"{path}: unknown theme {value!r}"
-    return value, None
+    return canonical, None
 
 
 def write_config_theme(path: Path, theme_name: str) -> str | None:
@@ -119,6 +168,10 @@ class ThemeResolution:
     warnings: tuple[str, ...]
 
 
+def _canonicalize_optional(name: str | None) -> str | None:
+    return None if name is None else canonical_theme_name(name)
+
+
 def resolve_theme(
     *,
     cli_theme: str | None,
@@ -135,8 +188,14 @@ def resolve_theme(
     consulted, i.e. every higher source was absent or itself invalid --
     `TEXTUAL_THEME` included, so an unknown value there warns and falls back
     to the hard-coded default instead of ever reaching `App.theme` unvalidated
-    (which would raise `InvalidThemeError` at startup).
+    (which would raise `InvalidThemeError` at startup). Every source is
+    canonicalised through `canonical_theme_name` before it's used, so an old
+    `ansi-*` value from any of them still resolves.
     """
+    cli_theme = _canonicalize_optional(cli_theme)
+    env_theme = _canonicalize_optional(env_theme)
+    textual_theme = _canonicalize_optional(textual_theme)
+
     config_theme, config_warning = read_config_theme(config_path)
     if cli_theme is not None:
         return ThemeResolution(cli_theme, config_theme, ())

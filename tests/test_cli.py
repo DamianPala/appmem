@@ -665,6 +665,33 @@ def test_theme_bogus_is_invalid_input_with_valid_names_listed(
     assert error["kind"] == "invalid_input"  # type: ignore[index]
     message = error["message"]  # type: ignore[index]
     assert "nord" in message and "dracula" in message  # type: ignore[operator]
+    assert "ansi-dark" not in message and "ansi-light" not in message  # type: ignore[operator]
+
+
+def test_theme_terminal_dark_is_accepted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_memory_stat(user_service_root(tmp_path, uid=1000))
+    captured = _capture_theme_kwargs(monkeypatch)
+
+    main(
+        ["--theme", "terminal-dark"],
+        root=tmp_path,
+        uid=1000,
+        stdin_isatty=_true,
+        stdout_isatty=_true,
+    )
+
+    assert captured["theme"] == "terminal-dark"
+
+
+def test_theme_ansi_dark_alias_is_accepted_and_resolves_to_terminal_dark(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_memory_stat(user_service_root(tmp_path, uid=1000))
+    captured = _capture_theme_kwargs(monkeypatch)
+
+    main(["--theme", "ansi-dark"], root=tmp_path, uid=1000, stdin_isatty=_true, stdout_isatty=_true)
+
+    assert captured["theme"] == "terminal-dark"  # the app only ever runs the honest name
 
 
 def test_theme_with_a_named_command_is_invalid_input(capsys: pytest.CaptureFixture[str]) -> None:

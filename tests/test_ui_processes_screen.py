@@ -19,16 +19,15 @@ import pytest
 from rich.cells import cell_len
 from rich.text import Text
 from textual import events
-from textual.command import CommandPalette
 from textual.containers import VerticalScroll
 from textual.content import Content
 from textual.coordinate import Coordinate
 from textual.pilot import Pilot
-from textual.widgets import DataTable, Static
+from textual.widgets import DataTable, OptionList, Static
 from textual.widgets.data_table import ColumnKey
 
 from appmem.collect import ProcStats, UnitStats
-from appmem.theme import config_path
+from appmem.theme import THEME_NAMES, config_path
 from appmem.ui.app import AppMemApp
 from appmem.ui.process_rows import KERNEL_KEY, UNATTRIBUTED_KEY, ZSWAP_POOL_KEY
 from appmem.ui.rows import row_key
@@ -36,6 +35,7 @@ from appmem.ui.screens import processes as processes_screen
 from appmem.ui.screens.help import HelpScreen
 from appmem.ui.screens.main import MainScreen
 from appmem.ui.screens.processes import ProcessesScreen
+from appmem.ui.theme_picker import ThemePanel
 from helpers import (
     make_unit,
     user_service_root,
@@ -1149,7 +1149,7 @@ async def test_footer_drops_lowest_priority_items_at_60_columns(tmp_path: Path) 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["flat", "grouped", "drilled"])
-async def test_t_opens_the_picker_from_every_process_view_mode(tmp_path: Path, mode: str) -> None:
+async def test_t_opens_the_panel_from_every_process_view_mode(tmp_path: Path, mode: str) -> None:
     # `T` is bound at the app level (SPEC.md "Command line"), not on either
     # screen, so it must keep working no matter which process-view mode is
     # on top.
@@ -1173,17 +1173,47 @@ async def test_t_opens_the_picker_from_every_process_view_mode(tmp_path: Path, m
 
         await pilot.press("T")
         await pilot.pause()
-        assert isinstance(pilot.app.screen, CommandPalette)
-        # A capital T typed into the picker's own filter must not reopen a
-        # second palette: the Input widget consumes the key first.
-        await pilot.press(*"nodeT")
-        await pilot.pause()
-        assert sum(isinstance(s, CommandPalette) for s in pilot.app.screen_stack) == 1
+        assert isinstance(pilot.app.screen, ThemePanel)
 
-        await pilot.press("escape")
+        # `T` again while the panel is open: same as Esc, not a second panel.
+        await pilot.press("T")
         await pilot.pause()
+        assert sum(isinstance(s, ThemePanel) for s in pilot.app.screen_stack) == 0
         assert isinstance(pilot.app.screen, ProcessesScreen)
-    assert not config_path().exists()  # Esc closes it without picking anything
+    assert not config_path().exists()  # closed without picking anything
+
+
+@pytest.mark.asyncio
+async def test_theme_panel_previews_and_confirms_from_the_process_view(tmp_path: Path) -> None:
+    # The panel isn't only reachable from the process view (the test
+    # above); it must actually preview and persist from there too, the
+    # same as from the main view (SPEC.md "Command line").
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-ghostty.service", ram=1 * 1024**2, swap=0, pids=[100, 101])
+    _proc(root, 100, name="node")
+
+    async with _app(root).run_test(size=SCREEN_SIZE) as pilot:
+        await pilot.pause()
+        await _open_ghostty_process_view(pilot)
+        before = pilot.app.theme
+
+        await pilot.press("T")
+        await pilot.pause()
+        screen = pilot.app.screen
+        assert isinstance(screen, ThemePanel)
+        option_list = screen.query_one("#theme-list", OptionList)
+        option_list.highlighted = THEME_NAMES.index("dracula")
+        await pilot.pause()
+        assert pilot.app.theme == "dracula"  # previewed at once
+        assert not config_path().exists()
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert pilot.app.theme == "dracula"
+        assert config_path().read_text() == 'theme = "dracula"\n'
+        assert isinstance(pilot.app.screen, ProcessesScreen)
+        assert pilot.app.theme != before
 
 
 @pytest.mark.asyncio
