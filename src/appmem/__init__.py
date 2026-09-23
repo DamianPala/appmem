@@ -1,3 +1,7 @@
 """appmem: live terminal view of RAM and swap usage per application."""
 
-__version__ = "0.1.0.dev0"
+from importlib.metadata import version
+
+# pyproject.toml's [project] version is the single source; read it back from the
+# installed distribution's metadata instead of duplicating it here by hand.
+__version__ = version(__name__)

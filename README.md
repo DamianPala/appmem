@@ -6,23 +6,29 @@ See which **applications** hold your RAM and swap on Linux, live, in the termina
 A browser or a terminal is dozens of them, so "what is eating my swap?" turns into mental math.
 appmem reads the memory counters the kernel already keeps for every app (systemd puts each one in its own cgroup), adds them up per app, and shows one sortable row per app, refreshed every second.
 
-![appmem's main view: one row per app, sorted by TOTAL](docs/screenshots/main.svg)
-
-Screenshots are generated from fixture data, never a real machine; regenerate them with `uv run python scripts/screenshots.py`.
+![appmem's main view: one row per app, sorted by TOTAL](https://raw.githubusercontent.com/DamianPala/appmem/main/docs/screenshots/main.svg)
 
 ## Quick start
 
 ```
-git clone <repo URL> appmem
+uv tool install appmem
+# or: pipx install appmem
+appmem
+```
+
+No root, no config.
+
+From a checkout:
+
+```
+git clone https://github.com/DamianPala/appmem appmem
 cd appmem
 uv run appmem
 ```
 
-No root, no config.
-To have `appmem` on your PATH, run `uv tool install .` once.
-
-You need Linux with cgroup v2, a systemd user session, and a desktop that starts apps as systemd units (KDE Plasma and GNOME do).
-Plus [uv](https://docs.astral.sh/uv/), which fetches Python 3.12+ if needed.
+You need Linux with cgroup v2 in unified mode, and a systemd user session that starts apps as systemd units (KDE Plasma and GNOME do).
+appmem targets kernel 5.10 and newer; two features degrade instead of failing on an older or minimal kernel: pressure reads as unavailable without `/proc/pressure/memory` (PSI), and the zswap fields stay off without the zswap module or on a kernel before 5.19, which has no `Zswap` line in `/proc/meminfo`.
+Plus [uv](https://docs.astral.sh/uv/), which fetches Python 3.12+ if needed, or [pipx](https://pipx.pypa.io/) with Python 3.12+.
 
 ## What you can do with it
 
@@ -43,7 +49,7 @@ Everything you start from a terminal counts as the terminal.
 In the process view press `g` to group by command, then `Enter` on a command to see its processes.
 That's how a "terminal holding 17 GiB" turns out to be eighteen `claude` processes plus the terminal's own main process, running for 86 days and sitting on 3.4 GiB of swap.
 
-![The process view, grouped by command: several claude processes collapse into one row](docs/screenshots/processes.svg)
+![The process view, grouped by command: several claude processes collapse into one row](https://raw.githubusercontent.com/DamianPala/appmem/main/docs/screenshots/processes.svg)
 
 **Watch it change.**
 ΔSWAP and ΔRAM show how each app grew or shrank since you started appmem (`b` resets the starting point).
@@ -77,7 +83,7 @@ Options: `appmem -i SECONDS` sets the refresh interval (default 1, minimum 0.2),
 
 `T` (or `Ctrl+P` -> "Theme") opens a small panel docked to the right, on the current theme, marked with `✓`: any of Textual's built-in themes, plus `terminal-dark` and `terminal-light`, which use your terminal's own colours instead of one of appmem's built-in palettes (a dim `your terminal's colours` line marks them while highlighted).
 
-![The theme panel open on dracula, live-previewed on the main view behind it](docs/screenshots/theme-panel.svg)
+![The theme panel open on dracula, live-previewed on the main view behind it](https://raw.githubusercontent.com/DamianPala/appmem/main/docs/screenshots/theme-panel.svg)
 
 `↑`/`↓` (or `PgUp`/`PgDn`/`Home`/`End`) previews a theme on the running app right away; `Enter`, or a click on a theme, keeps it and closes the panel; `Esc`, `T` again, or a click outside the panel restores the theme that was running when it opened.
 Keeping a theme saves it to `$XDG_CONFIG_HOME/appmem/config.toml` (default `~/.config/appmem/config.toml`), so it's back next time you start appmem -- unless it's already the file's own value, which saves nothing.
@@ -116,7 +122,7 @@ appmem schema [COMMAND]
 Both print a text report on a terminal and JSON otherwise; `--json` forces JSON.
 `appmem schema` describes the commands, flags, output fields and exit codes as JSON.
 Every error is one JSON object on the last line of stderr with a stable `kind` (listed below).
-The diagnosis workflow (how to read pressure against swap, what hides inside a terminal, what to recommend) is in [`skills/appmem/SKILL.md`](skills/appmem/SKILL.md).
+The diagnosis workflow (how to read pressure against swap, what hides inside a terminal, what to recommend) is in [`skills/appmem/SKILL.md`](https://github.com/DamianPala/appmem/blob/main/skills/appmem/SKILL.md).
 The command line follows CLI Design Standard 0.1.0, which `appmem schema` reports under `conformance`.
 
 | Exit code | Meaning |
@@ -133,6 +139,14 @@ There are no shell completions yet.
 ## Cost
 
 About 1 % of a CPU core for reading the counters at the default 1 s interval; with the UI on a busy desktop, about 4 % of one core in the main view and about 5 % in the process view.
+
+## Development
+
+```
+uv run ruff check && uv run ruff format --check && uv run pyright && uv run pytest
+```
+
+The screenshots above are generated from fixture data, never a real machine; regenerate them with `uv run python scripts/screenshots.py`.
 
 ## License
 

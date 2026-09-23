@@ -10,10 +10,9 @@ You use its non-interactive commands; the live TUI is for the human.
 
 ## Get it running
 
-- Get it: `git clone REPO_URL appmem` (needs git and [uv](https://docs.astral.sh/uv/); uv fetches Python 3.12+ itself if missing).
-  Skip this when you are already in a checkout.
-- Run it from any directory: `uv run --project appmem appmem snapshot --json` (the first run creates the venv).
-  Or install it once with `uv tool install ./appmem` and call `appmem` directly.
+- Get it: `uv tool install appmem` (needs [uv](https://docs.astral.sh/uv/); uv fetches Python 3.12+ itself if missing), then call `appmem` directly.
+  Skip this when you are already in a checkout with a venv set up.
+  From source: `git clone https://github.com/DamianPala/appmem appmem`, then run it from any directory with `uv run --project appmem appmem snapshot --json` (the first run creates the venv).
 - No root needed; everything it reads is world-readable.
 - Always pass `--json`.
   Without it the output is text whenever stdout is a terminal, and some agent shells are.

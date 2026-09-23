@@ -3,12 +3,12 @@ revision = 3
 requires-python = ">=3.12"
 
 [options]
-exclude-newer = "2026-09-15T21:22:23.775443989Z"
+exclude-newer = "2026-09-16T21:06:30.898635535Z"
 exclude-newer-span = "P1W"
 
 [[package]]
 name = "appmem"
-version = "0.1.0.dev0"
+version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "textual" },
