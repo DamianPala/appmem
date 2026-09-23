@@ -7,8 +7,9 @@ A browser or a terminal is dozens of them, so "what is eating my swap?" turns in
 appmem reads the memory counters the kernel already keeps for every app (systemd puts each one in its own cgroup), adds them up per app, and shows one sortable row per app, refreshed every second.
 
 ```
-RAM 16.7/30.9 GiB (3.0 GiB shared)  avail 14.2 GiB (8.2 GiB free, 6.0 GiB cache, 2.1 GiB slab)  Swap 24.0/32.0 GiB  pressure 10s: none  system 652 MiB [x]  elsewhere 116 MiB
-Δ since 02:13 (3s)
+RAM       ██████████▊░░░░░░░░░  16.7/30.9 GiB used (3.0 shared)    avail 14.2 GiB (8.2 free, 6.0 cache, 2.1 slab)
+Swap      ███████████████░░░░░  24.0/32.0 GiB used
+Pressure  none                          system 652 MiB [x]    Δ since 02:13 (3s)       elsewhere 116 MiB
  APP                         RAM        SWAP        TOTAL ▾     ΔRAM       ΔSWAP      PROCS
  ghostty                       6.6 GiB    11.2 GiB    17.8 GiB     -3 MiB          ·     281
  plasma                        1.6 GiB     2.3 GiB     3.9 GiB          ·          ·      17
@@ -37,7 +38,7 @@ Plus [uv](https://docs.astral.sh/uv/), which fetches Python 3.12+ if needed.
 The main view lists apps by TOTAL (RAM + swap).
 Click a column header or press `r` (RAM), `s` (swap), `t` (total), `d` (swap change), `z` (ZSWAP, where shown) to sort; press again to reverse.
 The header tells you whether memory is a problem right now.
-`pressure 10s: none` with a full swap just means idle pages were moved out of the way; `some` or `high` means programs are waiting for memory.
+`Pressure  none` with a full swap just means idle pages were moved out of the way; `some` or `high` means programs are waiting for memory.
 `shared` is tmpfs, shared memory and GPU buffers the kernel can only swap out, never drop.
 `avail` is what can be allocated before swapping; `free`, `cache` (reclaimable file pages) and `slab` (kernel caches of file names and inodes, dropped on demand) are its main parts and come close to it, but the kernel reserves some headroom so they don't add up to an exact sum.
 
@@ -92,11 +93,11 @@ A broken or unreadable config file, or an unknown name in `APPMEM_THEME`/`TEXTUA
   Page cache is reclaimable and makes an app that read a big file look like a hog, so it has its own column (`c`).
 - **SWAP** is what the kernel moved out of RAM for that app.
   With zswap it also includes pages kept compressed in RAM.
-  The header shows that machine-wide as `X zswap in Y`: X is kept compressed, already part of Swap used; Y is the RAM the pool costs, already part of RAM used.
-  A `wb` marker next to it means the pool is overflowing to the disk swap, which is slow.
+  The header shows that machine-wide on the Swap line as `X zswapped into Y RAM`: X is kept compressed, already part of Swap used; Y is the RAM the pool costs, already part of RAM used.
+  A `to disk` marker next to it means the pool is overflowing to the disk swap, which is slow.
   Per app, the compressed part of SWAP has its own column (`w`), not extra memory; in the process view, the app's own share of that pool shows as its own dim `zswap pool` row, split out of `kernel`.
 - **TOTAL** is SWAP + RAM: an accounting sum, not a promise of what closing the app frees.
-- **pressure** is the share of the last 10 s that programs spent waiting for memory.
+- **Pressure**, shown after the `Pressure` label in the header, is the share of the last 10 s that programs spent waiting for memory.
   It tells you whether memory stalls are happening, not which app causes them.
 - Rows don't add up to the header: system services (`x`) and memory outside your session (VMs, containers, other users: `elsewhere`) cover the rest.
 - Process rows are each process's own RSS: a shared page counts once per process that maps it, so summing them can overcount the app -- use the app's own row for that, not a sum of its processes. They also leave out file-backed pages, so they read smaller than htop's RES.

@@ -1,5 +1,5 @@
 """Zswap writeback rate: a sliding ~10 s window over `zswpwb` samples
-(SPEC.md "Main view", the `wb` header token).
+(SPEC.md "Main view", the `to disk` header token).
 
 Pure, over a plain tuple of `(clock, cumulative_bytes)` samples -- no
 Textual imports, mirroring `ui/rows.py`'s baseline-dict shape, so

@@ -105,6 +105,9 @@ def test_format_delta_negative_gets_minus_sign() -> None:
         (3599, "59m"),
         (3600, "1h"),
         (3600 + 12 * 60, "1h12m"),
+        (99 * 3600 + 59 * 60, "99h59m"),
+        (100 * 3600, "4d"),
+        (120 * 86400 + 5 * 3600 + 17 * 60, "120d"),
     ],
 )
 def test_format_elapsed(seconds: float, expected: str) -> None:
@@ -136,8 +139,10 @@ def test_format_pair_shares_unit_when_both_sides_pick_the_same_one() -> None:
     assert format_pair(int(18.7 * 1024**3), int(30.9 * 1024**3)) == "18.7/30.9 GiB"
 
 
-def test_format_pair_keeps_separate_units_when_they_differ() -> None:
-    assert format_pair(512 * 1024**2, 1024**3) == "512 MiB / 1.0 GiB"
+def test_format_pair_always_uses_the_totals_unit() -> None:
+    # Never a mixed "512 MiB / 1.0 GiB": `used` is forced into `total`'s unit
+    # (SPEC.md "Main view", main-view header line 1).
+    assert format_pair(512 * 1024**2, 1024**3) == "0.5/1.0 GiB"
 
 
 def test_truncate_name_keeps_short_names_as_is() -> None:
@@ -240,10 +245,16 @@ def test_format_rate_reuses_size_and_appends_per_second() -> None:
     assert format_rate(0) == "0 B/s"
 
 
-def test_format_zswap_part_reads_x_zswap_in_y() -> None:
-    zswapped = int(6.7 * 1024**3)
-    pool = int(1.9 * 1024**3)
-    assert format_zswap_part(zswapped, pool) == "6.7 GiB zswap in 1.9 GiB"
+def test_format_zswap_part_long_form_inherits_the_given_unit() -> None:
+    zswapped = int(3.0 * 1024**3)
+    pool = int(1.0 * 1024**3)
+    assert format_zswap_part(zswapped, pool, "GiB") == "3.0 zswapped into 1.0 GiB RAM"
+
+
+def test_format_zswap_part_short_form_drops_the_pool_half() -> None:
+    zswapped = int(3.0 * 1024**3)
+    pool = int(1.0 * 1024**3)
+    assert format_zswap_part(zswapped, pool, "GiB", short=True) == "3.0 zswapped"
 
 
 def test_status_line_command_ellipsizes_unit_when_wider_than_terminal() -> None:

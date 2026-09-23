@@ -23,6 +23,7 @@ from appmem.fmt import (
     pressure_word,
     size,
     truncate_name,
+    unit_of,
 )
 
 _CONTROL_MAX = 0x1F
@@ -70,12 +71,13 @@ def _pressure_line(pressure: dict[str, Any] | None) -> str:
 
 def _swap_line_part(system: dict[str, Any]) -> str:
     swap = f"Swap {format_pair(system['swap_used_bytes'], system['swap_total_bytes'])}"
-    # No `wb` here: a one-shot snapshot has no rate to show, only the
+    # No `to disk` here: a one-shot snapshot has no rate to show, only the
     # cumulative `zswap_writeback_bytes` (SPEC.md "Main view" note on
     # `zswap_writeback_bytes`). Same bracket text as the live header
     # (`format_zswap_part`), so the Swap part reads the same everywhere.
     if system["zswap_enabled"]:
-        zswap = format_zswap_part(system["zswapped_bytes"], system["zswap_pool_bytes"])
+        unit = unit_of(system["swap_total_bytes"])
+        zswap = format_zswap_part(system["zswapped_bytes"], system["zswap_pool_bytes"], unit)
         return f"{swap} ({zswap})"
     return swap
 

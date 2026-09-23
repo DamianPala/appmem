@@ -90,8 +90,8 @@ class SystemStats:
     """`/proc/vmstat` `zswpwb` (pages written back from the pool to disk
     swap) times the page size, cumulative since boot. `None` when the kernel
     has no `zswpwb` counter at all. A single snapshot has no rate of its own;
-    the live view turns two ticks of this into the `wb` MiB/s token, and an
-    agent can do the same by diffing two snapshots."""
+    the live view turns two ticks of this into the `to disk` MiB/s token,
+    and an agent can do the same by diffing two snapshots."""
     zswap_compressor: str | None = None
     """`/sys/module/zswap/parameters/compressor` (e.g. `lzo`, `zstd`). `None`
     whenever `zswap_enabled` is `False`."""

@@ -1,5 +1,5 @@
 """Tests for `appmem.writeback.update_writeback` (SPEC.md "Main view": the
-`wb` header token, a sliding ~10 s window over `zswpwb` samples)."""
+`to disk` header token, a sliding ~10 s window over `zswpwb` samples)."""
 
 from __future__ import annotations
 

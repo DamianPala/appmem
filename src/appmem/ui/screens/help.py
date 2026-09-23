@@ -53,9 +53,15 @@ _ZSWAP_DEFINITION: tuple[str, str] = (
 )
 
 _ZSWAP_HEADER_NOTE = (
-    "In the header, 'X zswap in Y' (inside Swap) is X: swapped data kept compressed in "
-    "RAM, already part of Swap used; Y: the RAM that pool costs, already part of RAM used. "
-    "'wb' next to it means the pool is overflowing to the disk swap, which is slow."
+    "In the header, Swap's 'X zswapped into Y RAM' bracket (short: 'X zswapped') is X: "
+    "swapped data kept compressed in RAM, already part of Swap used; Y: the RAM that pool "
+    "costs, already part of RAM used. 'to disk' next to it means the pool is overflowing "
+    "to the disk swap, which is slow."
+)
+
+_BAR_NOTE = (
+    "The bar on the RAM and Swap lines: '█' is used, '░' is what is left -- avail for "
+    "RAM, free for Swap."
 )
 
 _HEADER_NOTE = (
@@ -74,7 +80,10 @@ _HEADER_TERMS_NOTE = (
     "some headroom."
 )
 
-_PRESSURE_INTRO = "Memory pressure is the share of the last 10 s spent waiting for memory:"
+_PRESSURE_INTRO = (
+    "Memory pressure, shown after the Pressure label, is the share of the last 10 s "
+    "spent waiting for memory:"
+)
 _PRESSURE_ITEMS: tuple[tuple[str, str], ...] = (
     ("none", "few memory stalls in the last 10 s"),
     ("some (X.X %)", "some waiting, shown with the percentage"),
@@ -167,6 +176,7 @@ def _build_body(width: int, *, zswap_enabled: bool = False) -> str:
         "\n".join(_wrap_item(f"{key}  ", desc, w, column=10) for key, desc in definitions),
         _wrap(_HEADER_NOTE, w),
         _wrap(_HEADER_TERMS_NOTE, w),
+        _wrap(_BAR_NOTE, w),
         *([_wrap(_ZSWAP_HEADER_NOTE, w)] if zswap_enabled else []),
         "\n".join(
             [

@@ -1,4 +1,4 @@
-# appmem: spec v0.9
+# appmem: spec v0.10
 
 A live terminal view of RAM and swap usage **per application**, not per process.
 Think `btm` or `htop`, but rows are apps (Ghostty, Brave, LibreOffice), each summing all of its processes.
@@ -25,42 +25,46 @@ Which app holds the memory and swap? Is memory actually the problem right now? W
 - Textual's built-in themes: `T` opens the picker, and the choice is remembered in a config file.
 - Non-interactive commands for scripts and agents: `appmem snapshot`, `appmem app NAME`, `appmem schema`, plus an agent skill in `skills/appmem/SKILL.md`.
 
-**Not in v1:** recording/history, charts, a streaming `watch` command, CPU or I/O stats, killing processes, settings other than the theme, custom themes, login-session scopes, running as root, macOS/Windows, cgroup v1.
+**Not in v1:** recording/history, charts over time, a streaming `watch` command, CPU or I/O stats, killing processes, settings other than the theme, custom themes, login-session scopes, running as root, macOS/Windows, cgroup v1.
 
 ## Screens
 
 ### Main view
 
 ```
-RAM 20.2/30.9 GiB (3.1 GiB shared)  avail 10.8 GiB (2.1 GiB free, 6.2 GiB cache, 2.9 GiB slab)  Swap 24.0/32.0 GiB (6.7 GiB zswap in 1.9 GiB)  pressure 10s: none  system 652 MiB [x]
-Δ since 02:13 (3s)
- APP                        RAM         SWAP        TOTAL ▾     ΔRAM       ΔSWAP      PROCS
- ghostty                       6.6 GiB    11.2 GiB    17.8 GiB     -3 MiB          ·     281
- plasma                        1.6 GiB     2.3 GiB     3.9 GiB          ·          ·      17
- chrome                        1.6 GiB     2.2 GiB     3.7 GiB     -1 MiB          ·      35
+RAM       ██████████████▎░░░░░  22.1/30.9 GiB used (3.5 shared)    avail  8.8 GiB (1.5 free, 4.6 cache, 3.2 slab)
+Swap      ██████████████▋░░░░░  23.3/32.0 GiB used (3.0 zswapped into 1.0 GiB RAM)     to disk 12 MiB/s
+Pressure  none                          system 610 MiB [x]    Δ since 15:58 (12m)      elsewhere 109 MiB
+ APP                        RAM         SWAP        ZSWAP       TOTAL ▾     ΔRAM       ΔSWAP      PROCS
+ ghostty                       6.6 GiB    11.2 GiB     1.6 GiB    17.8 GiB     -3 MiB          ·     281
+ plasma                        1.6 GiB     2.3 GiB     100 MiB     3.9 GiB          ·          ·      17
+ chrome                        1.6 GiB     2.2 GiB     907 MiB     3.7 GiB     -1 MiB          ·      35
  ...
  r s t d z sort  enter procs  x system  c cache  w zswap  b reset Δ  T theme  ? help  q quit
 ```
 
-- **Header line 1** (parts joined by two spaces, each breakdown in parentheses sits inside the total it belongs to):
-  - System RAM used (`MemTotal - MemAvailable`) and total, with `shared` (`Shmem`: tmpfs such as `/tmp` and `/dev/shm`, shared memory, GPU buffers; the kernel can only swap it out, never drop it). Always shown.
-  - `avail` (`MemAvailable`, what can be allocated before swapping) with `free` (`MemFree`) and `cache` (`Cached - Shmem`, clamped at 0, the same definition as the CACHE column) and `slab` (`SReclaimable`: kernel caches of file names and inodes, dropped on demand). The three come close to `avail` but are not an exact sum: `avail` is a kernel estimate that also keeps reserves.
-  - System swap used and total, or `Swap off` when `SwapTotal` is 0. Coloured with the theme's warning colour above 50 % used, its error colour above 80 %.
-  - With zswap enabled, `(X zswap in Y)` follows Swap: X is swapped data kept compressed in RAM (`Zswapped`, already part of Swap used), Y is the RAM the pool takes (`Zswap`, already part of RAM used). While the pool writes back to the disk swap, `wb N MiB/s` joins the bracket in the theme's warning colour. The rate is taken from `/proc/vmstat` `zswpwb` over a ~10 s window, shown only while it is above 0, and never on the first tick. Without zswap, nothing is shown.
-  - Memory pressure as a bold word (see Definitions) in the theme's success/warning/error colour; omitted when `/proc/pressure/memory` does not exist.
-  - Total of the hidden system services, so the user notices when the culprit is there.
-  - `elsewhere`: memory outside the user tree and `system.slice` (root `memory.stat` minus both): VMs, containers, other users, login sessions.
-  - Never wraps. When the line is too narrow, parts drop in this order:
-    1. `elsewhere`;
-    2. `system`;
-    3. the `(free, cache, slab)` breakdown;
-    4. the zswap bracket;
-    5. `avail`;
-    6. `shared`.
-
-    Then dropped parts are put back, most important first, wherever they still fit, so a small part is not lost only because a bigger one had to go. As a result, what is visible does not only grow with the width.
-    RAM, Swap, pressure and the `wb` token always stay. When the zswap bracket drops, `wb` stays next to Swap as `(wb N MiB/s)`. Below the width of the fixed parts, the line is cropped with an ellipsis.
-- **Header line 2:** when the Δ baseline was taken and how long ago.
+- **Header: three lines, each a labelled gauge** (`RAM`, `Swap`, `Pressure`, labels in a 10-cell column):
+  - **RAM:** a bar (used vs total), then used/total in the total's unit, `used`, `(N shared)`; then `avail` with `(free, cache, slab)`.
+    - used = `MemTotal - MemAvailable`.
+    - `shared` = `Shmem`: tmpfs such as `/tmp` and `/dev/shm`, shared memory, GPU buffers. The kernel can only swap it out, never drop it.
+    - `avail` = `MemAvailable`, what can be allocated before swapping.
+    - `free` = `MemFree`; `cache` = `Cached - Shmem`, clamped at 0, the same definition as the CACHE column; `slab` = `SReclaimable`, kernel caches of file names and inodes, dropped on demand.
+    - The three come close to `avail` but are not an exact sum: `avail` is a kernel estimate that also keeps reserves.
+  - **Swap:** a bar and used/total, or `Swap off` when `SwapTotal` is 0. The pair turns the theme's error colour above 90 % used; a full swap alone is normal, pressure says whether it hurts.
+    - With zswap enabled, `(X zswapped into Y RAM)` follows. X is swapped data kept compressed in RAM (`Zswapped`, already part of Swap used); Y is the RAM the pool takes (`Zswap`, already part of RAM used). Without zswap, nothing is shown.
+    - While the pool writes back to the disk swap, `to disk N MiB/s` follows, in the theme's warning colour. The rate comes from `/proc/vmstat` `zswpwb` over a ~10 s window. It is shown only while above 0, and never on the first tick.
+  - **Pressure:** the pressure word, bold, in the theme's success/warning/error colour (see Definitions), or `unavailable` without `/proc/pressure/memory`. Then the hidden system services' total (`system N [x]`), the Δ baseline (`Δ since 14:02 (37m)`, whole days from 100 h on; shown only while the Δ columns are, from 95 columns), and `elsewhere` (memory outside the user tree and `system.slice`: VMs, containers, other users, login sessions).
+  - **Bars:** `█` fill with an eighth-block edge on a dim `░` track. The width steps with the terminal width. The fill uses the theme's accent colour, or its foreground where the accent is under 3:1 contrast. A `#`/`.` ASCII form applies when `LC_ALL`/`LC_CTYPE`/`LANG` names a non-UTF-8 locale. A bare `LANG=C` still gets Unicode bars, because Python coerces it to UTF-8 at startup. Bars carry no information that the numbers don't.
+  - **No jitter.** Every part sits in a fixed-width slot sized for its worst case (from the totals, or a literal worst case for rates and durations). Which parts show depends only on the terminal size and state (zswap on, writeback active), never on the values. Nothing moves when only the numbers change.
+  - **Narrow widths.** Each line drops its own parts, least important first:
+    - RAM: the `(free, cache, slab)` breakdown, then `avail`, then `shared`;
+    - Swap: the pool part of the bracket (`into Y RAM`), then the bracket;
+    - Pressure: `elsewhere`, then Δ, then `system`.
+    The label, the pair and the pressure word always stay; `to disk` stays in the three-line form. Below the width of the fixed parts, a line is cropped with an ellipsis. The pressure word is never cropped.
+  - **Short terminals.** Below 18 rows the header takes two lines:
+    - From 80 columns, when the RAM line fits with every droppable part removed: line 1 is the RAM line (same drops as above) plus the pressure word in its own slot. Line 2 is the Swap line plus `to disk`, Δ and `system`; it drops the zswap pool part, then the bracket, then Δ, then `system`.
+    - Otherwise, a compact form. Line 1 is `RAM u/t  Swap u/t`. Line 2 is `Pressure` word, `to disk`, `system`, as far as they fit (`system` drops first). Below ~57 columns neither fits next to the pressure slot.
+    The table takes the freed row.
 - The sort marker `▴`/`▾` sits on the sorted column. Default sort: TOTAL descending.
 - Clicking the sorted column again flips the direction.
 - Rows with equal values keep a stable order by app name.
@@ -119,7 +123,7 @@ Enter on a command drills into its member processes (title `ghostty › claude`,
 ### Help screen (`?`)
 
 A scrolling screen with the definitions below in plain words, soft-wrapped to the width, with `esc/?/q close` in its title line.
-It covers what RAM, CACHE, SWAP, TOTAL, pressure and the header's shared/free/cache/avail mean (tmpfs files count toward the app that wrote them), why rows don't add up to the header, why a closed app can still have a row, and how to act on what you see, plus one line on `T` and where the theme is saved. When zswap is enabled, it also defines the zswap bracket, `wb` and ZSWAP.
+It covers what RAM, CACHE, SWAP, TOTAL, pressure and the header's shared/free/cache/avail mean (tmpfs files count toward the app that wrote them), why rows don't add up to the header, why a closed app can still have a row, and how to act on what you see, plus one line on `T` and where the theme is saved. When zswap is enabled, it also defines the zswap bracket, `to disk` and ZSWAP. It also explains the bar glyphs (`█` used, `░` what's left).
 
 ## Keys
 

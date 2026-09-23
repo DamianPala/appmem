@@ -155,8 +155,8 @@ def test_snapshot_text_header_shows_zswap_bracket_when_enabled() -> None:
     text = render_snapshot_text(document, total_apps=41)
     header_line = text.splitlines()[0]
 
-    assert "6.7 GiB zswap in 1.9 GiB" in header_line
-    assert "wb" not in header_line  # a one-shot snapshot never has a rate
+    assert "6.7 zswapped into 1.9 GiB RAM" in header_line
+    assert "to disk" not in header_line  # a one-shot snapshot never has a rate
 
 
 def test_snapshot_text_header_omits_zswap_bracket_when_disabled() -> None:

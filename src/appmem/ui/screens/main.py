@@ -13,6 +13,7 @@ never rebuilds the table (SPEC.md "Tech" notes).
 
 from __future__ import annotations
 
+import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.color import Color
 from textual.screen import Screen
+from textual.theme import Theme
 from textual.timer import Timer
 from textual.widgets import DataTable, Static
 from textual.widgets.data_table import ColumnKey, RowKey
@@ -47,7 +49,7 @@ from appmem.collect import find_units as collect_find_units
 from appmem.collect import read_unit as collect_read_unit
 from appmem.fmt import format_delta, size, truncate_name
 from appmem.render import escape_control_chars
-from appmem.ui.header import ThemeColors, format_line1, format_line2
+from appmem.ui.header import ThemeColors, render_header
 from appmem.ui.layout import build_footer
 from appmem.ui.process_rows import initial_process_sort
 from appmem.ui.rows import (
@@ -155,10 +157,91 @@ def _rich_color(theme_color: str) -> str:
     # `Theme.success`/`warning`/`error` are Textual colour specs, and the two
     # built-in `ansi-*` themes use Textual's own "ansi_red"-style names
     # (SPEC.md "Main view"), which Rich's `Style` parser doesn't understand
-    # on its own -- `format_line1` plugs this straight into a Rich style
+    # on its own -- `render_header` plugs this straight into a Rich style
     # string. Round-tripping through `textual.color.Color` normalises every
     # theme's colour (hex or `ansi_*`) to a form Rich always accepts.
     return Color.parse(theme_color).rich_color.name
+
+
+_LOCALE_ENV_VARS = ("LC_ALL", "LC_CTYPE", "LANG")
+
+
+def _locale_setting() -> str:
+    """The first non-empty of `LC_ALL`/`LC_CTYPE`/`LANG` (the same
+    resolution order glibc uses), or `"C"` -- the POSIX default -- when none
+    of the three is set at all."""
+    for var in _LOCALE_ENV_VARS:
+        value = os.environ.get(var, "")
+        if value:
+            return value
+    return "C"
+
+
+def _is_non_utf8_locale(setting: str) -> bool:
+    # A `@modifier` (`de_DE.UTF-8@euro`) is not part of the codeset.
+    base, _, codeset = setting.partition("@")[0].partition(".")
+    if base.upper() in ("C", "POSIX") and not codeset:
+        return True
+    if not codeset:
+        return True  # no codeset at all (e.g. bare "en_US"): can't assume UTF-8
+    return codeset.replace("-", "").upper() != "UTF8"
+
+
+def _detect_ascii_bars() -> bool:
+    """Whether the header's gauge bars must fall back to a plain `#`/`.`
+    form: the Unicode Block Elements (`█ ░` and the eighth-block glyphs) need
+    a UTF-8 locale (`header.py`'s module docstring, SPEC.md "Main view").
+    Catches an explicit `LC_ALL=C`/`POSIX` and an installed non-UTF-8
+    codeset. A bare `LANG=C` (or no locale at all) never gets here as C:
+    Python's PEP 538 coercion exports `LC_CTYPE=C.UTF-8` at startup, so it
+    counts as UTF-8, the same as the rest of the Textual UI's glyphs."""
+    return _is_non_utf8_locale(_locale_setting())
+
+
+_MIN_BAR_CONTRAST = 3.0
+# Where a theme sets no background/foreground of its own: Textual's own
+# built-in defaults (`textual.design.ColorSystem._generate`), so a theme's
+# contrast is measured against what actually renders, not against black.
+_DEFAULT_DARK_BACKGROUND = "#121212"
+_DEFAULT_LIGHT_BACKGROUND = "#efefef"
+
+
+def _contrast_ratio(a: Color, b: Color) -> float:
+    """WCAG relative-luminance contrast ratio between two colours: 1
+    (identical) to 21 (black on white)."""
+
+    def linear(channel: int) -> float:
+        c = channel / 255
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+    def luminance(color: Color) -> float:
+        return 0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b)
+
+    lighter, darker = sorted((luminance(a), luminance(b)), reverse=True)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def _theme_background(theme: Theme) -> Color:
+    if theme.background:
+        return Color.parse(theme.background)
+    return Color.parse(_DEFAULT_DARK_BACKGROUND if theme.dark else _DEFAULT_LIGHT_BACKGROUND)
+
+
+def _bar_fill_colour(theme: Theme) -> str:
+    """The gauge bars' fill colour (SPEC.md "Main view", "Colour"): the
+    theme's own accent colour, unless it falls short of WCAG's 3:1 contrast
+    floor against that theme's background (flexoki measures 2.93:1) -- then
+    its foreground colour, chosen for text contrast, instead. Skipped for
+    the two `ansi_*` themes, whose colours are the terminal's own with no
+    real RGB behind them to measure a ratio against."""
+    if theme.ansi:
+        return _rich_color(theme.primary)
+    primary = Color.parse(theme.primary)
+    background = _theme_background(theme)
+    if _contrast_ratio(primary, background) >= _MIN_BAR_CONTRAST:
+        return _rich_color(theme.primary)
+    foreground = Color.parse(theme.foreground) if theme.foreground else background.inverse
+    return foreground.rich_color.name
 
 
 def _collect_apps(root: Path, uid: int, include_system: bool) -> list[AppStats]:
@@ -209,7 +292,7 @@ class MainScreen(Screen[None]):
     # the footer out of view. `1fr` gives the table only the space left over.
     DEFAULT_CSS = """
     MainScreen #table { height: 1fr; }
-    MainScreen #header1, MainScreen #header2, MainScreen #footer {
+    MainScreen #header1, MainScreen #header2, MainScreen #header3, MainScreen #footer {
         text-wrap: nowrap;
         text-overflow: ellipsis;
     }
@@ -268,6 +351,7 @@ class MainScreen(Screen[None]):
         self._last_stats: SystemStats | None = None
         self._tick_in_flight = False
         self._column_widths: tuple[int | None, ...] = ()
+        self._ascii_bars = _detect_ascii_bars()
         self._generation = 0
         """Bumped on every context change (`x` toggled, screen covered or
         resumed). A background result carries the generation it was read
@@ -279,6 +363,7 @@ class MainScreen(Screen[None]):
         self._zswap_column_shown = self._show_zswap_column()
         yield Static(id="header1")
         yield Static(id="header2")
+        yield Static(id="header3")
         table: DataTable[str | Text] = DataTable(id="table", cursor_type="row")
         self._rebuild_columns(table)
         yield table
@@ -370,8 +455,9 @@ class MainScreen(Screen[None]):
 
     def on_resize(self, event: events.Resize) -> None:
         # Header, columns and footer never wrap -- recompute on every resize,
-        # not just on the next tick.
-        self._update_header_line1()
+        # not just on the next tick. The header also reacts to height (2 vs
+        # 3 lines), not only width.
+        self._update_header_lines()
         self._sync_columns()
         self._update_footer()
 
@@ -467,54 +553,58 @@ class MainScreen(Screen[None]):
                 self._rebuild_table(scroll=False)  # automatic, not a user selection
             # After `_zswap_column_shown`: the sort item's `z` cap follows it.
             self._update_footer()
-        self._update_header_line1()
-        self._update_header_line2()
+        self._update_header_lines()
 
     def _theme_colors(self) -> ThemeColors:
         theme = self.app.current_theme  # pyright: ignore[reportUnknownMemberType]
-        # Every built-in theme sets all three (checked against
+        # Every built-in theme sets success/warning/error (checked against
         # `textual.theme.BUILTIN_THEMES` directly); the fallback is only for
         # `Theme.success`/`warning`/`error`'s nominal `str | None` type.
         return ThemeColors(
             success=_rich_color(theme.success or "green"),
             warning=_rich_color(theme.warning or "yellow"),
             error=_rich_color(theme.error or "red"),
+            primary=_bar_fill_colour(theme),
         )
 
-    def _update_header_line1(self) -> None:
+    _HEADER_IDS: ClassVar[tuple[str, ...]] = ("#header1", "#header2", "#header3")
+
+    def _update_header_lines(self) -> None:
         if self._last_stats is None:
             return
-        widget = self.query_one("#header1", Static)
-        content = format_line1(
+        lines = render_header(
             self._last_stats,
             self.app.size.width,  # pyright: ignore[reportUnknownMemberType]
-            self._theme_colors(),
-            self._writeback_rate,
+            self.app.size.height,  # pyright: ignore[reportUnknownMemberType]
+            colors=self._theme_colors(),
+            baseline_time=self._baseline_time,
+            now=datetime.now(),
+            writeback_rate=self._writeback_rate,
+            ascii_bars=self._ascii_bars,
         )
-        if widget.content != content:
-            widget.update(content)
+        for widget_id, content in zip(self._HEADER_IDS, lines, strict=False):
+            widget = self.query_one(widget_id, Static)
+            if widget.content != content:
+                widget.update(content)
+            widget.display = True
+        # `render_header` returns 2 lines below H=18: hide the unused third
+        # widget so the table gets its row back (`MainScreen #table {
+        # height: 1fr }`), instead of leaving an empty line on screen.
+        for widget_id in self._HEADER_IDS[len(lines) :]:
+            self.query_one(widget_id, Static).display = False
 
     def refresh_theme(self) -> None:
         """Re-render the header right away after an in-app theme change
         (SPEC.md "Main view": "every colour appmem sets follows the
         theme"), instead of waiting up to a full interval for the next
         tick. Called by `AppMemApp.watch_theme`."""
-        self._update_header_line1()
-
-    def _update_header_line2(self) -> None:
-        self._set_static("#header2", format_line2(self._baseline_time, datetime.now()))
+        self._update_header_lines()
 
     def _update_footer(self) -> None:
         widget = self.query_one("#footer", Static)
         content = self._footer_text()
         if widget.content != content:
             widget.update(content)
-
-    def _set_static(self, selector: str, text: str) -> None:
-        # Skip unchanged text: every `update` costs a layout pass and a repaint.
-        widget = self.query_one(selector, Static)
-        if widget.content != text:
-            widget.update(text)
 
     # --- columns --------------------------------------------------------------
 
@@ -787,7 +877,7 @@ class MainScreen(Screen[None]):
             self._delta_restyle_pending = True
         self._young_baseline = True
         self._apply_rows(build_rows(apps, self._baseline), scroll=True)  # explicit `b` key press
-        self._update_header_line2()
+        self._update_header_lines()  # the Δ baseline time is on the Pressure line
 
     def action_help(self) -> None:
         # Textual's `Screen.app` is typed from a contextvar pyright can't fully

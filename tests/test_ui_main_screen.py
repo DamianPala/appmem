@@ -563,10 +563,10 @@ async def test_header_shows_zswap_bracket_when_enabled(tmp_path: Path) -> None:
     # test_ui_header.py covers the drop order itself); 120 already drops it here.
     async with _app(root).run_test(size=(200, 24)) as pilot:
         await pilot.pause()
-        header1 = pilot.app.query_one("#header1", Static)
+        header2 = pilot.app.query_one("#header2", Static)  # Swap line
 
-        assert isinstance(header1.content, Text)
-        assert "zswap in" in header1.content.plain
+        assert isinstance(header2.content, Text)
+        assert "zswapped" in header2.content.plain
 
 
 @pytest.mark.asyncio
@@ -677,13 +677,16 @@ async def test_header_lines_and_footer_stay_on_screen_with_many_rows(tmp_path: P
         screen = pilot.app.screen
         header1 = screen.query_one("#header1", Static)
         header2 = screen.query_one("#header2", Static)
+        header3 = screen.query_one("#header3", Static)
         footer = screen.query_one("#footer", Static)
 
         assert screen.scroll_offset.y == 0
-        assert header1.region.y == 0 and header2.region.y == 1
+        assert header1.region.y == 0 and header2.region.y == 1 and header3.region.y == 2
         assert footer.region.bottom == 35
         assert str(header1.content).startswith("RAM ")
-        assert str(header2.content).startswith("Δ since ")
+        assert str(header2.content).startswith("Swap ")
+        assert str(header3.content).startswith("Pressure ")
+        assert "Δ since " in str(header3.content)
 
 
 @pytest.mark.asyncio
@@ -1226,6 +1229,7 @@ async def test_header_line1_recomputes_on_resize(tmp_path: Path) -> None:
         wide_text = str(header1.content)
 
         await pilot.resize_terminal(30, 24)
+        await pilot.pause()  # let the resize settle before reading the recomputed header
         narrow_text = str(header1.content)
 
         assert narrow_text != wide_text
@@ -1834,47 +1838,58 @@ async def test_startup_theme_warning_shows_as_a_notification(tmp_path: Path) -> 
 
 @pytest.mark.asyncio
 async def test_header_colours_follow_the_running_apps_current_theme(tmp_path: Path) -> None:
-    # `_base_tree`'s fixture swap is 20/32 GiB used (62.5 %), above the 50 %
-    # warning threshold -- the swap figure is coloured on this fixture as-is.
-    root = _base_tree(tmp_path)
-    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+    # Swap 92 % used, above the header's 90 % error threshold (the 50 %
+    # warning is gone -- SPEC.md "Main view").
+    write_memory_stat(user_service_root(tmp_path, UID))
+    write_meminfo(
+        tmp_path,
+        mem_total_kb=32_000_000,
+        mem_available_kb=11_000_000,
+        swap_total_kb=32_000_000,
+        swap_free_kb=2_560_000,
+    )
+    _app_unit(tmp_path, "app-alpha.service", ram=1 * 1024**2, swap=0)
 
     app = AppMemApp(
-        root=root, uid=UID, interval=NO_AUTO_REFRESH_INTERVAL, include_system=False, theme="dracula"
+        root=tmp_path,
+        uid=UID,
+        interval=NO_AUTO_REFRESH_INTERVAL,
+        include_system=False,
+        theme="dracula",
     )
     async with app.run_test(size=(120, 30)) as pilot:
         await pilot.pause()
         screen = pilot.app.screen
         assert isinstance(screen, MainScreen)
-        header = screen.query_one("#header1", Static).content
+        header = screen.query_one("#header2", Static).content  # Swap line
         assert isinstance(header, Text)
 
-        dracula_warning = Color.parse(BUILTIN_THEMES["dracula"].warning or "").rich_color.name
-        # `_base_tree`'s fixture is kB (helpers.write_meminfo); read_system
-        # converts to bytes, so the pair rendered in the header uses bytes too.
+        dracula_error = Color.parse(BUILTIN_THEMES["dracula"].error or "").rich_color.name
+        # This fixture is kB (helpers.write_meminfo); read_system converts to
+        # bytes, so the pair rendered in the header uses bytes too.
         swap_total = 32_000_000 * 1024
-        swap_free = 12_000_000 * 1024
+        swap_free = 2_560_000 * 1024
         pair = format_pair(swap_total - swap_free, swap_total)
-        assert dracula_warning in _style_at(header, pair)
+        assert dracula_error in _style_at(header, pair)
 
         pilot.app.theme = "nord"
         await pilot.pause()
-        header_after = screen.query_one("#header1", Static).content
+        header_after = screen.query_one("#header2", Static).content
         assert isinstance(header_after, Text)
-        nord_warning = Color.parse(BUILTIN_THEMES["nord"].warning or "").rich_color.name
-        assert nord_warning != dracula_warning
-        assert nord_warning in _style_at(header_after, pair)
-        assert dracula_warning not in _style_at(header_after, pair)
+        nord_error = Color.parse(BUILTIN_THEMES["nord"].error or "").rich_color.name
+        assert nord_error != dracula_error
+        assert nord_error in _style_at(header_after, pair)
+        assert dracula_error not in _style_at(header_after, pair)
 
 
 @pytest.mark.asyncio
 async def test_writeback_rate_reaches_the_header_in_the_running_theme_colour(
     tmp_path: Path,
 ) -> None:
-    # `_update_header_line1` must actually pass `self._writeback_rate` through
-    # to `format_line1` -- `update_writeback` and `format_line1` are each
+    # `_update_header_lines` must actually pass `self._writeback_rate` through
+    # to `render_header` -- `update_writeback` and `render_header` are each
     # tested on their own (test_writeback.py, test_ui_header.py), but nothing
-    # else covers this join, the `wb` token as it runs live.
+    # else covers this join, the `to disk` token as it runs live.
     root = _zswap_base_tree(tmp_path)
     write_vmstat(root, zswpwb=0)
 
@@ -1894,12 +1909,12 @@ async def test_writeback_rate_reaches_the_header_in_the_running_theme_colour(
         screen._writeback_history = ((time.monotonic() - 1.0, 0),)  # pyright: ignore[reportPrivateUsage]
         screen._update_header(replace(stats, zswap_writeback_bytes=10 * 1024 * 1024))  # pyright: ignore[reportPrivateUsage]
 
-        header = screen.query_one("#header1", Static).content
+        header = screen.query_one("#header2", Static).content  # Swap line
         assert isinstance(header, Text)
-        assert "wb " in header.plain
+        assert "to disk " in header.plain
 
         dracula_warning = Color.parse(BUILTIN_THEMES["dracula"].warning or "").rich_color.name
-        assert dracula_warning in _style_at(header, "wb ")
+        assert dracula_warning in _style_at(header, "to disk ")
 
 
 @pytest.mark.asyncio
@@ -2211,3 +2226,190 @@ async def test_picker_still_previews_confirms_and_cancels_as_before(tmp_path: Pa
         await pilot.pause()
         assert pilot.app.theme == "dracula"
         assert config_path().read_text() == 'theme = "dracula"\n'
+
+
+# --- header locale/contrast detection (SPEC.md "Main view") ------------------
+
+
+@pytest.mark.parametrize(
+    ("setting", "expected"),
+    [
+        ("C", True),
+        ("POSIX", True),
+        ("C.UTF-8", False),  # a real UTF-8 locale, unlike a bare LANG=C
+        ("en_US.UTF-8", False),
+        ("en_US.utf8", False),
+        ("en_US.ISO-8859-1", True),
+        ("en_US", True),  # no codeset at all: can't assume UTF-8
+        ("de_DE.UTF-8@euro", False),  # a modifier isn't part of the codeset
+        ("de_DE.ISO-8859-15@euro", True),
+    ],
+)
+def test_is_non_utf8_locale(setting: str, expected: bool) -> None:
+    assert main_screen._is_non_utf8_locale(setting) is expected  # pyright: ignore[reportPrivateUsage]
+
+
+def test_locale_setting_prefers_lc_all_then_lc_ctype_then_lang(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LC_ALL", "")
+    monkeypatch.setenv("LC_CTYPE", "")
+    monkeypatch.setenv("LANG", "en_US.UTF-8")
+    assert main_screen._locale_setting() == "en_US.UTF-8"  # pyright: ignore[reportPrivateUsage]
+
+    monkeypatch.setenv("LC_CTYPE", "C")
+    assert main_screen._locale_setting() == "C"  # pyright: ignore[reportPrivateUsage]
+
+    monkeypatch.setenv("LC_ALL", "POSIX")
+    assert main_screen._locale_setting() == "POSIX"  # pyright: ignore[reportPrivateUsage]
+
+
+def test_locale_setting_defaults_to_c_when_nothing_is_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LC_ALL", raising=False)
+    monkeypatch.delenv("LC_CTYPE", raising=False)
+    monkeypatch.delenv("LANG", raising=False)
+    assert main_screen._locale_setting() == "C"  # pyright: ignore[reportPrivateUsage]
+
+
+def test_detect_ascii_bars_follows_the_locale_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A real process started with a bare `LANG=C` already has
+    # `LC_CTYPE=C.UTF-8` from Python's PEP 538 coercion; this checks that
+    # the environment, not a value cached at import, decides.
+    monkeypatch.delenv("LC_ALL", raising=False)
+    monkeypatch.delenv("LC_CTYPE", raising=False)
+    monkeypatch.setenv("LANG", "C")
+    assert main_screen._detect_ascii_bars() is True  # pyright: ignore[reportPrivateUsage]
+
+    monkeypatch.setenv("LANG", "en_US.UTF-8")
+    assert main_screen._detect_ascii_bars() is False  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.asyncio
+async def test_ascii_bars_flag_is_wired_from_detection_into_the_rendered_header(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("LC_ALL", raising=False)
+    monkeypatch.delenv("LC_CTYPE", raising=False)
+    monkeypatch.setenv("LANG", "C")
+    root = _base_tree(tmp_path)
+
+    async with _app(root).run_test(size=(200, 24)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.screen
+        assert isinstance(screen, MainScreen)
+        assert screen._ascii_bars is True  # pyright: ignore[reportPrivateUsage]
+        header1 = screen.query_one("#header1", Static).content
+        assert isinstance(header1, Text)
+        assert "#" in header1.plain
+        assert "█" not in header1.plain and "░" not in header1.plain
+
+
+# --- bar fill contrast (SPEC.md "Main view", "Colour") -----------------------
+
+
+def test_contrast_ratio_of_black_and_white_is_maximal() -> None:
+    ratio = main_screen._contrast_ratio(  # pyright: ignore[reportPrivateUsage]
+        Color.parse("#000000"), Color.parse("#ffffff")
+    )
+    assert ratio == pytest.approx(21.0, abs=0.1)
+
+
+def test_contrast_ratio_of_identical_colours_is_one() -> None:
+    ratio = main_screen._contrast_ratio(  # pyright: ignore[reportPrivateUsage]
+        Color.parse("#336699"), Color.parse("#336699")
+    )
+    assert ratio == pytest.approx(1.0, abs=0.001)
+
+
+@pytest.mark.parametrize("theme_name", sorted(BUILTIN_THEMES))
+def test_bar_fill_colour_clears_3_to_1_contrast_in_every_built_in_theme(theme_name: str) -> None:
+    theme = BUILTIN_THEMES[theme_name]
+    fill = main_screen._bar_fill_colour(theme)  # pyright: ignore[reportPrivateUsage]
+
+    if theme.ansi:  # no real RGB to measure a ratio against; just don't crash
+        assert fill
+        return
+
+    background = main_screen._theme_background(theme)  # pyright: ignore[reportPrivateUsage]
+    # `fill` is already a Rich colour NAME (`_rich_color`'s output), not
+    # necessarily a hex string `Color.parse` round-trips cleanly -- recompute
+    # the same candidate the implementation chose between and check that one.
+    primary = Color.parse(theme.primary)
+    contrast_primary = main_screen._contrast_ratio(primary, background)  # pyright: ignore[reportPrivateUsage]
+    if contrast_primary >= main_screen._MIN_BAR_CONTRAST:  # pyright: ignore[reportPrivateUsage]
+        assert contrast_primary >= 3.0
+    else:
+        foreground = Color.parse(theme.foreground) if theme.foreground else background.inverse
+        contrast_foreground = main_screen._contrast_ratio(  # pyright: ignore[reportPrivateUsage]
+            foreground, background
+        )
+        assert contrast_foreground >= 3.0
+
+
+def test_bar_fill_colour_falls_back_to_foreground_on_flexoki() -> None:
+    # flexoki's own accent measures 2.93:1 against its background -- below
+    # the 3:1 floor, so the bar must fall back to its foreground colour.
+    theme = BUILTIN_THEMES["flexoki"]
+    background = main_screen._theme_background(theme)  # pyright: ignore[reportPrivateUsage]
+    primary_contrast = main_screen._contrast_ratio(  # pyright: ignore[reportPrivateUsage]
+        Color.parse(theme.primary), background
+    )
+    assert primary_contrast < 3.0
+
+    fill = main_screen._bar_fill_colour(theme)  # pyright: ignore[reportPrivateUsage]
+    assert fill != Color.parse(theme.primary).rich_color.name
+    foreground = Color.parse(theme.foreground) if theme.foreground else background.inverse
+    assert fill == foreground.rich_color.name
+
+
+def test_bar_fill_colour_skips_contrast_math_for_ansi_themes() -> None:
+    theme = BUILTIN_THEMES["ansi-dark"]
+    fill = main_screen._bar_fill_colour(theme)  # pyright: ignore[reportPrivateUsage]
+    assert fill == Color.parse(theme.primary).rich_color.name
+
+
+# --- #header3 hidden below H=18, table reclaims the row ----------------------
+
+
+@pytest.mark.asyncio
+async def test_header3_hidden_and_table_reclaims_its_row_below_height_18(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(120, 15)) as pilot:
+        await pilot.pause()
+        header3 = pilot.app.query_one("#header3", Static)
+        assert header3.display is False
+        table = _table(pilot)
+        assert table.region.y == 2  # header1 + header2, no header3 row
+
+    async with _app(root).run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        header3 = pilot.app.query_one("#header3", Static)
+        assert header3.display is True
+        table = _table(pilot)
+        assert table.region.y == 3  # header1 + header2 + header3
+
+
+# --- NO_COLOR: glyphs and content survive with styling suppressed ------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size", [(120, 40), (100, 30), (80, 24), (90, 15), (70, 15), (40, 10)])
+async def test_header_renders_under_no_color(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, size: tuple[int, int]
+) -> None:
+    monkeypatch.setenv("NO_COLOR", "1")
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=size) as pilot:
+        await pilot.pause()
+        screen = pilot.app.screen
+        assert isinstance(screen, MainScreen)
+        header1 = screen.query_one("#header1", Static).content
+        assert isinstance(header1, Text)
+        assert "RAM" in header1.plain
+        assert any(glyph in header1.plain for glyph in ("█", "#", "/"))  # bar or bare pair

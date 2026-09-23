@@ -13,16 +13,52 @@ _MIB = 1024**2
 _GIB = 1024**3
 
 
+def _unit_for(num_bytes: int) -> str:
+    """The unit `size()` would pick for `num_bytes`, on its own so a
+    breakdown figure can be forced into another number's unit (`unit_of`,
+    `size_in_unit`) instead of always picking its own."""
+    if num_bytes < _KIB:
+        return "B"
+    # Choose the unit by the rounded value, so 1 MiB - 1 B shows `1 MiB`, not `1024 KiB`.
+    if round(num_bytes / _KIB) < 1024:
+        return "KiB"
+    if round(num_bytes / _MIB) < 1024:
+        return "MiB"
+    return "GiB"
+
+
+def _format_as(num_bytes: int, unit: str) -> str:
+    """`num_bytes` forced into `unit`, with that unit's own precision (GiB
+    keeps one decimal, everything else is a rounded integer)."""
+    if unit == "B":
+        return f"{num_bytes} B"
+    if unit == "KiB":
+        return f"{round(num_bytes / _KIB)} KiB"
+    if unit == "MiB":
+        return f"{round(num_bytes / _MIB)} MiB"
+    return f"{num_bytes / _GIB:.1f} GiB"
+
+
 def size(num_bytes: int) -> str:
     """Format a byte count using binary units, e.g. ``16.8 GiB``, ``677 MiB``, ``0 B``."""
-    if num_bytes < _KIB:
-        return f"{num_bytes} B"
-    # Choose the unit by the rounded value, so 1 MiB - 1 B shows `1 MiB`, not `1024 KiB`.
-    if (kib := round(num_bytes / _KIB)) < 1024:
-        return f"{kib} KiB"
-    if (mib := round(num_bytes / _MIB)) < 1024:
-        return f"{mib} MiB"
-    return f"{num_bytes / _GIB:.1f} GiB"
+    return _format_as(num_bytes, _unit_for(num_bytes))
+
+
+def unit_of(num_bytes: int) -> str:
+    """The unit `size(num_bytes)` renders in, e.g. ``"GiB"``. Lets a caller
+    force a breakdown figure into another number's unit instead of its own
+    (the main-view header's "a breakdown inherits its parent's unit, instead
+    of repeating it" rule, SPEC.md "Main view")."""
+    return _unit_for(num_bytes)
+
+
+def size_in_unit(num_bytes: int, unit: str) -> str:
+    """`num_bytes` formatted in a caller-chosen `unit` (from `unit_of`),
+    without the unit suffix -- the number half of a breakdown figure that
+    inherits its parent's unit instead of repeating it."""
+    formatted = _format_as(num_bytes, unit)
+    num, _, _ = formatted.rpartition(" ")
+    return num
 
 
 def pressure_word(some_avg10: float, some_avg60: float, full_avg10: float) -> str:
@@ -54,7 +90,11 @@ def format_delta(num_bytes: int) -> str:
 
 
 def format_elapsed(seconds: float) -> str:
-    """Compact elapsed-time string for the Δ baseline header line, e.g. ``5m``, ``1h12m``."""
+    """Compact elapsed-time string for the Δ baseline header line, e.g. ``5m``, ``1h12m``.
+
+    From 100 h on, whole days only (``4d``, ``120d``), so the text never
+    outgrows the header's 6-cell elapsed slot (``99h59m``).
+    """
     total = int(seconds)
     if total < 60:
         return f"{total}s"
@@ -62,6 +102,8 @@ def format_elapsed(seconds: float) -> str:
     if minutes < 60:
         return f"{minutes}m"
     hours, minutes = divmod(minutes, 60)
+    if hours >= 100:
+        return f"{hours // 24}d"
     return f"{hours}h{minutes}m" if minutes else f"{hours}h"
 
 
@@ -88,27 +130,36 @@ def format_rate(bytes_per_second: int) -> str:
     return f"{size(bytes_per_second)}/s"
 
 
-def format_zswap_part(zswapped_bytes: int, zswap_pool_bytes: int) -> str:
-    """``X zswap in Y``: `X` is swapped data kept compressed in RAM, already
-    part of SWAP used; `Y` is the RAM the pool costs, already part of RAM
-    used (SPEC.md "Main view"). Shared by the live header and the snapshot
-    text report, so the Swap part reads the same wherever it's rendered.
+def format_zswap_part(
+    zswapped_bytes: int, zswap_pool_bytes: int, unit: str, *, short: bool = False
+) -> str:
+    """``X zswapped into Y RAM``, short form ``X zswapped`` (SPEC.md "Main
+    view", main-view header). `X` (swapped data kept
+    compressed in RAM, already part of Swap used) is given in `unit` -- the
+    Swap pair's own unit (`unit_of`) -- without repeating it, the same rule
+    as every other header breakdown. `Y` (the RAM the pool costs, already
+    part of RAM used) is a separate quantity charged against RAM rather than
+    Swap, so it keeps its own unit. Shared by the live header and the
+    `snapshot` text report, so the Swap part reads the same wherever it's
+    rendered.
     """
-    return f"{size(zswapped_bytes)} zswap in {size(zswap_pool_bytes)}"
+    zswapped = size_in_unit(zswapped_bytes, unit)
+    if short:
+        return f"{zswapped} zswapped"
+    return f"{zswapped} zswapped into {size(zswap_pool_bytes)} RAM"
 
 
 def format_pair(used: int, total: int) -> str:
-    """Format a used/total byte pair, sharing the unit when both render to it.
+    """Format a used/total byte pair, always in the total's unit.
 
-    ``18.7/30.9 GiB`` when `used` and `total` pick the same unit; otherwise
-    each keeps its own, e.g. ``512 MiB / 1.0 GiB`` (SPEC.md main-view header
-    line 1).
+    ``18.7/30.9 GiB``, or ``0.5/1.0 GiB`` when `used` alone would otherwise
+    pick a smaller unit (SPEC.md main-view header line 1: never a mixed
+    ``512 MiB / 1.0 GiB``).
     """
-    used_num, _, used_unit = size(used).rpartition(" ")
-    total_num, _, total_unit = size(total).rpartition(" ")
-    if used_unit == total_unit:
-        return f"{used_num}/{total_num} {used_unit}"
-    return f"{size(used)} / {size(total)}"
+    unit = _unit_for(total)
+    used_num = size_in_unit(used, unit)
+    total_num = size_in_unit(total, unit)
+    return f"{used_num}/{total_num} {unit}"
 
 
 def truncate_name(name: str, cap: int = 32) -> str:
