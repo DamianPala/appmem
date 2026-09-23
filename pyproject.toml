@@ -28,7 +28,7 @@ build-backend = "uv_build"
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-src = ["src", "tests"]
+src = ["src", "tests", "scripts"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "N", "UP", "B", "C4", "SIM", "RUF", "C90", "PLR0913", "PLR0917"]
@@ -39,12 +39,25 @@ pylint.max-positional-args = 5
 [tool.ruff.lint.isort]
 known-first-party = ["appmem"]
 
+[tool.ruff.lint.per-file-ignores]
+# scripts/screenshots.py fixes `sys.path` to reach tests/helpers.py before
+# importing from it -- see the comment at that import.
+"scripts/*" = ["E402"]
+
 [tool.pyright]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
-include = ["src", "tests"]
+include = ["src", "tests", "scripts"]
 venvPath = "."
 venv = ".venv"
+
+[[tool.pyright.executionEnvironments]]
+# Only scripts/ needs tests/helpers.py on its path (see the comment at that
+# import in scripts/screenshots.py); scoping it here, instead of a top-level
+# extraPaths, keeps pyright resolving the installed `appmem` package for
+# src/ and tests/ exactly as before.
+root = "scripts"
+extraPaths = ["tests", "src"]
 
 [tool.pytest.ini_options]
 addopts = "--strict-markers --strict-config"

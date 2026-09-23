@@ -6,17 +6,9 @@ See which **applications** hold your RAM and swap on Linux, live, in the termina
 A browser or a terminal is dozens of them, so "what is eating my swap?" turns into mental math.
 appmem reads the memory counters the kernel already keeps for every app (systemd puts each one in its own cgroup), adds them up per app, and shows one sortable row per app, refreshed every second.
 
-```
-RAM       ██████████▊░░░░░░░░░  16.7/30.9 GiB used (3.0 shared)    avail 14.2 GiB (8.2 free, 6.0 cache, 2.1 slab)
-Swap      ███████████████░░░░░  24.0/32.0 GiB used
-Pressure  none                          system 652 MiB [x]    Δ since 02:13 (3s)       elsewhere 116 MiB
- APP                         RAM        SWAP        TOTAL ▾     ΔRAM       ΔSWAP      PROCS
- ghostty                       6.6 GiB    11.2 GiB    17.8 GiB     -3 MiB          ·     281
- plasma                        1.6 GiB     2.3 GiB     3.9 GiB          ·          ·      17
- chrome                        1.6 GiB     2.2 GiB     3.7 GiB          ·     -1 MiB      35
- code                          1.4 GiB     1.5 GiB     2.9 GiB          ·          ·      32
- r s t d sort  enter procs  x system  c cache  b reset Δ  ? help  q quit
-```
+![appmem's main view: one row per app, sorted by TOTAL](docs/screenshots/main.svg)
+
+Screenshots are generated from fixture data, never a real machine; regenerate them with `uv run python scripts/screenshots.py`.
 
 ## Quick start
 
@@ -51,6 +43,8 @@ Everything you start from a terminal counts as the terminal.
 In the process view press `g` to group by command, then `Enter` on a command to see its processes.
 That's how a "terminal holding 17 GiB" turns out to be eighteen `claude` processes plus the terminal's own main process, running for 86 days and sitting on 3.4 GiB of swap.
 
+![The process view, grouped by command: several claude processes collapse into one row](docs/screenshots/processes.svg)
+
 **Watch it change.**
 ΔSWAP and ΔRAM show how each app grew or shrank since you started appmem (`b` resets the starting point).
 A dim `·` means less than 1 MiB of change.
@@ -82,6 +76,9 @@ Options: `appmem -i SECONDS` sets the refresh interval (default 1, minimum 0.2),
 ## Theme
 
 `T` (or `Ctrl+P` -> "Theme") opens a small panel docked to the right, on the current theme, marked with `✓`: any of Textual's built-in themes, plus `terminal-dark` and `terminal-light`, which use your terminal's own colours instead of one of appmem's built-in palettes (a dim `your terminal's colours` line marks them while highlighted).
+
+![The theme panel open on dracula, live-previewed on the main view behind it](docs/screenshots/theme-panel.svg)
+
 `↑`/`↓` (or `PgUp`/`PgDn`/`Home`/`End`) previews a theme on the running app right away; `Enter`, or a click on a theme, keeps it and closes the panel; `Esc`, `T` again, or a click outside the panel restores the theme that was running when it opened.
 Keeping a theme saves it to `$XDG_CONFIG_HOME/appmem/config.toml` (default `~/.config/appmem/config.toml`), so it's back next time you start appmem -- unless it's already the file's own value, which saves nothing.
 Startup order: `--theme NAME` on the command line, then the `APPMEM_THEME` environment variable, then that config file, then the `TEXTUAL_THEME` environment variable (Textual's own setting), then Textual's built-in default -- `--theme` and `APPMEM_THEME` never write the file.

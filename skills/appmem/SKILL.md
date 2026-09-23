@@ -32,7 +32,7 @@ You use its non-interactive commands; the live TUI is for the human.
    The snapshot's `next` field already holds the command for the biggest one.
    Read `commands.items` first (the app's processes already summed per command name, like the TUI's `g`), then `processes.items`.
    To act on one command, find its PIDs and units in `processes.items` by `name`.
-   If `processes.has_more` is true, rerun with `--limit` at least the app's `procs`.
+   If `processes.has_more` or `commands.has_more` is true, rerun with `--limit` at least the app's `procs`.
 4. Growth needs two samples: run `snapshot` again a few minutes later and compare the same apps.
 5. Answer with numbers: which app, how much RAM and swap, which processes or commands inside it, whether memory stalls are happening now, and one concrete action.
 
@@ -55,9 +55,9 @@ You use its non-interactive commands; the live TUI is for the human.
 - Terminals: everything started from a terminal counts as the terminal app.
   A terminal with 17 GiB is usually not the terminal itself; `commands.items` shows the agent sessions, node processes and builds inside it.
   Name those, not the terminal.
-- `kernel_bytes` (page tables, slab, stacks; excludes the app's own zswap pool share, `zswap_pool_bytes`, 0 without zswap) and `unattributed_*` (shared pages, memfd, GPU buffers) explain why processes don't add up to the app.
+- `kernel_bytes` (page tables, slab, stacks) already excludes the app's own zswap pool share; the pool's own size is `zswap_pool_bytes`, available per app only via `appmem app NAME` (and machine-wide in `snapshot`'s `system`), 0 without zswap. `kernel_bytes` and `unattributed_*` (shared pages, memfd, GPU buffers) explain why processes don't add up to the app.
   Neither is a leak by itself. Both are still inside the app's `ram_bytes`.
-- `units` pairs each raw unit name with a decoded `label` (systemd's own `\xNN` escaping undone), for a name that's otherwise unreadable at a glance.
+- `units` pairs each raw unit name with a decoded `label` (systemd's own `\xNN` escaping undone), for a name that's otherwise unreadable at a glance (`snapshot`'s own per-app `units` is a plain count, not this array).
 - Per-process values leave out file-backed pages, so they are smaller than htop's RES.
   Compare within appmem, not across tools.
 - A process with large `swap_bytes`, small `ram_bytes` and an `age_seconds` of days is an idle sleeper that was paged out.
@@ -82,8 +82,9 @@ You use its non-interactive commands; the live TUI is for the human.
 
 ## Errors
 
-A failure writes one JSON object as the last non-empty line on stderr: `{"error": {"kind": ..., "message": ..., "hint": ..., "next": [...]}}`.
+A failure writes one JSON object as the last non-empty line on stderr: `{"error": {"kind": ..., "message": ..., "action": ..., "hint": ..., "next": [...]}}`.
 Branch on `kind`.
+`action` is `agent` when you can fix the call yourself, `user` when only the human can (a vanished cgroup, an interrupt).
 `hint` says what to change, and `next`, when present, is the argv of the command to run instead.
 
 - `terminal_required`: you ran bare `appmem`; run `appmem snapshot --json`.
