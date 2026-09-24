@@ -1,14 +1,15 @@
 # appmem
 
-See which **applications** hold your RAM and swap on Linux, live, in the terminal.
+See which applications hold your RAM and swap on Linux, live, in the terminal.
 
 `htop` and `btm` list processes.
 A browser or a terminal is dozens of them, so "what is eating my swap?" turns into mental math.
-appmem reads the memory counters the kernel already keeps for every app (systemd puts each one in its own cgroup), adds them up per app, and shows one sortable row per app, refreshed every second.
+systemd already puts every app in its own cgroup and the kernel keeps memory counters per cgroup.
+appmem adds them up per app and shows one sortable row per app, refreshed every second.
 
 ![appmem's main view: one row per app, sorted by TOTAL](https://raw.githubusercontent.com/DamianPala/appmem/main/docs/screenshots/main.svg)
 
-## Quick start
+## Install
 
 ```
 uv tool install appmem
@@ -16,101 +17,49 @@ uv tool install appmem
 appmem
 ```
 
-No root, no config.
+No root, no config file.
+From a checkout, `uv run appmem`.
 
-From a checkout:
+You need Linux with cgroup v2 and a systemd user session that starts apps as units (KDE Plasma and GNOME do), plus Python 3.12 or newer, which uv fetches for you.
+appmem targets kernel 5.10 and newer.
+The pressure reading needs PSI and the zswap fields need 5.19; without them those parts stay off and the rest works.
 
-```
-git clone https://github.com/DamianPala/appmem appmem
-cd appmem
-uv run appmem
-```
+## Using it
 
-You need Linux with cgroup v2 in unified mode, and a systemd user session that starts apps as systemd units (KDE Plasma and GNOME do).
-appmem targets kernel 5.10 and newer; two features degrade instead of failing on an older or minimal kernel: pressure reads as unavailable without `/proc/pressure/memory` (PSI), and the zswap fields stay off without the zswap module or on a kernel before 5.19, which has no `Zswap` line in `/proc/meminfo`.
-Plus [uv](https://docs.astral.sh/uv/), which fetches Python 3.12+ if needed, or [pipx](https://pipx.pypa.io/) with Python 3.12+.
+The main view sorts by TOTAL (RAM + swap).
+Press the first letter of a column (`r`, `s`, `t`) or click a header to sort by something else.
+The Pressure figure in the header tells you whether memory is a problem right now: `none` with a full swap only means idle pages were moved out of the way, `some` or `high` means programs are waiting for memory.
 
-## What you can do with it
+`Enter` on an app shows its processes, their age and the systemd unit each one lives in.
+The bottom line has the command ready for the selected row, for example `systemctl --user stop 'app-firefox.service'` or `kill 41233`.
 
-**Find the app.**
-The main view lists apps by TOTAL (RAM + swap).
-Click a column header or press `r` (RAM), `s` (swap), `t` (total), `d` (swap change), `z` (ZSWAP, where shown) to sort; press again to reverse.
-The header tells you whether memory is a problem right now.
-`Pressure  none` with a full swap just means idle pages were moved out of the way; `some` or `high` means programs are waiting for memory.
-`shared` is tmpfs, shared memory and GPU buffers the kernel can only swap out, never drop.
-`avail` is what can be allocated before swapping; `free`, `cache` (reclaimable file pages) and `slab` (kernel caches of file names and inodes, dropped on demand) are its main parts and come close to it, but the kernel reserves some headroom so they don't add up to an exact sum.
-
-**Look inside it.**
-Press `Enter` on an app to see its processes, with their age and the systemd unit each one lives in.
-The line at the bottom gives you the ready command for the selected row, for example `systemctl --user stop 'app-firefox.service'   kill 41233`.
-
-**Find out what's really in your terminal.**
 Everything you start from a terminal counts as the terminal.
-In the process view press `g` to group by command, then `Enter` on a command to see its processes.
-That's how a "terminal holding 17 GiB" turns out to be eighteen `claude` processes plus the terminal's own main process, running for 86 days and sitting on 3.4 GiB of swap.
+Press `g` in the process view to group by command.
+That is how a "terminal holding 17 GiB" turns out to be eighteen `claude` processes plus the terminal itself, running for 86 days with 3.4 GiB in swap.
 
 ![The process view, grouped by command: several claude processes collapse into one row](https://raw.githubusercontent.com/DamianPala/appmem/main/docs/screenshots/processes.svg)
 
-**Watch it change.**
-ΔSWAP and ΔRAM show how each app grew or shrank since you started appmem (`b` resets the starting point).
-A dim `·` means less than 1 MiB of change.
-
-**See the rest.**
+ΔSWAP and ΔRAM show how each app grew or shrank since you started appmem (`b` resets the baseline).
 `x` adds system services, `c` shows page cache.
-The `kernel` and `unattributed` rows at the bottom of the process view explain why the processes don't add up to the app.
 
-## Keys
-
-| Key | Where | Action |
-|---|---|---|
-| click a header | main, processes | sort by that column; click again to reverse |
-| `r` `s` `t` | main, processes | sort by RAM / SWAP / TOTAL; press again to reverse |
-| `d` | main | sort by ΔSWAP, only while that column is shown |
-| `z` | main | sort by ZSWAP, only while that column is shown |
-| ↑ ↓ PgUp PgDn | all | move or scroll |
-| `Enter` | main, processes | main: processes of the app; grouped process view: processes of the command |
-| `g` | processes | group by command |
-| `Esc` | processes, help | back |
-| `c` / `x` / `b` | main | show page cache / show system services / reset the Δ baseline |
-| `w` | main | show/hide the ZSWAP column (shown by default where zswap is on) |
-| `T`, `Ctrl+P` | main, processes | change the theme: a right-docked panel with a live preview, opens on the current theme, marked (`↑`/`↓` preview, `Enter` keeps, `Esc` cancels) |
-| `?` | all | what the numbers mean |
-| `q`, `Ctrl+C` | all | quit (`q` in help closes help) |
-
-Options: `appmem -i SECONDS` sets the refresh interval (default 1, minimum 0.2), `appmem --system` starts with system services shown, `appmem --theme NAME` opens with one of appmem's themes, `appmem --version` prints the version.
-
-## Theme
-
-`T` (or `Ctrl+P` -> "Theme") opens a small panel docked to the right, on the current theme, marked with `✓`: any of Textual's built-in themes, plus `terminal-dark` and `terminal-light`, which use your terminal's own colours instead of one of appmem's built-in palettes (a dim `your terminal's colours` line marks them while highlighted).
+`T` opens a theme panel with a live preview: Textual's built-in themes plus `terminal-dark` and `terminal-light`, which use your terminal's own colours.
+The theme you keep is saved to `~/.config/appmem/config.toml`; `appmem --theme NAME` or `APPMEM_THEME` override it for one run.
 
 ![The theme panel open on dracula, live-previewed on the main view behind it](https://raw.githubusercontent.com/DamianPala/appmem/main/docs/screenshots/theme-panel.svg)
 
-`↑`/`↓` (or `PgUp`/`PgDn`/`Home`/`End`) previews a theme on the running app right away; `Enter`, or a click on a theme, keeps it and closes the panel; `Esc`, `T` again, or a click outside the panel restores the theme that was running when it opened.
-Keeping a theme saves it to `$XDG_CONFIG_HOME/appmem/config.toml` (default `~/.config/appmem/config.toml`), so it's back next time you start appmem -- unless it's already the file's own value, which saves nothing.
-Startup order: `--theme NAME` on the command line, then the `APPMEM_THEME` environment variable, then that config file, then the `TEXTUAL_THEME` environment variable (Textual's own setting), then Textual's built-in default -- `--theme` and `APPMEM_THEME` never write the file.
-A broken or unreadable config file, or an unknown name in `APPMEM_THEME`/`TEXTUAL_THEME`, falls back to the next source and shows a notification instead of crashing.
-`ansi-dark`/`ansi-light`, Textual's own names for the same two themes, still work everywhere a theme name is read (`--theme`, `APPMEM_THEME`, `TEXTUAL_THEME`, the config file) -- they just don't appear in the panel or in any list of valid names, since `terminal-dark`/`terminal-light` say what they actually do.
+`?` inside the app explains every number and `appmem --help` lists all keys and options.
 
-## What the numbers mean
+## How to read the numbers
 
-- **RAM** is anonymous + shared + charged kernel memory of the app, without page cache.
-  Page cache is reclaimable and makes an app that read a big file look like a hog, so it has its own column (`c`).
-- **SWAP** is what the kernel moved out of RAM for that app.
-  With zswap it also includes pages kept compressed in RAM.
-  The header shows that machine-wide on the Swap line as `X zswapped into Y RAM`: X is kept compressed, already part of Swap used; Y is the RAM the pool costs, already part of RAM used.
-  A `to disk` marker next to it means the pool is overflowing to the disk swap, which is slow.
-  Per app, the compressed part of SWAP has its own column (`w`), not extra memory; in the process view, the app's own share of that pool shows as its own dim `zswap pool` row, split out of `kernel`.
-- **TOTAL** is SWAP + RAM: an accounting sum, not a promise of what closing the app frees.
-- **Pressure**, shown after the `Pressure` label in the header, is the share of the last 10 s that programs spent waiting for memory.
-  It tells you whether memory stalls are happening, not which app causes them.
-- Rows don't add up to the header: system services (`x`) and memory outside your session (VMs, containers, other users: `elsewhere`) cover the rest.
-- Process rows are each process's own RSS: a shared page counts once per process that maps it, so summing them can overcount the app -- use the app's own row for that, not a sum of its processes. They also leave out file-backed pages, so they read smaller than htop's RES.
-
-Press `?` in the app for the full explanation.
+RAM is what the app holds without page cache.
+Cache is reclaimable and would make an app that just read a big file look like a hog, so it has its own column.
+SWAP is what the kernel moved out of RAM for the app, including pages zswap keeps compressed in RAM.
+TOTAL is the sum of the two: an accounting figure, not what closing the app would free.
+Rows don't add up to the header, because system services and memory outside your session (VMs, containers, other users) make up the rest.
 
 ## For agents
 
-appmem has a non-interactive interface next to the TUI, so you can give this repo's link to an AI agent and ask it what is eating your memory.
+appmem has a non-interactive interface next to the TUI, so you can point an AI agent at this repo and ask it what is eating your memory.
 
 ```
 appmem snapshot [--system] [--limit N] [--json]
@@ -118,27 +67,17 @@ appmem app NAME [--scope user|system] [--limit N] [--json]
 appmem schema [COMMAND]
 ```
 
-`appmem snapshot` reports the machine and every app, and `appmem app NAME` reports the units, processes and commands of one app.
-Both print a text report on a terminal and JSON otherwise; `--json` forces JSON.
+`snapshot` covers the machine and every app, `app NAME` one app's units, processes and commands.
+Both print text on a terminal and JSON when piped; `--json` forces JSON.
 `appmem schema` describes the commands, flags, output fields and exit codes as JSON.
-Every error is one JSON object on the last line of stderr with a stable `kind` (listed below).
-The diagnosis workflow (how to read pressure against swap, what hides inside a terminal, what to recommend) is in [`skills/appmem/SKILL.md`](https://github.com/DamianPala/appmem/blob/main/skills/appmem/SKILL.md).
-The command line follows CLI Design Standard 0.1.0, which `appmem schema` reports under `conformance`.
-
-| Exit code | Meaning |
-|---|---|
-| 0 | success |
-| 1 | runtime failure (`not_found`, `cgroup_unavailable`, `terminal_required`) |
-| 2 | invalid call (`invalid_input`) |
-| 130, 143 | interrupted (Ctrl+C, SIGTERM) |
-
-Bare `appmem` is the TUI.
-Without a terminal (piped, `--json`, or `NO_INPUT` set) it exits 1 and points to `appmem snapshot`.
-There are no shell completions yet.
+Every error is one JSON object on the last line of stderr with a stable `kind` such as `not_found`; exit code 1 is a runtime failure, 2 an invalid call.
+Bare `appmem` without a terminal exits 1 and points to `appmem snapshot`.
+The diagnosis workflow (reading pressure against swap, what hides inside a terminal, what to recommend) is in [skills/appmem/SKILL.md](https://github.com/DamianPala/appmem/blob/main/skills/appmem/SKILL.md).
 
 ## Cost
 
-About 1 % of a CPU core for reading the counters at the default 1 s interval; with the UI on a busy desktop, about 4 % of one core in the main view and about 5 % in the process view.
+About 1 % of a CPU core to read the counters every second.
+With the UI on a busy desktop, about 4 % of one core in the main view and 5 % in the process view.
 
 ## Development
 
@@ -146,7 +85,7 @@ About 1 % of a CPU core for reading the counters at the default 1 s interval; wi
 uv run ruff check && uv run ruff format --check && uv run pyright && uv run pytest
 ```
 
-The screenshots above are generated from fixture data, never a real machine; regenerate them with `uv run python scripts/screenshots.py`.
+The screenshots come from fixture data, never a real machine; regenerate them with `uv run python scripts/screenshots.py`.
 
 ## License
 
