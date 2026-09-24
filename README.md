@@ -1,13 +1,23 @@
 # appmem
 
-See which applications hold your RAM and swap on Linux, live, in the terminal.
+Find out which apps are eating your RAM and swap. Live, in the terminal, one row per app.
 
-`htop` and `btm` list processes.
-A browser or a terminal is dozens of them, so "what is eating my swap?" turns into mental math.
-systemd already puts every app in its own cgroup and the kernel keeps memory counters per cgroup.
-appmem adds them up per app and shows one sortable row per app, refreshed every second.
+The laptop starts swapping, the fan spins up, and `htop` shows forty processes called `chrome`, thirty called `node` and something called `plasmashell`.
+appmem shows the same memory as the apps you actually opened: Chrome, VS Code, Thunderbird, your terminal, each with its RAM, its swap and how much it grew since you started looking.
+The header tells you whether the swapping is a problem at all, and one key opens the processes behind any row.
 
 ![appmem's main view: one row per app, sorted by TOTAL](https://raw.githubusercontent.com/DamianPala/appmem/main/docs/screenshots/main.svg)
+
+You can also skip the reading and hand the job to an AI agent.
+Install appmem, tell Claude Code, Codex or any agent that runs shell commands "check what's eating my memory", and it runs `appmem snapshot`, reads the numbers the way this repo's skill describes and tells you what to close.
+See [For agents](#for-agents).
+
+Reach for it when:
+
+- the machine got slow and you want the culprit, not a process list;
+- swap is full and you want to know whether that matters right now;
+- a "terminal" holds 17 GiB and you want to know what is really running inside it;
+- you want to watch one app grow while you use it.
 
 ## Install
 
@@ -59,7 +69,8 @@ Rows don't add up to the header, because system services and memory outside your
 
 ## For agents
 
-appmem has a non-interactive interface next to the TUI, so you can point an AI agent at this repo and ask it what is eating your memory.
+appmem is made to be driven by an AI agent as much as by you.
+Install it, then ask your agent to diagnose memory: it gets the same data as the TUI as JSON, plus a skill that explains how to read it.
 
 ```
 appmem snapshot [--system] [--limit N] [--json]
@@ -72,7 +83,7 @@ Both print text on a terminal and JSON when piped; `--json` forces JSON.
 `appmem schema` describes the commands, flags, output fields and exit codes as JSON.
 Every error is one JSON object on the last line of stderr with a stable `kind` such as `not_found`; exit code 1 is a runtime failure, 2 an invalid call.
 Bare `appmem` without a terminal exits 1 and points to `appmem snapshot`.
-The diagnosis workflow (reading pressure against swap, what hides inside a terminal, what to recommend) is in [skills/appmem/SKILL.md](https://github.com/DamianPala/appmem/blob/main/skills/appmem/SKILL.md).
+The diagnosis itself (reading pressure against swap, what hides inside a terminal, what to recommend) is in [skills/appmem/SKILL.md](https://github.com/DamianPala/appmem/blob/main/skills/appmem/SKILL.md): point your agent at this repo, or copy that file into its skills.
 
 ## Cost
 
