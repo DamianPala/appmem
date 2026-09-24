@@ -28,6 +28,7 @@ from textual.pilot import Pilot
 from textual.theme import BUILTIN_THEMES, Theme
 from textual.widgets import DataTable, OptionList, Static
 from textual.widgets.data_table import ColumnKey
+from textual.worker import Worker
 
 from appmem.collect import AppStats
 from appmem.fmt import format_pair
@@ -1748,11 +1749,12 @@ async def test_slow_tick_does_not_block_key_handling(
 
 
 @pytest.mark.asyncio
-async def test_tick_results_are_not_retained_by_finished_workers(tmp_path: Path) -> None:
-    # A finished Textual `Worker` stays alive, result included, until a cyclic
-    # GC pass (its task's context holds the worker, the worker holds the task),
-    # and on Python 3.14 that pass can be thousands of ticks away: results
-    # returned from the tick worker piled up to 1.1 GiB in ten hours. The
+async def test_ticks_leave_no_workers_or_results_behind(tmp_path: Path) -> None:
+    # A finished Textual `Worker` stays alive until a cyclic GC pass (its
+    # task's context holds the worker, the worker holds the task), and on
+    # Python 3.14 that pass can be thousands of ticks away: tick workers piled
+    # up to 1.1 GiB in ten hours with their results, and still 7 MiB every 20
+    # minutes without them. So a tick must create no `Worker` at all, and its
     # result must die by refcount right after it's applied, with no GC help.
     root = _base_tree(tmp_path)
     _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
@@ -1760,12 +1762,36 @@ async def test_tick_results_are_not_retained_by_finished_workers(tmp_path: Path)
     async with app.run_test(size=(120, 30)) as pilot:
         await pilot.pause()
         await pilot.pause(1.0)  # ~50 ticks
-        alive = [
+        workers = sum(1 for o in gc.get_objects() if isinstance(o, Worker))
+        results = [
             o
             for o in gc.get_objects()
             if isinstance(o, main_screen._TickResult)  # pyright: ignore[reportPrivateUsage]
         ]
-    assert len(alive) <= 2, f"{len(alive)} tick results still alive"
+    assert workers == 0, f"{workers} Textual workers alive"
+    assert len(results) <= 2, f"{len(results)} tick results still alive"
+
+
+@pytest.mark.asyncio
+async def test_collector_bug_in_a_tick_exits_the_app(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The tick's thread can't raise into the app by itself; a bug in the
+    # collector must still end the run with the traceback, not leave the
+    # table frozen on its last frame with the refreshes silently stopped.
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    def broken_tick_worker(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("collector bug")
+
+    app = AppMemApp(root=root, uid=UID, interval=0.02, include_system=False)
+    with pytest.raises(RuntimeError, match="collector bug"):
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            monkeypatch.setattr(main_screen, "_tick_worker", broken_tick_worker)
+            await pilot.pause(0.5)
+    assert app.return_code == 1
 
 
 @pytest.mark.asyncio

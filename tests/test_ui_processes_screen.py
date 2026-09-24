@@ -26,6 +26,7 @@ from textual.coordinate import Coordinate
 from textual.pilot import Pilot
 from textual.widgets import DataTable, OptionList, Static
 from textual.widgets.data_table import ColumnKey
+from textual.worker import Worker
 
 from appmem.collect import ProcStats, UnitStats
 from appmem.theme import THEME_NAMES, config_path
@@ -2085,12 +2086,10 @@ async def test_slow_process_tick_does_not_block_key_handling(
 
 
 @pytest.mark.asyncio
-async def test_process_tick_results_are_not_retained_by_finished_workers(
-    tmp_path: Path,
-) -> None:
-    # Same guard as the main view's: a returned worker result lives on inside
-    # Textual's finished `Worker` until a cyclic GC pass, which Python 3.14
-    # can defer for hours; the result must die by refcount once applied.
+async def test_process_ticks_leave_no_workers_or_results_behind(tmp_path: Path) -> None:
+    # Same guard as the main view's: a finished Textual `Worker` lives on
+    # until a cyclic GC pass, which Python 3.14 can defer for hours, so a
+    # tick creates none, and its result dies by refcount once applied.
     root = _base_tree(tmp_path)
     _app_unit(root, "app-ghostty.service", ram=1 * 1024**2, swap=0, pids=[100, 101])
     _proc(root, 100, name="a", ram_kb=1024)
@@ -2100,12 +2099,37 @@ async def test_process_tick_results_are_not_retained_by_finished_workers(
         await pilot.pause()
         await _open_ghostty_process_view(pilot)
         await pilot.pause(1.0)  # ~50 ticks
-        alive = [
+        workers = sum(1 for o in gc.get_objects() if isinstance(o, Worker))
+        results = [
             o
             for o in gc.get_objects()
             if isinstance(o, processes_screen._TickResult)  # pyright: ignore[reportPrivateUsage]
         ]
-    assert len(alive) <= 2, f"{len(alive)} tick results still alive"
+    assert workers == 0, f"{workers} Textual workers alive"
+    assert len(results) <= 2, f"{len(results)} tick results still alive"
+
+
+@pytest.mark.asyncio
+async def test_collector_bug_in_a_process_tick_exits_the_app(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # As in the main view: a collector bug raised in the tick's thread must
+    # end the run with its traceback, not silently stop the refreshes.
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-ghostty.service", ram=1 * 1024**2, swap=0, pids=[100])
+    _proc(root, 100, name="a", ram_kb=1024)
+
+    def broken_tick_worker(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("collector bug")
+
+    app = AppMemApp(root=root, uid=UID, interval=0.02, include_system=False)
+    with pytest.raises(RuntimeError, match="collector bug"):
+        async with app.run_test(size=SCREEN_SIZE) as pilot:
+            await pilot.pause()
+            await _open_ghostty_process_view(pilot)
+            monkeypatch.setattr(processes_screen, "_tick_worker", broken_tick_worker)
+            await pilot.pause(0.5)
+    assert app.return_code == 1
 
 
 @pytest.mark.asyncio

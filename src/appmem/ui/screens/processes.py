@@ -16,8 +16,8 @@ again, scoped to that command's PIDs.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, replace
-from functools import partial
 from pathlib import Path
 from typing import ClassVar, cast
 
@@ -25,11 +25,11 @@ from rich.text import Text
 from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
+from textual.message import Message
 from textual.screen import Screen
 from textual.timer import Timer
 from textual.widgets import DataTable, Static
 from textual.widgets.data_table import ColumnKey, RowKey
-from textual.worker import Worker, WorkerState
 
 from appmem.collect import (
     AppStats,
@@ -106,8 +106,6 @@ _NAME_MIN_WIDTH = 8
 _NAME_MAX_WIDTH = 32
 # `DataTable`'s default `cell_padding` (1 cell each side of every column).
 _CELL_PADDING = 2
-
-_TICK_GROUP = "collect"
 
 # Below the footer's natural width, drop items lowest priority first;
 # `help`, `back`/`groups` and `quit` are never in this list, so they always
@@ -196,6 +194,17 @@ class _TickResult:
     cgroup_error: CgroupUnavailableError | None = None
 
 
+class TickDone(Message):
+    """A tick's thread has finished: the read's result, or the exception it
+    raised (see `MainScreen`'s `TickDone`)."""
+
+    bubble: ClassVar[bool] = False
+
+    def __init__(self, payload: _TickResult | Exception) -> None:
+        super().__init__()
+        self.payload = payload
+
+
 def _tick_worker(
     root: Path, uid: int, include_system: bool, scope: str, name: str, *, generation: int
 ) -> _TickResult:
@@ -271,8 +280,8 @@ class ProcessesScreen(Screen[None]):
         self._generation = 0
         """Bumped on every context change (`g`, drilling in/out, the app
         going away, the screen covered/resumed). A background result carries
-        the generation it was read under; `on_worker_state_changed` discards
-        one that no longer matches, so a slow read that outlives a later
+        the generation it was read under; `_apply_tick` discards one that
+        no longer matches, so a slow read that outlives a later
         context change can't overwrite what that change already drew."""
 
     @property
@@ -324,33 +333,33 @@ class ProcessesScreen(Screen[None]):
         if not self.is_active or self._tick_in_flight:
             return
         self._tick_in_flight = True
-        self.run_worker(
-            partial(self._tick_read, self._generation),
-            thread=True,
-            exclusive=False,
-            group=_TICK_GROUP,
-        )
+        threading.Thread(
+            target=self._tick_read, args=(self._generation,), name="appmem-tick", daemon=True
+        ).start()
 
     def _tick_read(self, generation: int) -> None:
-        # Thread side of a tick, handed to the UI thread instead of returned
-        # from the worker, for the reason given on `MainScreen._tick_read`:
-        # a returned result stays alive inside Textual's finished `Worker`
-        # until a cyclic GC pass, which Python 3.14 can defer for hours.
-        result = _tick_worker(
-            self._root,
-            self._uid,
-            self._include_system,
-            self._scope,
-            self._name,
-            generation=generation,
-        )
-        self.app.call_from_thread(self._apply_tick, result)  # pyright: ignore[reportUnknownMemberType]
+        # Thread side of a tick, a plain thread posting a message rather than
+        # a Textual worker, for the reason given on `MainScreen._tick_read`:
+        # finished workers stay alive until a cyclic GC pass, which Python
+        # 3.14 can defer for hours.
+        try:
+            payload: _TickResult | Exception = _tick_worker(
+                self._root,
+                self._uid,
+                self._include_system,
+                self._scope,
+                self._name,
+                generation=generation,
+            )
+        except Exception as exc:  # re-raised on the UI thread by `on_tick_done`
+            payload = exc
+        self.post_message(TickDone(payload))
 
-    def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
-        if event.worker.group != _TICK_GROUP:  # pyright: ignore[reportUnknownMemberType]
-            return
-        if event.state in (WorkerState.SUCCESS, WorkerState.ERROR, WorkerState.CANCELLED):
-            self._tick_in_flight = False
+    def on_tick_done(self, event: TickDone) -> None:
+        self._tick_in_flight = False
+        if isinstance(event.payload, Exception):
+            raise event.payload  # a collector bug: exit loudly, see `MainScreen.on_tick_done`
+        self._apply_tick(event.payload)
 
     def _apply_tick(self, result: _TickResult) -> None:
         if result.cgroup_error is not None:
@@ -534,8 +543,8 @@ class ProcessesScreen(Screen[None]):
         every refresh; an explicit user action (a sort) passes `True` so the
         selected row stays visible (SPEC.md "Process view"). Always
         synchronous, on the calling thread -- unlike the periodic timer tick
-        (`_tick`), which reads in a thread worker so a slow collector never
-        blocks key handling (SPEC.md "Tech").
+        (`_tick`), which reads in a thread so a slow collector never blocks
+        key handling (SPEC.md "Tech").
 
         A failing read (`_read_once` returning `None`) is not applied at
         all, leaving the last frame on screen; applying a successful one

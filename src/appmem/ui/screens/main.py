@@ -1,11 +1,12 @@
 """Main view: the live, sortable per-app table (SPEC.md "Main view").
 
-Refreshes on a `set_interval` timer, whose tick reads in a thread worker
-(`run_worker(thread=True)`) rather than on the event loop: the collector is
-normally fast (~7 ms on the dev machine, SPEC.md "Tech" budget: under 1 % of
-one core at 1 s), but a slow filesystem or a big tree can still make one read
-take much longer, and a blocking read on the event loop would freeze key
-handling for its whole duration (SPEC.md "Tech"). `refresh_now` stays
+Refreshes on a `set_interval` timer, whose tick reads in a plain thread
+(`threading.Thread`, not `run_worker`: see `_tick_read`) rather than on the
+event loop: the collector is normally fast (~7 ms on the dev machine,
+SPEC.md "Tech" budget: under 1 % of one core at 1 s), but a slow filesystem
+or a big tree can still make one read take much longer, and a blocking read
+on the event loop would freeze key handling for its whole duration
+(SPEC.md "Tech"). `refresh_now` stays
 synchronous, for mount, explicit actions and tests. Existing rows are updated
 in place and only appeared/vanished apps add or remove a row, so a refresh
 never rebuilds the table (SPEC.md "Tech" notes).
@@ -14,11 +15,11 @@ never rebuilds the table (SPEC.md "Tech" notes).
 from __future__ import annotations
 
 import os
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from functools import partial
 from pathlib import Path
 from typing import ClassVar, cast
 
@@ -27,12 +28,12 @@ from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.color import Color
+from textual.message import Message
 from textual.screen import Screen
 from textual.theme import Theme
 from textual.timer import Timer
 from textual.widgets import DataTable, Static
 from textual.widgets.data_table import ColumnKey, RowKey
-from textual.worker import Worker, WorkerState
 
 from appmem.collect import (
     AppStats,
@@ -118,8 +119,6 @@ _DELTA_COLUMNS: tuple[tuple[SortKey, str, int | None], ...] = (
 )
 _PROCS_COLUMN: tuple[SortKey, str, int | None] = ("procs", "PROCS", 6)
 _DELTA_KEYS = frozenset({"delta_swap", "delta_ram"})
-
-_TICK_GROUP = "collect"
 
 
 def _format_app_cell(row: Row, app_cap: int) -> str:
@@ -270,6 +269,18 @@ class _TickResult:
     cgroup_error: CgroupUnavailableError | None = None
 
 
+class TickDone(Message):
+    """A tick's thread has finished: the read's result, or the exception it
+    raised. Posted from the thread (`post_message` is thread-safe) and handled
+    on the UI thread, the only one allowed to touch widgets."""
+
+    bubble: ClassVar[bool] = False
+
+    def __init__(self, payload: _TickResult | Exception) -> None:
+        super().__init__()
+        self.payload = payload
+
+
 def _tick_worker(root: Path, uid: int, include_system: bool, generation: int) -> _TickResult:
     """Runs in a thread (SPEC.md "Tech"): blocking `/proc`/`/sys` reads
     only, no Textual calls. Transient errors are swallowed here, same as
@@ -355,8 +366,7 @@ class MainScreen(Screen[None]):
         self._generation = 0
         """Bumped on every context change (`x` toggled, screen covered or
         resumed). A background result carries the generation it was read
-        under; `on_worker_state_changed` discards one that no longer
-        matches."""
+        under; `_apply_tick` discards one that no longer matches."""
 
     def compose(self) -> ComposeResult:
         self._delta_columns_shown = self._show_delta_columns()
@@ -412,33 +422,36 @@ class MainScreen(Screen[None]):
         if not self.is_active or self._tick_in_flight:
             return
         self._tick_in_flight = True
-        self.run_worker(
-            partial(self._tick_read, self._generation),
-            thread=True,
-            exclusive=False,
-            group=_TICK_GROUP,
-        )
+        threading.Thread(
+            target=self._tick_read, args=(self._generation,), name="appmem-tick", daemon=True
+        ).start()
 
     def _tick_read(self, generation: int) -> None:
         # Thread side of a tick: the blocking `/proc`/`/sys` reads happen
         # here, off the event loop, so a slow collector never blocks key
-        # handling (SPEC.md "Tech"). The result is handed to the UI thread,
-        # the only thread allowed to touch widgets, instead of being returned
-        # from the worker: Textual keeps every finished `Worker`, result
-        # included, alive inside its task's context until a cyclic GC pass,
-        # and on Python 3.14 that pass can be thousands of ticks away, so
-        # returned results piled up to 1.1 GiB in ten hours. Handed over,
-        # the result is dropped by refcount as soon as it's applied. If the
-        # screen or app is gone by now, Textual has already cancelled this
-        # worker, so anything raised here is dropped with it.
-        result = _tick_worker(self._root, self._uid, self._show_system, generation)
-        self.app.call_from_thread(self._apply_tick, result)  # pyright: ignore[reportUnknownMemberType]
+        # handling (SPEC.md "Tech"). A plain thread, not `run_worker`: Textual
+        # keeps every finished `Worker` alive inside its task's context until
+        # a cyclic GC pass, and on Python 3.14 that pass is thousands of ticks
+        # away, so workers piled up (with their results, 1.1 GiB in ten hours;
+        # bare, still about 7 MiB every 20 minutes). The outcome goes back as
+        # a message, which a screen that is already closing simply drops.
+        try:
+            payload: _TickResult | Exception = _tick_worker(
+                self._root, self._uid, self._show_system, generation
+            )
+        except Exception as exc:  # re-raised on the UI thread by `on_tick_done`
+            payload = exc
+        self.post_message(TickDone(payload))
 
-    def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
-        if event.worker.group != _TICK_GROUP:  # pyright: ignore[reportUnknownMemberType]
-            return
-        if event.state in (WorkerState.SUCCESS, WorkerState.ERROR, WorkerState.CANCELLED):
-            self._tick_in_flight = False
+    def on_tick_done(self, event: TickDone) -> None:
+        self._tick_in_flight = False
+        if isinstance(event.payload, Exception):
+            # A bug in the collector (transient read errors never get here,
+            # `_tick_worker` turns them into an empty result): crash loudly,
+            # as an exception on the timer itself would, rather than let the
+            # refreshes stop silently.
+            raise event.payload
+        self._apply_tick(event.payload)
 
     def _apply_tick(self, result: _TickResult) -> None:
         if result.cgroup_error is not None:
@@ -482,8 +495,8 @@ class MainScreen(Screen[None]):
         interval. Also the deterministic re-tick hook the Textual pilot tests
         use instead of racing the real timer (SPEC.md "Tests"). Always
         synchronous, on the calling thread -- unlike the periodic timer tick
-        (`_tick`), which reads in a thread worker so a slow collector never
-        blocks key handling (SPEC.md "Tech").
+        (`_tick`), which reads in a thread so a slow collector never blocks
+        key handling (SPEC.md "Tech").
 
         `scroll` (default `False`, a tick) says whether restoring the
         cursor's row is also allowed to scroll the viewport: a periodic tick
