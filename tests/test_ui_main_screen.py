@@ -25,6 +25,7 @@ from textual import events
 from textual.color import Color
 from textual.coordinate import Coordinate
 from textual.pilot import Pilot
+from textual.strip import Strip
 from textual.theme import BUILTIN_THEMES, Theme
 from textual.widgets import DataTable, OptionList, Static
 from textual.widgets.data_table import ColumnKey
@@ -33,6 +34,7 @@ from textual.worker import Worker
 from appmem.collect import AppStats
 from appmem.fmt import format_pair
 from appmem.theme import TERMINAL_THEMES, THEME_NAMES, config_path, resolve_theme
+from appmem.ui import app as ui_app
 from appmem.ui.app import AppMemApp
 from appmem.ui.rows import row_key
 from appmem.ui.screens import help as help_screen
@@ -1792,6 +1794,56 @@ async def test_collector_bug_in_a_tick_exits_the_app(
             monkeypatch.setattr(main_screen, "_tick_worker", broken_tick_worker)
             await pilot.pause(0.5)
     assert app.return_code == 1
+
+
+def _self_referencing_strips() -> int:
+    # Textual's `Strip.divide` stores `[self]` in the strip's own divide
+    # cache: a reference cycle only the cyclic GC can free.
+    return sum(
+        1
+        for o in gc.get_objects()
+        if isinstance(o, Strip)
+        and any(
+            piece is o
+            for pieces in o._divide_cache._cache.values()  # pyright: ignore[reportPrivateUsage]
+            for piece in pieces
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_changing_rows_leave_no_strip_cycles_behind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Every table line rendered after a change leaves one self-referencing
+    # `Strip` (about 6 KB with its caches) that only the cyclic GC frees, and
+    # CPython 3.14's collector let thousands of them pile up: the live app
+    # grew about 1 MiB a minute whenever rows were changing. The app collects
+    # on its own timer; here that timer is fast and every tick changes every
+    # row's numbers, so only the last frame's strips may remain.
+    monkeypatch.setattr(ui_app, "GC_INTERVAL", 0.05)
+    gc.collect()  # earlier tests' apps leave their own strips behind
+    root = _base_tree(tmp_path)
+    names = [f"app-x{i}.service" for i in range(12)]
+    for i, name in enumerate(names):
+        _app_unit(root, name, ram=(i + 1) * 1024**2, swap=0)
+    app = AppMemApp(root=root, uid=UID, interval=0.02, include_system=False)
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        # Relative to the first frame: apps of earlier tests can still be
+        # alive (a kept traceback is enough) with their own last frame.
+        before = _self_referencing_strips()
+        for step in range(60):
+            for i, name in enumerate(names):
+                unit_dir = user_service_root(root, UID) / "app.slice" / name
+                write_memory_stat(unit_dir, anon=(step * 7 + i * 3 + 1) * 1024**2)
+            await pilot.pause(0.02)
+        added = _self_referencing_strips() - before
+        deadline = time.monotonic() + 3
+        while added > 60 and time.monotonic() < deadline:
+            await pilot.pause(0.05)  # the app's own timer collects; give it a chance
+            added = _self_referencing_strips() - before
+    assert added <= 60, f"{added} self-referencing strips added by 60 refreshes"
 
 
 @pytest.mark.asyncio

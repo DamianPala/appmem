@@ -11,6 +11,7 @@ choice, and re-rendering the main view's header when it changes (SPEC.md
 
 from __future__ import annotations
 
+import gc
 from collections.abc import Sequence
 from pathlib import Path
 from typing import ClassVar
@@ -27,6 +28,10 @@ from appmem.theme import (
 )
 from appmem.ui.screens.main import MainScreen
 from appmem.ui.theme_picker import ThemePanel
+
+GC_INTERVAL = 30.0
+"""Seconds between the explicit garbage collections `AppMemApp` schedules,
+see `_collect_garbage`. Tests shrink it."""
 
 
 class AppMemApp(App[None]):
@@ -111,6 +116,22 @@ class AppMemApp(App[None]):
         self._theme_ready = True
         for message in self._startup_theme_warnings:
             self.notify(message, severity="warning", timeout=8)
+        self.set_interval(GC_INTERVAL, self._collect_garbage)
+
+    def _collect_garbage(self) -> None:
+        # Every refresh leaves reference cycles that only the cyclic GC can
+        # free: Textual's `Strip.divide` stores `[self]` in the strip's own
+        # cache for each line it renders at full width, so every changed
+        # table line of every tick is one such cycle (~6 KB with its
+        # caches). CPython 3.14's incremental collector left 2 500 of them
+        # alive after 40 s on a 50-ticks/s fixture, and the live app grew
+        # about 1 MiB a minute whenever rows were changing; collecting only
+        # the young generations (`gc.collect(0)`/`(1)`) didn't help. A full
+        # collection every `GC_INTERVAL` keeps that fixture flat at +18 MB
+        # (+30 MB without it). It costs 75-100 ms there, mostly walking the
+        # live heap rather than the garbage, so collecting more often
+        # wouldn't make each pass cheaper.
+        gc.collect()
 
     def search_themes(self) -> None:
         # Overrides `App.search_themes`, which `action_change_theme` (`T`,
