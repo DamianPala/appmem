@@ -8,6 +8,7 @@ pattern as `test_ui_main_screen.py`.
 
 from __future__ import annotations
 
+import gc
 import shutil
 import threading
 import time
@@ -2081,6 +2082,30 @@ async def test_slow_process_tick_does_not_block_key_handling(
         while screen._tick_in_flight and time.monotonic() < deadline:  # pyright: ignore[reportPrivateUsage]
             await pilot.pause(0.01)
         assert not screen._tick_in_flight, "blocked read never finished"  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.asyncio
+async def test_process_tick_results_are_not_retained_by_finished_workers(
+    tmp_path: Path,
+) -> None:
+    # Same guard as the main view's: a returned worker result lives on inside
+    # Textual's finished `Worker` until a cyclic GC pass, which Python 3.14
+    # can defer for hours; the result must die by refcount once applied.
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-ghostty.service", ram=1 * 1024**2, swap=0, pids=[100, 101])
+    _proc(root, 100, name="a", ram_kb=1024)
+    _proc(root, 101, name="b", ram_kb=1024)
+    app = AppMemApp(root=root, uid=UID, interval=0.02, include_system=False)
+    async with app.run_test(size=SCREEN_SIZE) as pilot:
+        await pilot.pause()
+        await _open_ghostty_process_view(pilot)
+        await pilot.pause(1.0)  # ~50 ticks
+        alive = [
+            o
+            for o in gc.get_objects()
+            if isinstance(o, processes_screen._TickResult)  # pyright: ignore[reportPrivateUsage]
+        ]
+    assert len(alive) <= 2, f"{len(alive)} tick results still alive"
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,7 @@ calling `MainScreen.refresh_now()` after mutating the fixture on disk.
 
 from __future__ import annotations
 
+import gc
 import os
 import shutil
 import threading
@@ -1744,6 +1745,27 @@ async def test_slow_tick_does_not_block_key_handling(
         while screen._tick_in_flight and time.monotonic() < deadline:  # pyright: ignore[reportPrivateUsage]
             await pilot.pause(0.01)
         assert not screen._tick_in_flight, "blocked read never finished"  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.asyncio
+async def test_tick_results_are_not_retained_by_finished_workers(tmp_path: Path) -> None:
+    # A finished Textual `Worker` stays alive, result included, until a cyclic
+    # GC pass (its task's context holds the worker, the worker holds the task),
+    # and on Python 3.14 that pass can be thousands of ticks away: results
+    # returned from the tick worker piled up to 1.1 GiB in ten hours. The
+    # result must die by refcount right after it's applied, with no GC help.
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+    app = AppMemApp(root=root, uid=UID, interval=0.02, include_system=False)
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        await pilot.pause(1.0)  # ~50 ticks
+        alive = [
+            o
+            for o in gc.get_objects()
+            if isinstance(o, main_screen._TickResult)  # pyright: ignore[reportPrivateUsage]
+        ]
+    assert len(alive) <= 2, f"{len(alive)} tick results still alive"
 
 
 @pytest.mark.asyncio

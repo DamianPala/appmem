@@ -413,28 +413,34 @@ class MainScreen(Screen[None]):
             return
         self._tick_in_flight = True
         self.run_worker(
-            partial(_tick_worker, self._root, self._uid, self._show_system, self._generation),
+            partial(self._tick_read, self._generation),
             thread=True,
             exclusive=False,
             group=_TICK_GROUP,
         )
 
+    def _tick_read(self, generation: int) -> None:
+        # Thread side of a tick: the blocking `/proc`/`/sys` reads happen
+        # here, off the event loop, so a slow collector never blocks key
+        # handling (SPEC.md "Tech"). The result is handed to the UI thread,
+        # the only thread allowed to touch widgets, instead of being returned
+        # from the worker: Textual keeps every finished `Worker`, result
+        # included, alive inside its task's context until a cyclic GC pass,
+        # and on Python 3.14 that pass can be thousands of ticks away, so
+        # returned results piled up to 1.1 GiB in ten hours. Handed over,
+        # the result is dropped by refcount as soon as it's applied. If the
+        # screen or app is gone by now, Textual has already cancelled this
+        # worker, so anything raised here is dropped with it.
+        result = _tick_worker(self._root, self._uid, self._show_system, generation)
+        self.app.call_from_thread(self._apply_tick, result)  # pyright: ignore[reportUnknownMemberType]
+
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
-        # Blocking `/proc`/`/sys` reads happen in `_tick_worker`, off the event
-        # loop, so a slow collector never blocks key handling (SPEC.md "Tech").
-        # This applies the result back on the UI thread, the only thread
-        # allowed to touch widgets.
         if event.worker.group != _TICK_GROUP:  # pyright: ignore[reportUnknownMemberType]
             return
-        if event.state not in (WorkerState.SUCCESS, WorkerState.ERROR, WorkerState.CANCELLED):
-            return
-        self._tick_in_flight = False
-        if event.state != WorkerState.SUCCESS:
-            return
-        # `Worker` (Textual's own type) is an unparameterized generic here, so
-        # its `.result` is `Unknown` to pyright; `_tick_worker`'s own return
-        # type is the real source of truth for what this cast recovers.
-        result = cast(_TickResult, event.worker.result)  # pyright: ignore[reportUnknownMemberType]
+        if event.state in (WorkerState.SUCCESS, WorkerState.ERROR, WorkerState.CANCELLED):
+            self._tick_in_flight = False
+
+    def _apply_tick(self, result: _TickResult) -> None:
         if result.cgroup_error is not None:
             self._fail_cgroup_unavailable(result.cgroup_error)
             return
