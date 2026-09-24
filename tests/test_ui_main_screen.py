@@ -33,6 +33,7 @@ from appmem.fmt import format_pair
 from appmem.theme import TERMINAL_THEMES, THEME_NAMES, config_path, resolve_theme
 from appmem.ui.app import AppMemApp
 from appmem.ui.rows import row_key
+from appmem.ui.screens import help as help_screen
 from appmem.ui.screens import main as main_screen
 from appmem.ui.screens.help import HelpScreen
 from appmem.ui.screens.main import MainScreen
@@ -501,6 +502,35 @@ async def test_footer_hides_w_zswap_when_disabled_and_shows_it_when_enabled(
         footer = pilot.app.query_one("#footer", Static)
         assert isinstance(footer.content, Text)
         assert "w zswap" in footer.content.plain
+
+
+@pytest.mark.asyncio
+async def test_help_never_wraps_narrower_than_its_final_width(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The user saw the help text flash as a 20-column strip with a scrollbar
+    # before widening: the body was wrapped to the scroll container's size
+    # before its first layout, when that size is still 0. Every wrap must use
+    # the final content width, including the one that paints the first frame.
+    widths: list[int] = []
+    real_build_body = help_screen._build_body  # pyright: ignore[reportPrivateUsage]
+
+    def spy(width: int, *, zswap_enabled: bool = False) -> str:
+        widths.append(width)
+        return real_build_body(width, zswap_enabled=zswap_enabled)
+
+    monkeypatch.setattr(help_screen, "_build_body", spy)
+    root = _base_tree(tmp_path)
+    async with _app(root).run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        await pilot.press("?")
+        await pilot.pause()
+        await pilot.pause()
+        assert isinstance(pilot.app.screen, HelpScreen)
+        final_width = pilot.app.screen._content_width()  # pyright: ignore[reportPrivateUsage]
+    assert widths
+    assert final_width > 100  # a real width, not the pre-layout 0
+    assert all(width == final_width for width in widths), widths
 
 
 @pytest.mark.asyncio

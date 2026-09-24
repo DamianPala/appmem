@@ -239,24 +239,24 @@ class HelpScreen(Screen[None]):
 
     def compose(self) -> ComposeResult:
         yield Static(TITLE_TEXT, id="help-title")
-        # Initial body uses the full app width as a stand-in: `#help-scroll`
-        # isn't mounted yet during its own compose, so its real content width
-        # (minus the scrollbar gutter) isn't known until `on_mount` below.
-        with VerticalScroll(id="help-scroll"):
+        # `#help-scroll` has no size of its own until the first layout, so the
+        # initial wrap uses the app width minus the scrollbar gutter it always
+        # reserves (`scrollbar-gutter: stable`). Wrapping to the widget's own
+        # size here or in `on_mount` reads 0 and squeezes the first frame into
+        # a 20-column strip. The gutter width comes from `styles` because the
+        # computed `scrollbar_size_vertical` is 0 before the CSS is applied.
+        scroll = VerticalScroll(id="help-scroll")
+        with scroll:
             # `markup=False`: the text shows `"name [sys]"` literally (markup ate it).
-            initial_width = self.app.size.width  # pyright: ignore[reportUnknownMemberType]
+            app_width: int = self.app.size.width  # pyright: ignore[reportUnknownMemberType]
+            initial_width = app_width - scroll.styles.scrollbar_size_vertical
             body = _build_body(initial_width, zswap_enabled=self._zswap_enabled)
             yield Static(body, id="help-text", markup=False)
         yield Static(build_footer(_FOOTER_ITEMS), id="footer")
 
     def on_mount(self) -> None:
-        # The scrollbar reserves a fixed gutter (`scrollbar-gutter: stable`)
-        # regardless of whether the body currently overflows, so wrapping at
-        # `app.size.width` alone re-wraps a line's last word once a scrollbar
-        # is actually shown. Refresh now that `#help-scroll` is mounted and
-        # its real content width is known; also gives it keyboard focus so
-        # up/down/pageup/pagedown/home/end (its built-in bindings) work.
-        self._refresh_body()
+        # Keyboard focus so up/down/pageup/pagedown/home/end (the scroll
+        # container's built-in bindings) work right away.
         self.query_one("#help-scroll", VerticalScroll).focus()
 
     def on_resize(self, event: events.Resize) -> None:
