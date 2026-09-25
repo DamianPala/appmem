@@ -20,7 +20,7 @@ Use its non-interactive commands; the live TUI (bare `appmem`) is for the human.
    Add `--system` when user apps don't explain the numbers.
    A busy app's `top_commands` often names what is inside it without step 3.
 2. Decide whether memory is the problem right now (next section) before naming a culprit.
-3. Drill into the top 1-3 apps: `appmem app NAME --json` (`--scope system` for a `system` item; the snapshot's `next` field holds the command for the biggest one).
+3. Drill into the top 2-5 apps: `appmem app NAME --json` (`--scope system` for a `system` item; the snapshot's `next` field holds the command for the biggest one).
    Read `commands.items` first (processes summed by command name), then `processes.items` for PIDs and units; when `has_more` is true, rerun with `--limit` at least the app's `procs`.
 4. Growth needs two samples: run `snapshot` again a few minutes later and compare the same apps.
 5. Answer with numbers: which app, how much RAM and swap, which processes or commands inside it, whether memory stalls are happening now, and one concrete action.
@@ -31,7 +31,7 @@ Use its non-interactive commands; the live TUI (bare `appmem`) is for the human.
 - Act when `ram_available_bytes` drops under ~10 % of `ram_total_bytes` together with `some` or `high`.
 - `pressure` is `null` when the kernel has no pressure data: judge by `ram_available_bytes` alone and say you can't tell whether stalls are happening.
 - Never sum process `ram_bytes` to size an app: RSS counts a shared page once per process. Use the app's own `ram_bytes`.
-- Terminals: everything started from a terminal counts as the terminal app. A terminal with 17 GiB is usually not the terminal itself; name what `commands.items` shows inside it (agent sessions, node processes, builds), not the terminal.
+- Terminals: everything started from a terminal counts as the terminal app. A terminal with 10 GiB is usually not the terminal itself; name what `commands.items` shows inside it (agent sessions, node processes, builds), not the terminal.
 - A process with large `swap_bytes`, small `ram_bytes` and an `age_seconds` of days is an idle sleeper that was paged out: harmless under `none`, the first thing to free under `high`.
 - Swap always belongs to a live process or cgroup and is freed when the owner exits. Long uptime is not a reason to reboot; closing or restarting the holder frees the same memory.
 - Compare within appmem, not against htop: per-process values here leave out file-backed pages.
@@ -39,7 +39,7 @@ Use its non-interactive commands; the live TUI (bare `appmem`) is for the human.
 
 ## What to recommend
 
-- The smallest action that frees the most: close or restart one app or one command inside it ("N `claude` processes inside ghostty hold X GiB; close the sessions you are done with"). Give the numbers and let the user choose.
+- The smallest action that frees the most: close or restart one app or one command inside it ("N `node` processes inside the terminal hold X GiB; close the ones you are done with"). Give the numbers and let the user choose.
 - Never kill or stop anything without the user's explicit ok. appmem itself never does.
 - Ready commands: `systemctl --user stop 'UNIT'` for a unit from `units` of a `scope: "user"` app; `sudo systemctl stop 'UNIT'` for `scope: "system"`; `kill PID` for one process. Stopping a terminal's main unit closes every window in it, so prefer `kill PID` for the specific command or ask the user to close that tab.
 - Don't recommend `swapoff` or `vm.swappiness` changes from one snapshot: `swapoff` needs free RAM for everything paged out, and under `none` swap is doing its job.
