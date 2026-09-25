@@ -55,6 +55,13 @@ _FLAG_AT_SPAN_START = re.compile(r"^(--[a-z][a-z-]*)\b")
 _KIND_LIKE = re.compile(r"^[a-z][a-z0-9_]*$")
 _KIND_SUFFIXES = ("_required", "_found", "_input", "_unavailable")
 
+# A `*_bytes` field followed by "is", "means", "=" or a parenthetical gloss
+# would be redefining a field the schema
+# already owns (SPEC.md "Tests": "skill defines no fields"); `appmem schema`
+# is the one catalog for field meanings now, and SKILL.md keeps only
+# workflow and judgement.
+_FIELD_DEFINITION = re.compile(r"`\w+_bytes` (?:is |means |=|\()")
+
 
 def _true() -> bool:
     return True
@@ -216,3 +223,8 @@ def test_skill_frontmatter_names_appmem_with_a_description(skill_text: str) -> N
     frontmatter = _skill_frontmatter(skill_text)
     assert frontmatter.get("name") == "appmem"
     assert frontmatter.get("description")
+
+
+def test_skill_defines_no_fields(skill_text: str) -> None:
+    offending = [line for line in skill_text.splitlines() if _FIELD_DEFINITION.search(line)]
+    assert offending == []

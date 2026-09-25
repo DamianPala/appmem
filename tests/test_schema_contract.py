@@ -16,7 +16,8 @@ import pytest
 from appmem import schema
 from appmem.cli import _build_parser  # pyright: ignore[reportPrivateUsage]
 
-_ALLOWED_SCHEMA_KEYS = {"type", "enum", "properties", "required", "items"}
+_ALLOWED_SCHEMA_KEYS = {"type", "enum", "properties", "required", "items", "description"}
+_MAX_DESCRIPTION_LENGTH = 300
 
 
 def _sub_parser(name: str) -> argparse.ArgumentParser:
@@ -165,3 +166,28 @@ def _walk_schema(value: object) -> None:
 @pytest.mark.parametrize("output", [schema.SNAPSHOT_OUTPUT, schema.APP_OUTPUT])
 def test_output_schemas_use_only_the_allowed_keywords(output: dict[str, Any]) -> None:
     _walk_schema(output)
+
+
+def _missing_descriptions(node: dict[str, Any], path: str) -> list[str]:
+    """Every named property under `node` (recursively, through `properties`
+    and array `items`) whose own `description` is not a short, non-empty
+    string. `node` itself is a schema, not a named property, so it is never
+    checked here -- only the properties it declares are."""
+    errors: list[str] = []
+    for key, child in cast("dict[str, Any]", node.get("properties", {})).items():
+        child_path = f"{path}.{key}"
+        description = child.get("description")
+        if not isinstance(description, str) or not description:
+            errors.append(f"{child_path}: missing description")
+        elif len(description) > _MAX_DESCRIPTION_LENGTH:
+            errors.append(f"{child_path}: description over {_MAX_DESCRIPTION_LENGTH} chars")
+        errors += _missing_descriptions(child, child_path)
+    items = node.get("items")
+    if isinstance(items, dict):
+        errors += _missing_descriptions(cast("dict[str, Any]", items), f"{path}[]")
+    return errors
+
+
+@pytest.mark.parametrize("output", [schema.SNAPSHOT_OUTPUT, schema.APP_OUTPUT])
+def test_every_output_field_has_a_description(output: dict[str, Any]) -> None:
+    assert _missing_descriptions(output, "$") == []

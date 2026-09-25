@@ -1,4 +1,4 @@
-# appmem: spec v0.16
+# appmem: spec v0.17
 
 A live terminal view of RAM and swap usage **per application**, not per process.
 Think `btm` or `htop`, but rows are apps (Ghostty, Brave, LibreOffice), each summing all of its processes.
@@ -334,7 +334,7 @@ The command line conforms to the house CLI Design Standard 0.1.0 (claimed in `ap
 
   Each app item also has `kernel_bytes` (without the zswap pool) and `top_commands`: its 3 largest commands by TOTAL (`name`, `total_bytes`, `procs`, grouped as in `app NAME`), empty for apps with 6 or fewer processes.
 - **app NAME**: resolves (scope, name) exactly like the process view. `units` as `{name, label}` objects (raw name, and the systemd-unescaped label), `processes` (with `private_bytes`) and `commands` (each paged by `--limit`, default 100), `kernel_bytes`, `zswap_pool_bytes` and `unattributed_*`. No match, or every unit gone before it is read: `not_found`, exit 1.
-- **schema**: the index (commands, global flags, format defaults, exit codes, conformance) or one command's detail (flags, args, output schema). Always JSON.
+- **schema**: the index (commands, global flags, format defaults, exit codes, conformance) or one command's detail (flags, args, output schema). Always JSON. Every output field carries a short `description`. This deliberately departs from the 0.1.0 claim, whose O4 allows only the five validation keywords; the 0.2 draft's O4a admits `description` as an annotation, which validators ignore. `conformance.extensions` stays empty: no 0.1.0 extension covers it.
 - Output: text on a terminal, JSON otherwise; `--json` forces JSON. Sizes are integer bytes (`_bytes`), percentages `_percent`, ages integer `age_seconds`, `taken_at` is RFC 3339 with the local offset. Text reports contain no escape sequences, and names with control characters are shown escaped.
 - A closed stdout pipe (`| head`) ends quietly with exit `0`.
 - `--help` is a standalone cheat sheet: purpose, commands, flags, keys, how to read pressure, one example. Unknown flags and invalid values fail with exit `2` and the accepted form.
@@ -390,7 +390,7 @@ Measured with the UI at `-i 1` on the dev machine: 2026-09-23 (~310 processes, s
 - Formatting: unit boundaries (1023 KiB, 1 MiB, 1023 MiB, 1 GiB) and pressure word thresholds.
 - UI: Textual pilot tests for sorting, the process view, `g`, drill-down, the status line, narrow layouts (80x24, 60 columns) and the help screen.
 - CLI: exit codes and the JSON error line for every kind; the terminal-context rules; parser-versus-descriptor parity; every emitted document validated against its published output schema.
-- Docs: README and the skill name only commands, flags and error kinds that exist.
+- Docs: README and the skill name only commands, flags and error kinds that exist; the skill defines no fields, every output field described.
 
 ## Later (not v1)
 
