@@ -1,4 +1,4 @@
-# appmem: spec v0.15
+# appmem: spec v0.16
 
 A live terminal view of RAM and swap usage **per application**, not per process.
 Think `btm` or `htop`, but rows are apps (Ghostty, Brave, LibreOffice), each summing all of its processes.
@@ -375,10 +375,11 @@ Every failure writes one JSON error object as the last non-empty stderr line, ne
   - After a sort, `move_cursor` to the selected app's row key.
   - Textual binds `Ctrl+C` to a "no longer quits" notice by default. Rebind it to quit.
   - Exit with `sys.exit(app.return_code or 0)`.
+  - Both screens' tables (`appmem.ui.table.CellTable`) are a `DataTable` subclass whose `update_cell` invalidates only the changed cell instead of Textual's whole render cache (Textual bumps a counter that's part of every cached cell's key, so one changed cell invalidates every cell on screen); it falls back to Textual's own `update_cell` for `update_width=True`, on a Textual minor it was not tested against (8.2 today), and if Textual's internals move.
 
 Performance budget: the collector stays under 1 % of one CPU core at a 1 s interval.
 Measured on the dev machine: 4.5 ms per tick for 146 units, 10 ms for `/proc/PID/status` of all 542 user processes.
-Measured with the UI at `-i 1` on the dev machine: 2026-09-23 (~310 processes, small terminal) main view about 4 %, process views about 5 % of one core; 2026-09-25 (43 apps, 481 processes) 7.8 % at 200x50 in both views and 11.6 % at 120x86, the same before and after the memory fixes of 2026-09-24. The cost is the table repaint, so it grows with the number of visible rows; the README says 5 to 12 %. `-i 2` measured 4.0 % at 200x50 the same day, half of `-i 1`. `appmem snapshot` takes about 0.25 s including interpreter start.
+Measured with the UI at `-i 1` on the dev machine: 2026-09-23 (~310 processes, small terminal) main view about 4 %, process views about 5 % of one core; 2026-09-25 (43 apps, 481 processes) 7.8 % at 200x50 in both views and 11.6 % at 120x86, the same before and after the memory fixes of 2026-09-24. The cost is the table repaint, so it grows with the number of visible rows; the README says 4 to 12 %. `-i 2` measured 4.0 % at 200x50 the same day, half of `-i 1`. With `CellTable`'s per-cell cache invalidation, 2026-09-25 (same terminal size, live desktop, so not the exact same app/process count as the 7.8 % run): main view 5.3 %, process view 6.9 % of one core. `appmem snapshot` takes about 0.25 s including interpreter start.
 
 ## Tests
 

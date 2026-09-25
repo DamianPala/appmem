@@ -67,6 +67,7 @@ from appmem.ui.rows import (
 )
 from appmem.ui.screens.help import HelpScreen
 from appmem.ui.screens.processes import ProcessesScreen
+from appmem.ui.table import CellTable
 from appmem.ui.table_order import reorder_rows
 from appmem.writeback import Sample, update_writeback
 
@@ -374,7 +375,7 @@ class MainScreen(Screen[None]):
         yield Static(id="header1")
         yield Static(id="header2")
         yield Static(id="header3")
-        table: DataTable[str | Text] = DataTable(id="table", cursor_type="row")
+        table: DataTable[str | Text] = CellTable(id="table", cursor_type="row")
         self._rebuild_columns(table)
         yield table
         yield Static(self._footer_text(), id="footer")
@@ -746,8 +747,8 @@ class MainScreen(Screen[None]):
     def _update_row_cells(
         self, table: DataTable[str | Text], old: Row, row: Row, *, force_delta_restyle: bool
     ) -> None:
-        # Only cells whose text changed: any `update_cell` invalidates the whole
-        # DataTable render cache, so a no-op update still repaints every row.
+        # Only cells whose text changed: each `update_cell` still re-renders
+        # that cell and its row (`CellTable`), so a no-op update is not free.
         # Δ cells are the one exception: the baseline crossing 60 s changes
         # their dim style without necessarily changing their text.
         app_cap = self._app_cap(table)

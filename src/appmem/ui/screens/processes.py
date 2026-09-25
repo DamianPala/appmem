@@ -71,6 +71,7 @@ from appmem.ui.process_rows import (
     zswap_pool_process_row,
 )
 from appmem.ui.screens.help import HelpScreen
+from appmem.ui.table import CellTable
 from appmem.ui.table_order import reorder_rows
 
 _PROCESS_COLUMNS: tuple[tuple[str, str, int | None], ...] = (
@@ -291,7 +292,7 @@ class ProcessesScreen(Screen[None]):
     def compose(self) -> ComposeResult:
         self._age_shown = self._show_age_column()
         yield Static(id="title", markup=False)
-        table: DataTable[str | Text] = DataTable(id="table", cursor_type="row")
+        table: DataTable[str | Text] = CellTable(id="table", cursor_type="row")
         self._rebuild_columns(table)
         yield table
         yield Static(id="status")
