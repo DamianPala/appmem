@@ -1,4 +1,4 @@
-# appmem: spec v0.14
+# appmem: spec v0.15
 
 A live terminal view of RAM and swap usage **per application**, not per process.
 Think `btm` or `htop`, but rows are apps (Ghostty, Brave, LibreOffice), each summing all of its processes.
@@ -123,7 +123,7 @@ Enter on a command drills into its member processes (title `ghostty › claude`,
 ### Help screen (`?`)
 
 A scrolling screen with the definitions below in plain words, soft-wrapped to the width, with `esc/?/q close` in its title line.
-It covers what RAM, CACHE, SWAP, TOTAL, pressure and the header's shared/free/cache/avail mean (tmpfs files count toward the app that wrote them), why rows don't add up to the header, why a closed app can still have a row, and how to act on what you see, plus one line on `T` and where the theme is saved. When zswap is enabled, it also defines the zswap bracket, `to disk` and ZSWAP. It also explains the bar glyphs (`█` used, `░` what's left).
+It covers what RAM, CACHE, SWAP, TOTAL, pressure and the header's shared/free/cache/avail mean (tmpfs files count toward the app that wrote them), why rows don't add up to the header, why a closed app can still have a row, and how to act on what you see, plus one line on `T` and where the theme is saved. When zswap is enabled, it also defines the zswap bracket, `to disk` and ZSWAP. It also explains the bar glyphs (`█` used, `░` what's left). It ends with the key list from the "Keys" table below, one line per key; `z` and `w` appear only when zswap is enabled, like the ZSWAP column they act on.
 
 ## Keys
 
@@ -378,7 +378,7 @@ Every failure writes one JSON error object as the last non-empty stderr line, ne
 
 Performance budget: the collector stays under 1 % of one CPU core at a 1 s interval.
 Measured on the dev machine: 4.5 ms per tick for 146 units, 10 ms for `/proc/PID/status` of all 542 user processes.
-Measured with the UI at `-i 1` on the dev machine (2026-09-23, ~310-process app): main view about 4 %, process views about 5 % of one core. `appmem snapshot` takes about 0.2 s including interpreter start.
+Measured with the UI at `-i 1` on the dev machine: 2026-09-23 (~310 processes, small terminal) main view about 4 %, process views about 5 % of one core; 2026-09-25 (43 apps, 481 processes) 7.8 % at 200x50 in both views and 11.6 % at 120x86, the same before and after the memory fixes of 2026-09-24. The cost is the table repaint, so it grows with the number of visible rows; the README says 5 to 12 %. `-i 2` measured 4.0 % at 200x50 the same day, half of `-i 1`. `appmem snapshot` takes about 0.25 s including interpreter start.
 
 ## Tests
 

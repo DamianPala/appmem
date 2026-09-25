@@ -157,6 +157,28 @@ _ACTIONS_COMMANDS: tuple[tuple[str, str], ...] = (
     ("kill PID", "kill a single process"),
 )
 
+_KEYS_INTRO = "Keys:"
+# One line per key, same order as SPEC.md "Keys" and `appmem --help`.
+_KEYS: tuple[tuple[str, str], ...] = (
+    ("click header", "sort by that column, click again to reverse"),
+    ("r / s / t / d", "sort by RAM / SWAP / TOTAL / ΔSWAP (repeat to reverse)"),
+    ("up/down PgUp PgDn", "move"),
+    ("Enter", "open the process view for the selected app; grouped: that command's processes"),
+    ("g", "process view: toggle grouping by command"),
+    ("Esc", "back to the main view"),
+    ("c", "toggle the CACHE column"),
+    ("x", "toggle system services"),
+    ("b", "reset the Δ baseline to now"),
+    ("T / Ctrl+P", "change the theme"),
+    ("?", "this screen"),
+    ("q / Ctrl+C", "quit"),
+)
+# Only where the ZSWAP column exists (SPEC.md "Help screen").
+_ZSWAP_KEYS: tuple[tuple[str, str], ...] = (
+    ("z", "sort by ZSWAP (repeat to reverse)"),
+    ("w", "toggle the ZSWAP column"),
+)
+
 _MIN_WRAP_WIDTH = 20
 
 
@@ -206,8 +228,25 @@ def _build_body(width: int, *, zswap_enabled: bool = False) -> str:
                 *(_wrap_item(f"  {cmd}", desc, w, column=30) for cmd, desc in _ACTIONS_COMMANDS),
             ]
         ),
+        "\n".join(
+            [
+                _wrap(_KEYS_INTRO, w),
+                *(_wrap_item(f"  {key}", desc, w, column=22) for key, desc in _keys(zswap_enabled)),
+            ]
+        ),
     ]
     return "\n\n".join(blocks)
+
+
+def _keys(zswap_enabled: bool) -> tuple[tuple[str, str], ...]:
+    if not zswap_enabled:
+        return _KEYS
+    # `z` next to the other sort keys, `w` next to the other column toggles.
+    keys = list(_KEYS)
+    keys.insert(2, _ZSWAP_KEYS[0])
+    after_c = next(i for i, (key, _desc) in enumerate(keys) if key == "c") + 1
+    keys.insert(after_c, _ZSWAP_KEYS[1])
+    return tuple(keys)
 
 
 _FOOTER_ITEMS: tuple[tuple[tuple[str, ...], str], ...] = ((("esc",), "close"),)

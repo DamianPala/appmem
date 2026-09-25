@@ -63,6 +63,43 @@ def test_body_always_explains_the_bar_glyphs() -> None:
     assert "avail for RAM, free for Swap" in body
 
 
+def test_body_ends_with_the_key_list() -> None:
+    # SPEC.md "Help screen": the key list closes the body, one line per key,
+    # so `?` answers "which key does what" as well as "what does this number mean".
+    body = _build_body(200)
+    keys_block = body.split("Keys:")[-1]
+
+    assert body.count("Keys:") == 1
+    for key in (
+        "click header",
+        "r / s / t / d",
+        "up/down PgUp PgDn",
+        "Enter",
+        "g",
+        "Esc",
+        "c",
+        "x",
+        "b",
+        "T / Ctrl+P",
+        "?",
+        "q",
+    ):
+        assert f"  {key} " in keys_block
+    assert "  z " not in keys_block
+    assert "  w " not in keys_block
+
+
+def test_key_list_adds_z_and_w_only_with_zswap() -> None:
+    body = _build_body(200, zswap_enabled=True)
+    keys_block = body.split("Keys:")[-1]
+
+    assert "sort by ZSWAP" in keys_block
+    assert "toggle the ZSWAP column" in keys_block
+    # `z` sits with the sort keys, `w` right after `c` (the other column toggle).
+    assert keys_block.index("  r / s / t / d") < keys_block.index("  z ")
+    assert keys_block.index("  c ") < keys_block.index("  w ") < keys_block.index("  x ")
+
+
 def test_body_explains_the_none_was_qualifier() -> None:
     body = _build_body(200)
 
