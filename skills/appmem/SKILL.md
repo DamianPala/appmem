@@ -8,7 +8,7 @@ description: Diagnose what is using RAM and swap on a Linux machine, per applica
 appmem sums the memory and swap counters the kernel keeps for every systemd app cgroup and reports them per application, with a drill-down to processes and commands.
 Use its non-interactive commands; the live TUI (bare `appmem`) is for the human.
 
-- Get it: `uv tool install appmem` (skip in a checkout with a venv).
+- Get it: `uv tool install appmem`.
 - Always pass `--json`; some agent shells look like a terminal and would get text.
 - `appmem schema` and `appmem schema COMMAND` are the catalog: every command, flag, output field with its meaning, and exit code. Read a field's `description` there before interpreting it.
 - No root needed.
@@ -31,7 +31,7 @@ Use its non-interactive commands; the live TUI (bare `appmem`) is for the human.
 - Act when `ram_available_bytes` drops under ~10 % of `ram_total_bytes` together with `some` or `high`.
 - `pressure` is `null` when the kernel has no pressure data: judge by `ram_available_bytes` alone and say you can't tell whether stalls are happening.
 - Never sum process `ram_bytes` to size an app: RSS counts a shared page once per process. Use the app's own `ram_bytes`.
-- Terminals: everything started from a terminal counts as the terminal app. A terminal with 10 GiB is usually not the terminal itself; name what `commands.items` shows inside it (agent sessions, node processes, builds), not the terminal.
+- Terminals: everything started from a terminal counts as the terminal app. A terminal holding many GiB is usually not the terminal itself; name what `commands.items` shows inside it (agent sessions, node processes, builds), not the terminal.
 - A process with large `swap_bytes`, small `ram_bytes` and an `age_seconds` of days is an idle sleeper that was paged out: harmless under `none`, the first thing to free under `high`.
 - Swap always belongs to a live process or cgroup and is freed when the owner exits. Long uptime is not a reason to reboot; closing or restarting the holder frees the same memory.
 - Compare within appmem, not against htop: per-process values here leave out file-backed pages.
