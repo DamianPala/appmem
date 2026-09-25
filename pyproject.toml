@@ -82,3 +82,8 @@ addopts = "--strict-markers --strict-config"
 testpaths = ["tests"]
 filterwarnings = ["error"]
 asyncio_mode = "strict"
+
+[tool.uv]
+# Pinned so `uv lock` resolves the same set everywhere; a user-level `exclude-newer`
+# alone is not recorded consistently and made CI's `uv sync --locked` re-resolve.
+exclude-newer = "2026-09-25T00:00:00Z"

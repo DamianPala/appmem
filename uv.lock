@@ -3,8 +3,7 @@ revision = 3
 requires-python = ">=3.12"
 
 [options]
-exclude-newer = "2026-09-16T21:06:30.898635535Z"
-exclude-newer-span = "P1W"
+exclude-newer = "2026-09-25T00:00:00Z"
 
 [[package]]
 name = "appmem"
