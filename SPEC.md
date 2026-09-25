@@ -1,4 +1,4 @@
-# appmem: spec v0.13
+# appmem: spec v0.14
 
 A live terminal view of RAM and swap usage **per application**, not per process.
 Think `btm` or `htop`, but rows are apps (Ghostty, Brave, LibreOffice), each summing all of its processes.
@@ -222,14 +222,15 @@ Normalization, in order:
 1. Take the unit directory name.
 2. Unescape every systemd `\xNN` escape (`\x2d` → `-`) and decode the resulting bytes as UTF-8, invalid sequences replaced (`\xe5\xbe\xae\xe4\xbf\xa1` → `微信`).
 3. Strip the `.service` / `.scope` suffix.
-4. Snap: `snap.<name>.<app>-<uuid>` → `<name>`, then go to step 10.
-5. Flatpak: `app-flatpak-<id>-<n>` → `<id>`, then go to step 8.
+4. Snap: `snap.<name>.<app>-<uuid>` → `<name>`, then go to step 11.
+5. Flatpak: `app-flatpak-<id>-<n>` → `<id>`, then go to step 9.
 6. Strip the `app-` prefix.
 7. Strip the instance part: `@<anything>`, trailing `-<digits>`, trailing `-<uuid>`.
-8. Reverse-DNS IDs: when the name has 3 or more dot-separated labels, drop the first two (`com.mitchellh.ghostty` → `ghostty`, `org.kde.discover.notifier` → `discover.notifier`).
-9. Snap desktop IDs: `<x>_<x>` → `<x>` (`thunderbird_thunderbird` → `thunderbird`).
-10. Lowercase.
-11. Apply the built-in alias map.
+8. Generic desktop IDs (`org.chromium.Chromium`): Electron apps and Chromium forks without an id of their own report it to the compositor, so KDE names their scope after it instead of the program. Such a unit takes its app name from its leader process instead (the pid in the scope name while it is still in the unit, else the lowest readable pid under the unit, at most three pids tried in all; the process name as the process view shows it), then continues at step 11. When no process can be read, continue normally with the unit name (step 9).
+9. Reverse-DNS IDs: when the name has 3 or more dot-separated labels, drop the first two (`com.mitchellh.ghostty` → `ghostty`, `org.kde.discover.notifier` → `discover.notifier`).
+10. Snap desktop IDs: `<x>_<x>` → `<x>` (`thunderbird_thunderbird` → `thunderbird`).
+11. Lowercase.
+12. Apply the built-in alias map.
 
 Built-in alias map. Exact entries match the whole name, prefix entries match its start:
 
@@ -240,6 +241,7 @@ Built-in alias map. Exact entries match the whole name, prefix entries match its
 | `google-chrome` | exact | `chrome` |
 | `element-desktop` | exact | `element` |
 | `superproductivity-bin` | exact | `superproductivity` |
+| `mullvad` | exact | `mullvad-vpn` |
 | `libreoffice-` | prefix | `libreoffice` |
 | `plasma-` | prefix | `plasma` |
 
@@ -254,7 +256,7 @@ Acceptance table (real unit names from the dev machine, used as unit tests):
 | `app-ghostty\x2d2@7b755c4e18184688b9c5e64a8ceb245d.service` | `ghostty` |
 | `app-ghostty-surface-transient-4172209.scope` | `ghostty` |
 | `app-brave\x2dbrowser@c16f78223b3c4371a764a76609ae9ef0.service` | `brave` |
-| `app-org.chromium.Chromium-4020402.scope` | `chromium` |
+| `app-org.chromium.Chromium-4020402.scope` | the leader's program name (e.g. `obsidian`) |
 | `app-com.google.Chrome-3242011.scope` | `chrome` |
 | `app-google\x2dchrome@c16f78223b3c4371a764a76609ae9ef0.service` | `chrome` |
 | `app-element-3663554.scope` | `element` |

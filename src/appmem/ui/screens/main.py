@@ -253,7 +253,7 @@ def _collect_apps(root: Path, uid: int, include_system: bool) -> list[AppStats]:
         for path in unit_paths
         if (unit_stats := collect_read_unit(path)) is not None
     ]
-    return filter_visible_apps(group_apps(units))
+    return filter_visible_apps(group_apps(root, units))
 
 
 @dataclass(frozen=True)

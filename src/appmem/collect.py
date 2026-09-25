@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from appmem.command_name import command_display_name
-from appmem.naming import app_name
+from appmem.naming import app_name, is_generic_desktop_id, normalize_process_name, scope_leader_pid
 
 _REQUIRED_MEMORY_STAT_KEYS = ("anon", "shmem", "file")
 _KERNEL_FALLBACK_KEYS = ("slab", "kernel_stack", "pagetables", "percpu")
@@ -144,7 +144,7 @@ class Unit:
 
 @dataclass(frozen=True)
 class AppStats:
-    """Counters for an app: one or more units merged by `naming.app_name`."""
+    """Counters for an app: one or more units merged by `unit_app_name`."""
 
     name: str
     ram: int
@@ -425,6 +425,58 @@ def unit_scope(root: Path, unit_path: Path) -> str:
     return "system" if str(unit_path).startswith(system_slice) else "user"
 
 
+def unit_app_name(root: Path, unit_path: Path) -> str:
+    """The app name for one unit (SPEC.md "Grouping"), used by both
+    `group_apps` and `find_app_units` so they agree on one name per unit.
+
+    `app_name(unit_path.name)` for almost every unit. A generic desktop id
+    (only `org.chromium.Chromium` for now) is named after its leader process
+    instead: Electron apps and Chromium forks without an id of their own all
+    report the same id to the compositor, so the unit name alone can't tell
+    them apart. Cheap for the common case (pure string work); the extra
+    `/proc` read only happens for a generic unit, a handful at most.
+    """
+    unit_name = unit_path.name
+    if not is_generic_desktop_id(unit_name):
+        return app_name(unit_name)
+    leader_name = _generic_leader_name(root, unit_path)
+    if leader_name is None:
+        return app_name(unit_name)
+    return normalize_process_name(leader_name)
+
+
+_MAX_LEADER_PID_ATTEMPTS = 3
+"""Cap on how many pids `_generic_leader_name` reads `/proc` for: a generic
+unit is rare and its pid list short, but a unit full of dead pids must still
+cost only a handful of reads, not one per process."""
+
+
+def _generic_leader_name(root: Path, unit_path: Path) -> str | None:
+    """The leader process name for a generic-desktop-id unit (SPEC.md
+    "Grouping"): the pid in the scope name, but only while it still belongs
+    to the unit (a scope can outlive the process it was named after, and
+    after pid wrap-around that pid can be anyone); otherwise the lowest pid
+    in the unit's own `cgroup.procs` whose name can be read. `None` when
+    nothing in the unit can be read within `_MAX_LEADER_PID_ATTEMPTS` tries.
+    """
+    pids = _pids_under(str(unit_path))
+    scope_pid = scope_leader_pid(unit_path.name)
+    candidates = [scope_pid] if scope_pid is not None and scope_pid in pids else []
+    candidates += [pid for pid in pids if pid != scope_pid]
+    for pid in candidates[:_MAX_LEADER_PID_ATTEMPTS]:
+        name = _read_proc_name_or_none(root, pid)
+        if name is not None:
+            return name
+    return None
+
+
+def _read_proc_name_or_none(root: Path, pid: int) -> str | None:
+    try:
+        return _read_proc_name(root / "proc" / str(pid))
+    except (OSError, IndexError, ValueError):
+        return None
+
+
 def find_app_units(
     root: Path, uid: int, include_system: bool, scope: str, name: str, *, strict: bool = True
 ) -> list[Path]:
@@ -438,7 +490,7 @@ def find_app_units(
     return [
         path
         for path in find_units(root, uid, include_system=include_system, strict=strict)
-        if unit_scope(root, path) == scope and app_name(path.name) == name
+        if unit_scope(root, path) == scope and unit_app_name(root, path) == name
     ]
 
 
@@ -599,13 +651,13 @@ def _iter_procs_content(cgroup_dir: str) -> Iterator[str]:
 # --- grouping ----------------------------------------------------------------
 
 
-def group_apps(units: Iterable[Unit]) -> list[AppStats]:
-    """Merge units by `(scope, naming.app_name)`, summing counters (SPEC.md
+def group_apps(root: Path, units: Iterable[Unit]) -> list[AppStats]:
+    """Merge units by `(scope, unit_app_name)`, summing counters (SPEC.md
     "Grouping"). A user and a system unit that normalize to the same name stay
     two rows (SPEC.md "Grouping": app identity is scope + name)."""
     groups: dict[tuple[str, str], list[Unit]] = {}
     for unit in units:
-        name = app_name(unit.path.name)
+        name = unit_app_name(root, unit.path)
         groups.setdefault((unit.scope, name), []).append(unit)
 
     apps: list[AppStats] = []

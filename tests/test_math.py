@@ -13,6 +13,10 @@ from appmem.collect import (
     unattributed_row,
 )
 
+# None of these units use a generic desktop id, so `group_apps` never reads
+# the filesystem: this path stands in for a real root.
+_ROOT = Path("/fake-root")
+
 
 def _unit(name: str, *, scope: str = "user", **stats_kwargs: int) -> Unit:
     defaults: dict[str, int] = {
@@ -53,7 +57,7 @@ def test_group_apps_merges_units_by_app_name_and_sums_counters() -> None:
         _unit("pipewire.service", ram=20, cache=0, swap=0, total=20, procs=1),
     ]
 
-    apps = {app.name: app for app in group_apps(units)}
+    apps = {app.name: app for app in group_apps(_ROOT, units)}
 
     assert set(apps) == {"ghostty", "pipewire"}
     ghostty = apps["ghostty"]
@@ -76,7 +80,7 @@ def test_group_apps_keeps_user_and_system_same_name_as_separate_rows() -> None:
         _unit("dbus.service", scope="system", ram=20),
     ]
 
-    apps = group_apps(units)
+    apps = group_apps(_ROOT, units)
 
     assert len(apps) == 2
     by_scope = {app.scope: app for app in apps}

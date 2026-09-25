@@ -53,7 +53,7 @@ def _collect_visible_apps(root: Path, uid: int, include_system: bool) -> list[Ap
         for path in unit_paths
         if (stats := read_unit(path)) is not None
     ]
-    apps = filter_visible_apps(group_apps(units))
+    apps = filter_visible_apps(group_apps(root, units))
     return sorted(apps, key=lambda app: (-app.total, app.scope, app.name))
 
 
