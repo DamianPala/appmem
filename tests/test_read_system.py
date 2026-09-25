@@ -3,6 +3,8 @@
 import os
 from pathlib import Path
 
+import pytest
+
 from appmem.collect import read_system
 from helpers import (
     make_unit,
@@ -124,6 +126,18 @@ def test_pressure_none_when_file_missing(tmp_path: Path) -> None:
     assert stats.pressure_some_avg60 is None
     assert stats.pressure_full_avg10 is None
     assert stats.pressure_full_avg60 is None
+
+
+def test_reads_system_when_meminfo_file_is_entirely_missing(tmp_path: Path) -> None:
+    # No `proc/meminfo` at all (a very stripped `/proc`, or a race at
+    # startup): falls back to every field reading as 0/missing, not a raise.
+    stats = read_system(tmp_path, UID)
+
+    assert stats.mem_total == 0
+    assert stats.mem_available == 0
+    assert stats.swap_total == 0
+    assert stats.swap_free == 0
+    assert stats.mem_free == 0
 
 
 def test_missing_system_slice_defaults_to_zero(tmp_path: Path) -> None:
@@ -248,6 +262,22 @@ def test_zswap_missing_meminfo_fields_reads_as_unsupported(tmp_path: Path) -> No
     assert stats.zswapped_bytes is None
 
 
+def test_zswap_compressor_and_max_pool_percent_null_when_their_files_are_missing(
+    tmp_path: Path,
+) -> None:
+    # zswap is enabled and meminfo has the pool fields, but the compressor/
+    # max_pool_percent parameter files themselves were never written (e.g. a
+    # kernel exposing a partial set of the zswap knobs).
+    _zswap_meminfo(tmp_path, zswap_kb=2_000_000, zswapped_kb=7_000_000)
+    write_zswap_enabled(tmp_path, enabled=True)
+    # No write_zswap_params call: neither parameter file exists.
+
+    stats = read_system(tmp_path, UID)
+
+    assert stats.zswap_compressor is None
+    assert stats.zswap_max_pool_percent is None
+
+
 def test_zswap_writeback_bytes_from_vmstat_zswpwb(tmp_path: Path) -> None:
     write_meminfo(
         tmp_path, mem_total_kb=1000, mem_available_kb=500, swap_total_kb=0, swap_free_kb=0
@@ -257,6 +287,36 @@ def test_zswap_writeback_bytes_from_vmstat_zswpwb(tmp_path: Path) -> None:
     stats = read_system(tmp_path, UID)
 
     assert stats.zswap_writeback_bytes == 100 * os.sysconf("SC_PAGE_SIZE")
+
+
+def test_zswap_writeback_bytes_survives_a_short_first_read_past_one_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # /proc/vmstat is a multi-record seq_file: the kernel hands back at most
+    # one page (4096 bytes) per `read()` call, however large the buffer
+    # requested, so a short first read there does not mean EOF (see
+    # `_read_small_file_bytes`'s docstring). Capping `os.read` reproduces
+    # that; a `tmp_path` fixture written in one go would never trigger it on
+    # its own (review round 1, MUST 1).
+    write_meminfo(
+        tmp_path, mem_total_kb=1000, mem_available_kb=500, swap_total_kb=0, swap_free_kb=0
+    )
+    proc_dir = tmp_path / "proc"
+    proc_dir.mkdir(parents=True, exist_ok=True)
+    padding = "\n".join(f"pad_counter_{i} 0" for i in range(400))
+    (proc_dir / "vmstat").write_text(f"{padding}\nzswpwb 3603131\n")
+    assert (proc_dir / "vmstat").stat().st_size > 4096  # the fixture must actually cross the page
+
+    real_read = os.read
+
+    def page_capped_read(fd: int, count: int) -> bytes:
+        return real_read(fd, min(count, 4096))
+
+    monkeypatch.setattr(os, "read", page_capped_read)
+
+    stats = read_system(tmp_path, UID)
+
+    assert stats.zswap_writeback_bytes == 3603131 * os.sysconf("SC_PAGE_SIZE")
 
 
 def test_zswap_writeback_bytes_is_none_without_the_vmstat_counter(tmp_path: Path) -> None:

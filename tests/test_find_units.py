@@ -1,9 +1,11 @@
 """Tests for `appmem.collect.find_units` (SPEC.md "Finding units")."""
 
+import shutil
 from pathlib import Path
 
 import pytest
 
+from appmem import collect as collect_module
 from appmem.collect import CgroupUnavailableError, MemoryStatUnavailableError, find_units
 from helpers import make_unit, user_service_root
 
@@ -124,3 +126,38 @@ def test_strict_false_raises_memory_stat_unavailable_not_cgroup_unavailable(
 
     with pytest.raises(MemoryStatUnavailableError, match=r"memory\.stat"):
         find_units(tmp_path, uid=1000, include_system=False, strict=False)
+
+
+# --- `Path` object reuse across calls (SPEC.md "Tech": `str(path)` in
+# `read_unit` should hit `Path`'s own cached string, not rebuild one every
+# tick) -------------------------------------------------------------------
+
+
+def test_find_units_reuses_path_objects_for_units_that_persist(tmp_path: Path) -> None:
+    user_root = user_service_root(tmp_path, uid=1000)
+    make_unit(user_root)
+    make_unit(user_root / "app.slice" / "app-ghostty.service")
+
+    first = find_units(tmp_path, uid=1000, include_system=False)
+    second = find_units(tmp_path, uid=1000, include_system=False)
+
+    assert first == second
+    assert len(first) == 1
+    assert first[0] is second[0]  # the same object, not just an equal one
+
+
+def test_find_units_drops_a_vanished_unit_from_the_result_and_the_cache(tmp_path: Path) -> None:
+    user_root = user_service_root(tmp_path, uid=1000)
+    make_unit(user_root)
+    unit_dir = user_root / "app.slice" / "app-ghostty.service"
+    make_unit(unit_dir)
+
+    first = find_units(tmp_path, uid=1000, include_system=False)
+    assert first == [unit_dir]
+    assert str(unit_dir) in collect_module._UNIT_PATH_CACHE  # pyright: ignore[reportPrivateUsage]
+
+    shutil.rmtree(unit_dir)
+    second = find_units(tmp_path, uid=1000, include_system=False)
+
+    assert second == []
+    assert str(unit_dir) not in collect_module._UNIT_PATH_CACHE  # pyright: ignore[reportPrivateUsage]

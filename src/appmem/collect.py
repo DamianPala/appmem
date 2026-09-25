@@ -270,7 +270,7 @@ def _read_elsewhere(root: Path, uid: int, system_stats: UnitStats | None) -> int
 def _read_meminfo(path: Path) -> dict[str, int]:
     result: dict[str, int] = {}
     try:
-        content = path.read_text()
+        content = _read_small_file(str(path))
     except FileNotFoundError:
         return result
     for line in content.splitlines():
@@ -288,7 +288,7 @@ def _read_pressure(
 ) -> tuple[float | None, float | None, float | None, float | None]:
     """Return `(some avg10, some avg60, full avg10, full avg60)`."""
     try:
-        content = path.read_text()
+        content = _read_small_file(str(path))
     except FileNotFoundError:
         return None, None, None, None
     values: dict[str, dict[str, float]] = {}
@@ -310,7 +310,7 @@ def _read_zswap_enabled(path: Path) -> bool:
     (no zswap module, or an ancient kernel) reads as `N` (SPEC.md "Data
     sources")."""
     try:
-        return path.read_text().strip() == "Y"
+        return _read_small_file(str(path)).strip() == "Y"
     except FileNotFoundError:
         return False
 
@@ -319,7 +319,7 @@ def _read_zswap_str_param(path: Path) -> str | None:
     """A plain-text `/sys/module/zswap/parameters/*` value (e.g. `compressor`),
     or `None` if the file doesn't exist (SPEC.md "Data sources")."""
     try:
-        value = path.read_text().strip()
+        value = _read_small_file(str(path)).strip()
     except FileNotFoundError:
         return None
     return value or None
@@ -330,7 +330,7 @@ def _read_zswap_int_param(path: Path) -> int | None:
     `max_pool_percent`), or `None` if the file is missing or not a plain
     integer."""
     try:
-        value = path.read_text().strip()
+        value = _read_small_file(str(path)).strip()
     except FileNotFoundError:
         return None
     return int(value) if value.lstrip("-").isdigit() else None
@@ -339,9 +339,13 @@ def _read_zswap_int_param(path: Path) -> int | None:
 def _read_vmstat_zswpwb(path: Path) -> int | None:
     """The `zswpwb` counter from `/proc/vmstat`: pages written back from the
     zswap pool to disk swap, cumulative since boot. `None` when the file or
-    the line is missing (no zswap support)."""
+    the line is missing (no zswap support).
+
+    `until_eof=True`: `/proc/vmstat` is a multi-record seq_file, served one
+    page per `read()` regardless of request size (`_read_small_file_bytes`),
+    and `zswpwb` sits well past the first page on a real machine."""
     try:
-        content = path.read_text()
+        content = _read_small_file(str(path), until_eof=True)
     except FileNotFoundError:
         return None
     for line in content.splitlines():
@@ -352,6 +356,27 @@ def _read_vmstat_zswpwb(path: Path) -> int | None:
 
 
 # --- finding units ----------------------------------------------------------
+
+
+_UNIT_PATH_CACHE: dict[str, Path] = {}
+"""Reuses `Path` objects across `find_units` calls for units that still exist,
+so `str(path)` in `read_unit`/the main screen's app-cell formatting hits
+`Path`'s own cached string instead of rebuilding a fresh `Path` (and
+recomputing its string) for every unit on every tick (SPEC.md "Tech": a
+busy desktop has ~150 units). Replaced wholesale, not appended to, on every
+`find_units` call, so a unit that vanished is dropped from the cache instead
+of leaking forever. Module-level state shared by the UI's tick threads (main
+and process view) and the synchronous refresh paths: two overlapping calls
+can at worst leave the union of two current unit sets, which the next call
+replaces, or cost an extra `Path()` rebuild; never wrong data (no stats are
+cached here, only the `Path`, keyed by its full string, so any root works)."""
+
+
+def _cached_unit_paths(unit_dirs: list[str]) -> list[Path]:
+    paths = {unit_dir: _UNIT_PATH_CACHE.get(unit_dir) or Path(unit_dir) for unit_dir in unit_dirs}
+    _UNIT_PATH_CACHE.clear()
+    _UNIT_PATH_CACHE.update(paths)
+    return [paths[unit_dir] for unit_dir in unit_dirs]
 
 
 def find_units(root: Path, uid: int, include_system: bool, *, strict: bool = True) -> list[Path]:
@@ -385,7 +410,7 @@ def find_units(root: Path, uid: int, include_system: bool, *, strict: bool = Tru
         unit_paths.extend(_walk_slice(os.path.join(user_root, slice_name)))
     if include_system:
         unit_paths.extend(_walk_slice(os.path.join(cgroup_root, "system.slice")))
-    return [Path(p) for p in unit_paths]
+    return _cached_unit_paths(unit_paths)
 
 
 def _walk_slice(slice_dir: str) -> list[str]:
@@ -497,9 +522,14 @@ def find_app_units(
 # --- unit counters ----------------------------------------------------------
 
 
-def read_unit(path: Path) -> UnitStats | None:
-    """Read a unit's counters. Returns `None` if the unit vanished mid-read."""
-    return _read_unit_stats(str(path))
+def read_unit(path: Path, *, count_procs: bool = True) -> UnitStats | None:
+    """Read a unit's counters. Returns `None` if the unit vanished mid-read.
+
+    `count_procs=False` skips the recursive `cgroup.procs` walk (`procs` comes
+    back `0`) for a caller that carries a previous count forward instead of
+    reading it fresh this tick (SPEC.md "Main view": PROCS in the live main
+    view refreshes every 5th tick, the memory columns every tick)."""
+    return _read_unit_stats(str(path), count_procs=count_procs)
 
 
 def _read_unit_stats(unit_dir: str, *, count_procs: bool = True) -> UnitStats | None:
@@ -539,21 +569,54 @@ def _read_unit_stats(unit_dir: str, *, count_procs: bool = True) -> UnitStats | 
     )
 
 
-def _read_small_file(path: str) -> str:
-    """Read a small proc/cgroup file with raw `os.open`/`os.read`.
+_READ_CHUNK_SIZE = 65536
 
-    Bypasses the buffered `TextIOWrapper` `open()` sets up for every call, which
-    measurably matters here: the collector opens a few hundred of these files
-    (one to a few hundred bytes each) per tick.
+
+def _read_small_file_bytes(path: str, *, until_eof: bool = False) -> bytes:
+    """Raw bytes underneath `_read_small_file`, for the one reader
+    (`_read_proc_name`) that must see NUL bytes rather than a decoded string.
+
+    The kernel serves two different shapes here, and they need different read
+    strategies:
+
+    - **Single-record files** (`single_open`: `/proc/meminfo`, `/proc/pressure/*`,
+      `/proc/uptime`, `/proc/PID/{status,stat,comm,smaps_rollup}`; cgroup files
+      with no `seq_start` of their own, such as `memory.stat` and
+      `memory.swap.current`; sysfs attributes) build their whole answer in one
+      buffer sized to fit, and always come back complete from a single
+      `os.read`, however large that read's request. One call is the default
+      here: open/read/close, not open/read/read/close -- the second call used
+      to be a pure EOF probe for a quarter of the collector's reads.
+    - **Multi-record seq_file files** (`/proc/vmstat`, `cgroup.procs`) hand back
+      at most one seq buffer -- one page, 4096 bytes on this kernel -- per
+      `read()` call, no matter how big a buffer is requested; a short first
+      read here does not mean EOF. A single read of one of these silently
+      truncates instead of raising, since the file itself isn't exhausted,
+      only this read of it. Their two callers (`_read_vmstat_zswpwb`,
+      `_iter_procs_content`) pass `until_eof=True`, which instead loops until
+      an empty read confirms EOF: open/read/read/close for a file under one
+      page (the same as every read cost before this split), plus one read per
+      further page.
+
+    Bypasses the buffered `TextIOWrapper` `open()` sets up for every call,
+    which measurably matters here too: the collector opens a few hundred of
+    these files per tick.
     """
     fd = os.open(path, os.O_RDONLY)
     try:
-        chunks: list[bytes] = []
-        while chunk := os.read(fd, 65536):
-            chunks.append(chunk)
+        chunks: list[bytes] = [os.read(fd, _READ_CHUNK_SIZE)]
+        while chunks[-1] and (until_eof or len(chunks[-1]) == _READ_CHUNK_SIZE):
+            chunks.append(os.read(fd, _READ_CHUNK_SIZE))
     finally:
         os.close(fd)
-    return b"".join(chunks).decode("utf-8", errors="replace")
+    return b"".join(chunks)
+
+
+def _read_small_file(path: str, *, until_eof: bool = False) -> str:
+    """Read a small proc/cgroup file with raw `os.open`/`os.read` (see
+    `_read_small_file_bytes` for the single-read-vs-`until_eof` split),
+    decoded as UTF-8 with replacement."""
+    return _read_small_file_bytes(path, until_eof=until_eof).decode("utf-8", errors="replace")
 
 
 def _read_memory_stat(path: str) -> dict[str, int] | None:
@@ -630,9 +693,14 @@ def _iter_procs_content(cgroup_dir: str) -> Iterator[str]:
     Konsole window alone keeps 101 `tab(...).scope` children), and building a
     `Path` per entry was most of the tick cost. Skips the subdirectory scan
     entirely for a leaf dir (no children), which is most units.
+
+    `until_eof=True`: `cgroup.procs` is a multi-record seq_file, served one
+    page per `read()` (`_read_small_file_bytes`) -- a busy unit's PID list can
+    run past that (about 500 PIDs, a `make -j` in a terminal scope gets
+    there), and a single read would silently drop the rest.
     """
     try:
-        yield _read_small_file(os.path.join(cgroup_dir, "cgroup.procs"))
+        yield _read_small_file(os.path.join(cgroup_dir, "cgroup.procs"), until_eof=True)
     except OSError:  # Cgroup removed mid-walk: ENOENT, or ENODEV for an open handle.
         return
 
@@ -746,7 +814,7 @@ def _read_uptime(path: Path) -> float:
     # as one of the two error types the screens already treat as "skip this
     # tick" (SPEC.md "Behaviour details").
     try:
-        return float(path.read_text().split()[0])
+        return float(_read_small_file(str(path)).split()[0])
     except IndexError as exc:
         raise ValueError(f"empty or malformed uptime file: {path}") from exc
 
@@ -790,7 +858,7 @@ def _read_status(path: Path) -> dict[str, int]:
 
 
 def _read_comm(proc_dir: Path) -> str:
-    return (proc_dir / "comm").read_bytes().decode(errors="replace").strip()
+    return _read_small_file(str(proc_dir / "comm")).strip()
 
 
 def _first_token_name(field: bytes) -> str | None:
@@ -810,7 +878,7 @@ def _first_token_name(field: bytes) -> str | None:
 
 
 def _read_proc_name(proc_dir: Path) -> str:
-    raw = (proc_dir / "cmdline").read_bytes()  # FileNotFoundError: PID vanished.
+    raw = _read_small_file_bytes(str(proc_dir / "cmdline"))  # FileNotFoundError: PID vanished.
     # A setproctitle rewrite shorter than the original argv leaves the rest
     # NUL-padded (or holding leftovers of the old argv), so trailing empty
     # fields and a whitespace-holding argv0 both mean "title, not argv".

@@ -760,6 +760,124 @@ async def test_ctrl_c_quits_with_exit_code_zero(tmp_path: Path) -> None:
     assert app.return_code == 0
 
 
+# --- PROCS cadence: every 5th tick, a new unit is always counted (SPEC.md
+# "Main view", "Tech") -----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_procs_recounts_every_fifth_tick_new_units_counted_immediately(
+    tmp_path: Path,
+) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0, procs=1)
+
+    async with _app(root).run_test() as pilot:
+        await pilot.pause()
+        table = _table(pilot)
+        screen = pilot.app.screen
+        assert isinstance(screen, MainScreen)
+
+        def alpha_procs() -> str:
+            cell = table.get_cell(row_key("alpha", "user"), "procs")
+            assert isinstance(cell, Text)
+            return cell.plain
+
+        # Mount and the initial screen-resume each do their own synchronous
+        # collection, so `_tick_count` is already past 0 by the time the
+        # pilot pauses; advance to just after the next counting collection
+        # so what follows lines up exactly with "tick 1 counts, ticks 2-5
+        # carry forward, tick 6 recounts" (SPEC.md "Main view"), regardless
+        # of exactly how many reads startup itself did.
+        interval = main_screen._PROCS_COUNT_INTERVAL  # pyright: ignore[reportPrivateUsage]
+        while screen._tick_count % interval != 1:  # pyright: ignore[reportPrivateUsage]
+            screen.refresh_now()
+        assert alpha_procs() == "1"  # tick 1: always counted
+
+        _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0, procs=5)
+
+        screen.refresh_now()  # tick 2: carried forward, not recounted
+        assert alpha_procs() == "1"
+
+        _app_unit(root, "app-bravo.service", ram=1 * 1024**2, swap=0, procs=7)
+        screen.refresh_now()  # tick 3: not a counting tick, but bravo is new
+        bravo_cell = table.get_cell(row_key("bravo", "user"), "procs")
+        assert isinstance(bravo_cell, Text)
+        assert bravo_cell.plain == "7"  # a first-seen unit is always counted
+        assert alpha_procs() == "1"  # alpha, already known, still carried forward
+
+        screen.refresh_now()  # tick 4: still carried forward
+        assert alpha_procs() == "1"
+
+        screen.refresh_now()  # tick 5: still carried forward
+        assert alpha_procs() == "1"
+
+        screen.refresh_now()  # tick 6: every unit is recounted
+        assert alpha_procs() == "5"
+
+
+@pytest.mark.asyncio
+async def test_periodic_tick_carries_forward_the_procs_count(tmp_path: Path) -> None:
+    # Drives the real threaded path (`_tick` -> `_tick_worker` -> `TickDone`
+    # -> `_apply_tick`), not `refresh_now`: the cadence test above only
+    # exercises the synchronous path, so on its own it would not catch a
+    # broken `self._procs_by_unit = result.procs_by_unit or {}` in
+    # `_apply_tick` (review round 1, SHOULD 1). The interval is set high
+    # enough that the automatic timer never fires (same as `_app`'s default
+    # elsewhere in this file); `_tick()` is called by hand instead, one
+    # collection at a time, waiting for its background thread and `TickDone`
+    # to land before each assertion.
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0, procs=1)
+    unit_key = str(user_service_root(root, UID) / "app.slice" / "app-alpha.service")
+
+    async with _app(root).run_test() as pilot:
+        await pilot.pause()
+        screen = pilot.app.screen
+        assert isinstance(screen, MainScreen)
+        table = _table(pilot)
+
+        def alpha_procs() -> str:
+            cell = table.get_cell(row_key("alpha", "user"), "procs")
+            assert isinstance(cell, Text)
+            return cell.plain
+
+        async def run_one_threaded_tick() -> None:
+            screen._tick()  # pyright: ignore[reportPrivateUsage]
+            deadline = time.monotonic() + 3
+            while screen._tick_in_flight and time.monotonic() < deadline:  # pyright: ignore[reportPrivateUsage]
+                await pilot.pause(0.02)
+            assert not screen._tick_in_flight, "threaded tick never finished"  # pyright: ignore[reportPrivateUsage]
+
+        # Mount and the initial screen-resume already did two synchronous
+        # collections; land on a just-applied counting tick the same way the
+        # cadence test above does, but by running real threaded ticks.
+        interval = main_screen._PROCS_COUNT_INTERVAL  # pyright: ignore[reportPrivateUsage]
+        while screen._tick_count % interval != 1:  # pyright: ignore[reportPrivateUsage]
+            await run_one_threaded_tick()
+        assert alpha_procs() == "1"
+
+        # Change the fixture and run threaded ticks up to (and including) the
+        # next counting tick: `_apply_tick` must copy the worker's own
+        # `procs_by_unit` into `screen._procs_by_unit`, or the carried-forward
+        # baseline for every later non-counting tick stays frozen at this
+        # unit's very first count instead of following the real one (review
+        # round 1, SHOULD 1) -- a counting tick alone can't tell the two
+        # apart, since it always shows the fresh disk value either way.
+        _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0, procs=5)
+        for _ in range(interval):
+            await run_one_threaded_tick()
+        assert alpha_procs() == "5"
+        assert screen._procs_by_unit[unit_key] == 5  # pyright: ignore[reportPrivateUsage]
+
+        # One more fixture change and a single non-counting tick: PROCS must
+        # carry the just-counted "5" forward through the threaded path, not
+        # jump to the new disk truth ("9") or fall back to a stale value.
+        _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0, procs=9)
+        await run_one_threaded_tick()
+        assert alpha_procs() == "5"
+        assert screen._procs_by_unit[unit_key] == 5  # pyright: ignore[reportPrivateUsage]
+
+
 # --- column order: RAM before SWAP everywhere ----------------------------------
 
 
@@ -1856,13 +1974,22 @@ async def test_at_most_one_tick_read_in_flight(
     lock = threading.Lock()
     counts = {"current": 0, "max": 0}
 
-    def slow_collect_apps(root: Path, uid: int, include_system: bool) -> list[AppStats]:
+    def slow_collect_apps(
+        root: Path,
+        uid: int,
+        include_system: bool,
+        *,
+        count_procs: bool,
+        previous_procs: dict[str, int],
+    ) -> tuple[list[AppStats], dict[str, int]]:
         with lock:
             counts["current"] += 1
             counts["max"] = max(counts["max"], counts["current"])
         time.sleep(0.3)
         try:
-            return real_collect_apps(root, uid, include_system)
+            return real_collect_apps(
+                root, uid, include_system, count_procs=count_procs, previous_procs=previous_procs
+            )
         finally:
             with lock:
                 counts["current"] -= 1
@@ -1890,10 +2017,19 @@ async def test_stale_tick_result_is_discarded_after_toggling_system(
     _system_unit(root, ram=2 * 1024**2, swap=0)
     real_collect_apps = main_screen._collect_apps  # pyright: ignore[reportPrivateUsage]
 
-    def slow_collect_apps(root: Path, uid: int, include_system: bool) -> list[AppStats]:
+    def slow_collect_apps(
+        root: Path,
+        uid: int,
+        include_system: bool,
+        *,
+        count_procs: bool,
+        previous_procs: dict[str, int],
+    ) -> tuple[list[AppStats], dict[str, int]]:
         if not include_system:
             time.sleep(0.4)  # the stale (pre-toggle) read: lands after the toggle below
-        return real_collect_apps(root, uid, include_system)
+        return real_collect_apps(
+            root, uid, include_system, count_procs=count_procs, previous_procs=previous_procs
+        )
 
     app = AppMemApp(root=root, uid=UID, interval=0.1, include_system=False)
     async with app.run_test(size=(120, 30)) as pilot:

@@ -17,8 +17,8 @@ from __future__ import annotations
 import os
 import threading
 import time
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import ClassVar, cast
@@ -244,17 +244,46 @@ def _bar_fill_colour(theme: Theme) -> str:
     return foreground.rich_color.name
 
 
-def _collect_apps(root: Path, uid: int, include_system: bool) -> list[AppStats]:
+# PROCS refreshes every 5th tick in the live main view, the memory columns
+# every tick (SPEC.md "Main view"): the recursive `cgroup.procs` walk is a
+# measurable share of the tick cost, and PROCS doesn't need 1 s freshness.
+_PROCS_COUNT_INTERVAL = 5
+
+
+def _collect_apps(
+    root: Path,
+    uid: int,
+    include_system: bool,
+    *,
+    count_procs: bool,
+    previous_procs: Mapping[str, int],
+) -> tuple[list[AppStats], dict[str, int]]:
     """Read every visible app's counters (SPEC.md "Grouping"). Pure and
     thread-safe (no Textual/UI state touched): shared by the synchronous
-    `refresh_now` path and the threaded periodic tick (SPEC.md "Tech")."""
+    `refresh_now` path and the threaded periodic tick (SPEC.md "Tech").
+
+    `count_procs=False` skips the recursive `cgroup.procs` walk for a unit
+    already in `previous_procs` (keyed by `str(path)`), carrying its old
+    count forward instead (SPEC.md "Main view"); a unit not in
+    `previous_procs` -- seen for the first time -- is always counted, `count_procs`
+    or not. Returns the visible apps and the unit-path -> procs map to pass
+    back in as `previous_procs` on the next call: it is replaced wholesale
+    each time, so a vanished unit's count is dropped rather than carried
+    forever."""
     unit_paths = collect_find_units(root, uid, include_system=include_system, strict=False)
-    units = [
-        Unit(path=path, stats=unit_stats, scope=unit_scope(root, path))
-        for path in unit_paths
-        if (unit_stats := collect_read_unit(path)) is not None
-    ]
-    return filter_visible_apps(group_apps(root, units))
+    units: list[Unit] = []
+    procs_by_unit: dict[str, int] = {}
+    for path in unit_paths:
+        key = str(path)
+        recount = count_procs or key not in previous_procs
+        unit_stats = collect_read_unit(path, count_procs=recount)
+        if unit_stats is None:
+            continue
+        if not recount:
+            unit_stats = replace(unit_stats, procs=previous_procs.get(key, 0))
+        procs_by_unit[key] = unit_stats.procs
+        units.append(Unit(path=path, stats=unit_stats, scope=unit_scope(root, path)))
+    return filter_visible_apps(group_apps(root, units)), procs_by_unit
 
 
 @dataclass(frozen=True)
@@ -268,6 +297,9 @@ class _TickResult:
     stats: SystemStats | None = None
     apps: list[AppStats] | None = None
     cgroup_error: CgroupUnavailableError | None = None
+    procs_by_unit: dict[str, int] | None = None
+    """The unit-path -> procs map this tick read or carried forward (SPEC.md
+    "Main view" PROCS cadence), to become the next tick's `previous_procs`."""
 
 
 class TickDone(Message):
@@ -282,18 +314,28 @@ class TickDone(Message):
         self.payload = payload
 
 
-def _tick_worker(root: Path, uid: int, include_system: bool, generation: int) -> _TickResult:
+def _tick_worker(
+    root: Path,
+    uid: int,
+    include_system: bool,
+    generation: int,
+    *,
+    count_procs: bool,
+    previous_procs: Mapping[str, int],
+) -> _TickResult:
     """Runs in a thread (SPEC.md "Tech"): blocking `/proc`/`/sys` reads
     only, no Textual calls. Transient errors are swallowed here, same as
     `refresh_now`'s `try` -- the tick is skipped, not the session."""
     try:
         stats = read_system(root, uid)
-        apps = _collect_apps(root, uid, include_system)
+        apps, procs_by_unit = _collect_apps(
+            root, uid, include_system, count_procs=count_procs, previous_procs=previous_procs
+        )
     except CgroupUnavailableError as exc:
         return _TickResult(generation=generation, cgroup_error=exc)
     except (MemoryStatUnavailableError, OSError, ValueError):
         return _TickResult(generation=generation)
-    return _TickResult(generation=generation, stats=stats, apps=apps)
+    return _TickResult(generation=generation, stats=stats, apps=apps, procs_by_unit=procs_by_unit)
 
 
 class MainScreen(Screen[None]):
@@ -364,6 +406,14 @@ class MainScreen(Screen[None]):
         self._tick_in_flight = False
         self._column_widths: tuple[int | None, ...] = ()
         self._ascii_bars = _detect_ascii_bars()
+        self._tick_count = 0
+        """Advanced on every collection (tick, mount, or an explicit action
+        that re-collects), independent of `_generation`: drives the PROCS
+        cadence (`_PROCS_COUNT_INTERVAL`), never reset by a context change."""
+        self._procs_by_unit: dict[str, int] = {}
+        """Last known procs count per unit path (`str(path)`), carried
+        forward on a tick that skips the recursive `cgroup.procs` walk
+        (SPEC.md "Main view")."""
         self._generation = 0
         """Bumped on every context change (`x` toggled, screen covered or
         resumed). A background result carries the generation it was read
@@ -423,11 +473,28 @@ class MainScreen(Screen[None]):
         if not self.is_active or self._tick_in_flight:
             return
         self._tick_in_flight = True
+        count_procs = self._next_count_procs()
         threading.Thread(
-            target=self._tick_read, args=(self._generation,), name="appmem-tick", daemon=True
+            target=self._tick_read,
+            args=(self._generation, count_procs, dict(self._procs_by_unit)),
+            name="appmem-tick",
+            daemon=True,
         ).start()
 
-    def _tick_read(self, generation: int) -> None:
+    def _next_count_procs(self) -> bool:
+        """Advance the PROCS cadence counter and say whether this collection
+        should recount every unit's `cgroup.procs`, or carry forward what a
+        unit already in `_procs_by_unit` last reported (SPEC.md "Main
+        view"). Shared by the periodic tick and the synchronous callers
+        (`refresh_now`, `b`) so the cadence is one counter, not one per
+        path."""
+        count_procs = self._tick_count % _PROCS_COUNT_INTERVAL == 0
+        self._tick_count += 1
+        return count_procs
+
+    def _tick_read(
+        self, generation: int, count_procs: bool, previous_procs: dict[str, int]
+    ) -> None:
         # Thread side of a tick: the blocking `/proc`/`/sys` reads happen
         # here, off the event loop, so a slow collector never blocks key
         # handling (SPEC.md "Tech"). A plain thread, not `run_worker`: Textual
@@ -438,7 +505,12 @@ class MainScreen(Screen[None]):
         # a message, which a screen that is already closing simply drops.
         try:
             payload: _TickResult | Exception = _tick_worker(
-                self._root, self._uid, self._show_system, generation
+                self._root,
+                self._uid,
+                self._show_system,
+                generation,
+                count_procs=count_procs,
+                previous_procs=previous_procs,
             )
         except Exception as exc:  # re-raised on the UI thread by `on_tick_done`
             payload = exc
@@ -465,6 +537,7 @@ class MainScreen(Screen[None]):
             # in flight: its result no longer matches the current context,
             # discard it rather than show a stale table (SPEC.md "Tech").
             return
+        self._procs_by_unit = result.procs_by_unit or {}
         self._apply_refresh(result.stats, result.apps or [], scroll=False)
 
     def on_screen_resume(self) -> None:
@@ -516,7 +589,7 @@ class MainScreen(Screen[None]):
         """
         try:
             stats = read_system(self._root, self._uid)
-            apps = _collect_apps(self._root, self._uid, self._show_system)
+            apps = self._collect_apps_now()
         except CgroupUnavailableError as exc:
             self._fail_cgroup_unavailable(exc)
             return
@@ -525,6 +598,23 @@ class MainScreen(Screen[None]):
         except (OSError, ValueError):
             return  # transient read/parse failure: same treatment, try again next tick
         self._apply_refresh(stats, apps, scroll=scroll)
+
+    def _collect_apps_now(self) -> list[AppStats]:
+        """`_collect_apps` with the PROCS cadence applied (SPEC.md "Main
+        view"): the synchronous counterpart of the periodic tick's
+        `_tick`/`_tick_worker` path, shared by `refresh_now` and
+        `action_reset_delta` (`b`). An exception from `_collect_apps`
+        propagates before `_procs_by_unit` is updated, so a failed collection
+        leaves the carried-forward counts exactly as a skipped tick would."""
+        count_procs = self._next_count_procs()
+        apps, self._procs_by_unit = _collect_apps(
+            self._root,
+            self._uid,
+            self._show_system,
+            count_procs=count_procs,
+            previous_procs=self._procs_by_unit,
+        )
+        return apps
 
     def _apply_refresh(self, stats: SystemStats, apps: list[AppStats], *, scroll: bool) -> None:
         self._last_apps = apps
@@ -882,7 +972,7 @@ class MainScreen(Screen[None]):
         # `b` takes a fresh sample before resetting, so the baseline and its
         # timestamp describe the same instant (SPEC.md "Definitions").
         try:
-            apps = _collect_apps(self._root, self._uid, self._show_system)
+            apps = self._collect_apps_now()
         except CgroupUnavailableError as exc:
             self._fail_cgroup_unavailable(exc)
             return

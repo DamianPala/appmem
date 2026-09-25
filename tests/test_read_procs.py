@@ -3,6 +3,8 @@
 import os
 from pathlib import Path
 
+import pytest
+
 from appmem.collect import read_private_bytes, read_procs
 from helpers import (
     write_cgroup_procs,
@@ -142,6 +144,68 @@ def test_vanished_pid_is_skipped(tmp_path: Path) -> None:
     procs = read_procs([unit_dir], tmp_path)
 
     assert [p.pid for p in procs] == [555]
+
+
+def test_missing_comm_file_is_skipped_as_a_vanished_pid(tmp_path: Path) -> None:
+    # An empty cmdline forces the `_read_comm` fallback (SPEC.md "Process
+    # names"); the comm file itself vanishing mid-read (unlike cmdline/status/
+    # stat, which every other test here exercises) must get the same "skip
+    # this pid" treatment, not propagate.
+    write_uptime(tmp_path, seconds=100.0)
+    unit_dir = tmp_path / "sys" / "fs" / "cgroup" / "unit.service"
+    write_cgroup_procs(unit_dir, [321])
+    proc_dir = tmp_path / "proc" / "321"
+    proc_dir.mkdir(parents=True)
+    (proc_dir / "cmdline").write_bytes(b"")
+    (proc_dir / "status").write_text("VmSwap:\t0 kB\n")
+    (proc_dir / "stat").write_text(write_stat_line(321, "x", starttime_ticks=10))
+    # No comm file written at all.
+
+    procs = read_procs([unit_dir], tmp_path)
+
+    assert procs == []
+
+
+def test_missing_uptime_file_raises_file_not_found(tmp_path: Path) -> None:
+    # `read_procs` reads `/proc/uptime` once, up front, outside any per-pid
+    # guard -- unlike a per-pid file vanishing, this can't be "skip one
+    # process", so it propagates instead of being swallowed.
+    unit_dir = tmp_path / "sys" / "fs" / "cgroup" / "unit.service"
+    write_cgroup_procs(unit_dir, [111])
+    write_proc(tmp_path, 111, cmdline="alive\x00")
+    # No proc/uptime written at all.
+
+    with pytest.raises(FileNotFoundError):
+        read_procs([unit_dir], tmp_path)
+
+
+def test_pids_listed_in_full_past_one_page_of_cgroup_procs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `cgroup.procs` is a multi-record seq_file like `/proc/vmstat`: the
+    # kernel hands back at most one page (4096 bytes) per `read()` call,
+    # however large the buffer requested, so a short first read there does
+    # not mean EOF (see `_read_small_file_bytes`'s docstring). Capping
+    # `os.read` reproduces that; a `tmp_path` fixture written in one go would
+    # never trigger it on its own (review round 1, MUST 1).
+    write_uptime(tmp_path, seconds=100.0)
+    unit_dir = tmp_path / "sys" / "fs" / "cgroup" / "unit.service"
+    pids = list(range(100_000, 100_700))  # 700 lines of "100xxx\n" (7 bytes) > one page
+    write_cgroup_procs(unit_dir, pids)
+    assert (unit_dir / "cgroup.procs").stat().st_size > 4096
+    for pid in pids:
+        write_proc(tmp_path, pid, cmdline="alive\x00")
+
+    real_read = os.read
+
+    def page_capped_read(fd: int, count: int) -> bytes:
+        return real_read(fd, min(count, 4096))
+
+    monkeypatch.setattr(os, "read", page_capped_read)
+
+    procs = read_procs([unit_dir], tmp_path)
+
+    assert {p.pid for p in procs} == set(pids)
 
 
 # --- interpreter/launcher naming -----------------------------------------------

@@ -189,3 +189,29 @@ def test_procs_counted_recursively_when_dirs_report_link_count_one(
 
     assert stats is not None
     assert stats.procs == 5
+
+
+def test_procs_counted_in_full_past_one_page_of_cgroup_procs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `cgroup.procs` is a multi-record seq_file like `/proc/vmstat`: the
+    # kernel hands back at most one page (4096 bytes) per `read()` call,
+    # however large the buffer requested, so a short first read there does
+    # not mean EOF (see `_read_small_file_bytes`'s docstring). Capping
+    # `os.read` reproduces that; a `tmp_path` fixture written in one go would
+    # never trigger it on its own (review round 1, MUST 1).
+    pids = list(range(100_000, 100_700))  # 700 lines of "100xxx\n" (7 bytes) > one page
+    unit_dir = make_unit(tmp_path / "unit.service", pids=pids)
+    assert (unit_dir / "cgroup.procs").stat().st_size > 4096
+
+    real_read = os.read
+
+    def page_capped_read(fd: int, count: int) -> bytes:
+        return real_read(fd, min(count, 4096))
+
+    monkeypatch.setattr(os, "read", page_capped_read)
+
+    stats = read_unit(unit_dir)
+
+    assert stats is not None
+    assert stats.procs == len(pids)
