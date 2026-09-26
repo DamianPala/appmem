@@ -14,6 +14,9 @@
 #include <unistd.h>
 #include <sys/wait.h>
 
+_Static_assert(sizeof(vm_size_t) == sizeof(size_t), "host_page_size output must be pointer-width");
+_Static_assert(sizeof(vm_size_t) == 8, "native probe requires 64-bit vm_size_t");
+
 static int read_line(int fd, char *line, size_t capacity) {
     size_t length = 0;
     while (length + 1 < capacity) {

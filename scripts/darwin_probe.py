@@ -206,7 +206,7 @@ def run() -> dict[str, object]:
     host = reader.host()
     host_value = present(host.value, f"required host counters unavailable: {host.unavailable}")
     require(
-        host_value.physical_bytes >= MIB and host_value.page_size > 0,
+        host_value.physical_bytes >= MIB and host_value.page_size in (4096, 16_384),
         "implausible host RAM or page size",
     )
     require(

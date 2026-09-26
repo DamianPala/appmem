@@ -239,7 +239,7 @@ class DarwinNative:
             c.c_size_t,
         ]
         lib.sysctlbyname.restype = c.c_int
-        lib.host_page_size.argtypes = [c.c_uint32, c.POINTER(c.c_uint32)]
+        lib.host_page_size.argtypes = [c.c_uint32, c.POINTER(c.c_size_t)]
         lib.host_page_size.restype = c.c_int
         lib.host_statistics64.argtypes = [c.c_uint32, c.c_int, c.c_void_p, c.POINTER(c.c_uint32)]
         lib.host_statistics64.restype = c.c_int
@@ -277,16 +277,19 @@ class DarwinNative:
         if not host:
             return ReadResult(None, Unavailable.ERROR)
         try:
-            page = c.c_uint32()
+            page = c.c_size_t()
             if self._lib.host_page_size(host, c.byref(page)) or not page.value:
                 return ReadResult(None, Unavailable.ERROR)
             vm = VMStatistics64()
             count = c.c_uint32(c.sizeof(vm) // 4)
             if self._lib.host_statistics64(host, 4, c.byref(vm), c.byref(count)):
                 return ReadResult(None, Unavailable.ERROR)
-            values = decode_vm(vm, count.value, page.value)
+            try:
+                values = decode_vm(vm, count.value, page.value)
+            except ValueError:
+                return ReadResult(None, Unavailable.ERROR)
         finally:
-            task = c.c_uint32.in_dll(self._lib, "mach_task_self_").value  # pyright: ignore[reportUnknownArgumentType] - ctypes dynamic DLL
+            task = self._task_self_port()
             self._lib.mach_port_deallocate(task, host)
         pressure = self._sysctl("kern.memorystatus_vm_pressure_level", c.c_uint32)
         return ReadResult(
@@ -308,6 +311,9 @@ class DarwinNative:
                 pressure_error_code=pressure.error_code,
             )
         )
+
+    def _task_self_port(self) -> int:
+        return c.c_uint32.in_dll(self._lib, "mach_task_self_").value  # pyright: ignore[reportUnknownArgumentType] - ctypes dynamic DLL
 
     def pids(self) -> ReadResult[list[int]]:
         c.set_errno(0)

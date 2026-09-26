@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import ctypes
 import errno
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -30,6 +32,64 @@ def test_fixed_abi_layout() -> None:
         VMStatistics64
     )
     assert VMStatistics64.swapped_count.offset == ctypes.sizeof(VMStatistics64) - 8
+
+
+def test_host_page_size_binding_uses_pointer_width(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Function:
+        def __init__(self) -> None:
+            self.argtypes: list[type[object]] = []
+            self.restype: type[object] = object
+
+    lib_names = (
+        "sysctlbyname",
+        "host_page_size",
+        "host_statistics64",
+        "mach_host_self",
+        "mach_port_deallocate",
+    )
+    proc_names = ("proc_listpids", "proc_pidinfo", "proc_pidpath", "proc_pid_rusage")
+    lib = SimpleNamespace(**{name: Function() for name in lib_names})
+    proc = SimpleNamespace(**{name: Function() for name in proc_names})
+    reader = object.__new__(DarwinNative)
+    monkeypatch.setattr(reader, "_lib", lib, raising=False)
+    monkeypatch.setattr(reader, "_proc", proc, raising=False)
+    reader._bind()  # pyright: ignore[reportPrivateUsage]
+    assert lib.host_page_size.argtypes == [ctypes.c_uint32, ctypes.POINTER(ctypes.c_size_t)]
+
+
+def test_short_vm_host_read_returns_error_and_releases_port(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    released: list[tuple[int, int]] = []
+
+    def page_size(_host: int, pointer: Any) -> int:
+        ctypes.cast(pointer, ctypes.POINTER(ctypes.c_size_t))[0] = 16_384
+        return 0
+
+    def statistics(_host: int, _kind: int, _vm: object, count: Any) -> int:
+        ctypes.cast(count, ctypes.POINTER(ctypes.c_uint32))[0] = 10
+        return 0
+
+    def release(task: int, port: int) -> None:
+        released.append((task, port))
+
+    def sysctl(name: str, _typ: object) -> ReadResult[ctypes.c_uint64 | SwapUsage]:
+        return ReadResult(ctypes.c_uint64(16_384) if name == "hw.memsize" else SwapUsage())
+
+    lib = SimpleNamespace(
+        mach_host_self=lambda: 7,
+        host_page_size=page_size,
+        host_statistics64=statistics,
+        mach_port_deallocate=release,
+    )
+    reader = object.__new__(DarwinNative)
+    monkeypatch.setattr(reader, "_lib", lib, raising=False)
+    monkeypatch.setattr(reader, "_task_self_port", lambda: 42, raising=False)
+    monkeypatch.setattr(reader, "_sysctl", sysctl, raising=False)
+    result = reader.host()
+    assert result.value is None
+    assert result.unavailable == Unavailable.ERROR
+    assert released == [(42, 7)]
 
 
 @pytest.mark.parametrize("vm_sdk_size", [152, 160])
