@@ -23,6 +23,7 @@ from rich.color_triplet import ColorTriplet
 from rich.style import Style
 from textual.widgets import DataTable
 
+from appmem.collect import LinuxBackend
 from appmem.theme import TERMINAL_THEME_NAMES, THEME_NAMES
 from appmem.ui.app import AppMemApp
 
@@ -50,7 +51,10 @@ def _contrast_ratio(fg: ColorTriplet, bg: ColorTriplet) -> float:
 
 async def _header_style(theme_name: str) -> Style:
     app = AppMemApp(
-        root=Path("/nonexistent"), uid=1000, interval=100.0, include_system=False, theme=theme_name
+        backend=LinuxBackend(Path("/nonexistent"), 1000),
+        interval=100.0,
+        include_system=False,
+        theme=theme_name,
     )
     async with app.run_test(size=(120, 30)):
         table = cast("DataTable[object]", app.query_one(DataTable))
@@ -90,9 +94,13 @@ async def test_terminal_theme_header_is_default_on_default_bold_underline(
 _ANSI_CONVERTED_PROBE = """
 from pathlib import Path
 from textual.filter import ANSIToTruecolor
+from appmem.collect import LinuxBackend
 from appmem.ui.app import AppMemApp
 app = AppMemApp(
-    root=Path("/nonexistent"), uid=1000, interval=100.0, include_system=False, theme="terminal-dark"
+    backend=LinuxBackend(Path("/nonexistent"), 1000),
+    interval=100.0,
+    include_system=False,
+    theme="terminal-dark",
 )
 print(any(isinstance(f, ANSIToTruecolor) for f in app.get_line_filters()))
 """

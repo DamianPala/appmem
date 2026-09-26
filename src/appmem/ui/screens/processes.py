@@ -2,9 +2,8 @@
 a drill-down into one command's members (SPEC.md "Process view").
 
 Mirrors `MainScreen`'s tick/diff/sort patterns (row diffing via row keys,
-`update_cell` only on changed text, cursor restore by key). The app's unit
-list is re-derived every tick from `find_app_units` (same identity/naming
-rules as the main view), not captured once at Enter, so a unit added or
+`update_cell` only on changed text, cursor restore by key). The backend
+finds the app again every tick, so a unit added or
 replaced while the screen is open is picked up; the app is considered gone
 only once no unit maps to its identity any more.
 
@@ -18,7 +17,6 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, replace
-from pathlib import Path
 from typing import ClassVar, cast
 
 from rich.text import Text
@@ -31,17 +29,10 @@ from textual.timer import Timer
 from textual.widgets import DataTable, Static
 from textual.widgets.data_table import ColumnKey, RowKey
 
-from appmem.collect import (
-    AppStats,
-    CgroupUnavailableError,
-    MemoryStatUnavailableError,
-    ProcStats,
-    UnitStats,
-)
-from appmem.collect import find_app_units as collect_find_app_units
-from appmem.collect import read_procs as collect_read_procs
-from appmem.collect import read_unit as collect_read_unit
+from appmem.backend import Backend
+from appmem.collect import CgroupUnavailableError, MemoryStatUnavailableError
 from appmem.fmt import format_age, size, status_line_command, truncate_name
+from appmem.model import AppStats, ProcStats
 from appmem.render import escape_control_chars
 from appmem.ui.layout import build_footer, fit_line
 from appmem.ui.process_rows import (
@@ -167,20 +158,6 @@ def _key_str(key: RowKey | ColumnKey) -> str:
     return key.value
 
 
-def _collect_process_tick(
-    root: Path, uid: int, include_system: bool, scope: str, name: str
-) -> tuple[list[Path], list[UnitStats], list[ProcStats]]:
-    """Read one app's units, their counters and its processes. Pure and
-    thread-safe (no Textual/UI state touched): shared by the synchronous
-    `refresh_now` path and the threaded periodic tick (SPEC.md "Tech")."""
-    unit_paths = collect_find_app_units(root, uid, include_system, scope, name, strict=False)
-    unit_stats = [stats for path in unit_paths if (stats := collect_read_unit(path)) is not None]
-    # No unit means no app left to read processes for; `_show_gone` (the
-    # caller, outside any try) handles that without a `read_procs` call.
-    procs = collect_read_procs(unit_paths, root) if unit_stats else []
-    return unit_paths, unit_stats, procs
-
-
 @dataclass(frozen=True)
 class _TickResult:
     """A background tick's outcome, plus the generation it was read under --
@@ -189,8 +166,7 @@ class _TickResult:
     stale (SPEC.md "Process view")."""
 
     generation: int
-    unit_paths: list[Path] | None = None
-    unit_stats: list[UnitStats] | None = None
+    app: AppStats | None = None
     procs: list[ProcStats] | None = None
     cgroup_error: CgroupUnavailableError | None = None
 
@@ -206,22 +182,17 @@ class TickDone(Message):
         self.payload = payload
 
 
-def _tick_worker(
-    root: Path, uid: int, include_system: bool, scope: str, name: str, *, generation: int
-) -> _TickResult:
+def _tick_worker(backend: Backend, scope: str, name: str, *, generation: int) -> _TickResult:
     """Runs in a thread (SPEC.md "Tech"): blocking `/proc`/`/sys` reads
     only, no Textual calls."""
     try:
-        unit_paths, unit_stats, procs = _collect_process_tick(
-            root, uid, include_system, scope, name
-        )
+        app = backend.find_app(scope, name, strict=False)
+        procs = backend.read_procs(app) if app is not None else []
     except CgroupUnavailableError as exc:
         return _TickResult(generation=generation, cgroup_error=exc)
     except (MemoryStatUnavailableError, OSError, ValueError):
         return _TickResult(generation=generation)
-    return _TickResult(
-        generation=generation, unit_paths=unit_paths, unit_stats=unit_stats, procs=procs
-    )
+    return _TickResult(generation=generation, app=app, procs=procs)
 
 
 class ProcessesScreen(Screen[None]):
@@ -249,18 +220,14 @@ class ProcessesScreen(Screen[None]):
     def __init__(
         self,
         *,
-        root: Path,
-        uid: int,
-        include_system: bool,
+        backend: Backend,
         name: str,
         scope: str,
         interval: float,
         initial_sort: tuple[ProcessSortKey, bool],
     ) -> None:
         super().__init__()
-        self._root = root
-        self._uid = uid
-        self._include_system = include_system
+        self._backend = backend
         self._name = name
         self._scope = scope  # user/system: which `systemctl` the status line offers
         self._interval = interval
@@ -345,9 +312,7 @@ class ProcessesScreen(Screen[None]):
         # 3.14 can defer for hours.
         try:
             payload: _TickResult | Exception = _tick_worker(
-                self._root,
-                self._uid,
-                self._include_system,
+                self._backend,
                 self._scope,
                 self._name,
                 generation=generation,
@@ -366,16 +331,14 @@ class ProcessesScreen(Screen[None]):
         if result.cgroup_error is not None:
             self._fail_cgroup_unavailable(result.cgroup_error)
             return
-        if result.unit_paths is None:  # transient read/parse failure this tick
+        if result.procs is None:  # transient read/parse failure this tick
             return
         if result.generation != self._generation or not self.is_active:
             # `g`, a drill-down, or the screen being covered/left changed the
             # context while this read was in flight: discard rather than
             # show a stale table (SPEC.md "Tech").
             return
-        self._apply_refresh(
-            result.unit_paths, result.unit_stats or [], result.procs or [], scroll=False
-        )
+        self._apply_refresh(result.app, result.procs, scroll=False)
 
     def on_screen_resume(self) -> None:
         # A read dispatched before the covering screen closed is now stale,
@@ -509,7 +472,7 @@ class ProcessesScreen(Screen[None]):
 
     # --- collection tick ----------------------------------------------------
 
-    def _read_once(self) -> tuple[list[Path], list[UnitStats], list[ProcStats]] | None:
+    def _read_once(self) -> tuple[AppStats | None, list[ProcStats]] | None:
         """One synchronous read, or `None` on a transient failure.
 
         Only OS-level read failures and half-written `/proc`/`/sys` parse
@@ -524,9 +487,9 @@ class ProcessesScreen(Screen[None]):
             # user root raises `MemoryStatUnavailableError` (skip the tick)
             # rather than `CgroupUnavailableError` (fatal) -- only the
             # directory vanishing is fatal here.
-            return _collect_process_tick(
-                self._root, self._uid, self._include_system, self._scope, self._name
-            )
+            app = self._backend.find_app(self._scope, self._name, strict=False)
+            procs = self._backend.read_procs(app) if app is not None else []
+            return app, procs
         except CgroupUnavailableError as exc:
             self._fail_cgroup_unavailable(exc)
             return None
@@ -558,32 +521,18 @@ class ProcessesScreen(Screen[None]):
         result = self._read_once()
         if result is None:
             return
-        unit_paths, unit_stats, procs = result
-        self._apply_refresh(unit_paths, unit_stats, procs, scroll=scroll)
+        self._apply_refresh(*result, scroll=scroll)
 
     def _apply_refresh(
         self,
-        unit_paths: list[Path],
-        unit_stats: list[UnitStats],
+        app: AppStats | None,
         procs: list[ProcStats],
         *,
         scroll: bool,
     ) -> None:
-        if not unit_stats:
+        if app is None:
             self._show_gone()
             return
-        app = AppStats(
-            name=self._name,
-            scope=self._scope,
-            ram=sum(s.ram for s in unit_stats),
-            cache=sum(s.cache for s in unit_stats),
-            swap=sum(s.swap for s in unit_stats),
-            total=sum(s.total for s in unit_stats),
-            procs=sum(s.procs for s in unit_stats),
-            kernel=sum(s.kernel for s in unit_stats),
-            zswap_pool=sum(s.zswap_pool for s in unit_stats),
-            unit_paths=tuple(unit_paths),
-        )
         if self._drill_command is not None:
             members = [proc for proc in procs if proc.name == self._drill_command]
             # The breadcrumb's counts are the command's, as on its grouped row.
@@ -908,7 +857,7 @@ class ProcessesScreen(Screen[None]):
         result = self._read_once()
         if result is None:
             return
-        unit_paths, unit_stats, procs = result
+        app, procs = result
         self._grouped = grouped
         self._drill_command = drill_command
         self._generation += 1
@@ -917,7 +866,7 @@ class ProcessesScreen(Screen[None]):
         self._rebuild_columns(table)
         self._process_rows = {}
         self._command_rows = {}
-        self._apply_refresh(unit_paths, unit_stats, procs, scroll=scroll)
+        self._apply_refresh(app, procs, scroll=scroll)
         if cursor_key is not None and cursor_key in self._command_rows:
             table.move_cursor(row=table.get_row_index(cursor_key), scroll=scroll)
         self._update_footer()

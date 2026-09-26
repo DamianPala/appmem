@@ -1,4 +1,4 @@
-# appmem: spec v0.18.1
+# appmem: spec v0.18.2
 
 A live terminal view of RAM and swap usage **per application**, not per process.
 Think `btm` or `htop`, but rows are apps (Ghostty, Brave, LibreOffice), each summing all of its processes.
@@ -368,7 +368,7 @@ Every failure writes one JSON error object as the last non-empty stderr line, ne
 
 - Python ≥ 3.12, `uv`, [Textual](https://textual.textualize.io/).
 - `model` holds shared immutable collection values and pure process/grouping math. `backend` defines the collection operations. `LinuxBackend` in `collect` reads `/sys` and `/proc` through a fixture-injectable root path.
-- This is an intermediate Linux extraction: report and CLI use the backend boundary; the TUI still calls the Linux collector directly until its separate injection slice. User-visible Linux output is unchanged.
+- CLI reports and both TUI screens use the same backend instance for collection. The screens keep refresh timing and display state; Linux accounting and grouping stay in `LinuxBackend`. User-visible Linux output is unchanged.
 - Textual notes for the implementer:
   - `DataTable` provides a `HeaderSelected` event and `sort(key, reverse=)`. Sort state, the `▴`/`▾` marker and flip-on-second-click are ours to write.
   - Update cells in place with `update_cell`, and add or remove rows only for apps that appeared or vanished. Rebuilding the table every tick causes flicker and loses the cursor.

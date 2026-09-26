@@ -27,7 +27,6 @@ from datetime import datetime
 
 from rich.text import Text
 
-from appmem.collect import SystemStats
 from appmem.fmt import (
     format_elapsed,
     format_pair,
@@ -38,6 +37,7 @@ from appmem.fmt import (
     size_in_unit,
     unit_of,
 )
+from appmem.model import SystemStats
 
 _ELSEWHERE_THRESHOLD = 1024 * 1024
 

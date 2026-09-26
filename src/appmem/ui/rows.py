@@ -10,7 +10,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-from appmem.collect import AppStats
+from appmem.model import AppStats
 
 SortKey = Literal[
     "app", "swap", "ram", "cache", "zswap", "total", "delta_swap", "delta_ram", "procs"

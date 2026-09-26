@@ -13,12 +13,12 @@ from __future__ import annotations
 
 import gc
 from collections.abc import Sequence
-from pathlib import Path
 from typing import ClassVar
 
 from textual.app import App
 from textual.binding import Binding, BindingType
 
+from appmem.backend import Backend
 from appmem.theme import (
     TERMINAL_THEME_NAMES,
     TERMINAL_THEMES,
@@ -77,8 +77,7 @@ class AppMemApp(App[None]):
     def __init__(
         self,
         *,
-        root: Path,
-        uid: int,
+        backend: Backend,
         interval: float,
         include_system: bool,
         theme: str = TEXTUAL_BUILTIN_DEFAULT,
@@ -86,8 +85,7 @@ class AppMemApp(App[None]):
         theme_warnings: Sequence[str] = (),
     ) -> None:
         super().__init__()
-        self._root = root
-        self._uid = uid
+        self._backend = backend
         self._interval = interval
         self._include_system = include_system
         self.cgroup_error_message: str | None = None
@@ -185,8 +183,7 @@ class AppMemApp(App[None]):
 
     def get_default_screen(self) -> MainScreen:
         return MainScreen(
-            root=self._root,
-            uid=self._uid,
+            backend=self._backend,
             interval=self._interval,
             include_system=self._include_system,
         )

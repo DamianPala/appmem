@@ -28,7 +28,9 @@ from textual.widgets import DataTable, OptionList, Static
 from textual.widgets.data_table import ColumnKey
 from textual.worker import Worker
 
-from appmem.collect import ProcStats, UnitStats
+from appmem import collect
+from appmem.collect import LinuxBackend
+from appmem.model import AppStats, ProcStats
 from appmem.theme import THEME_NAMES, config_path
 from appmem.ui.app import AppMemApp
 from appmem.ui.process_rows import KERNEL_KEY, UNATTRIBUTED_KEY, ZSWAP_POOL_KEY
@@ -91,7 +93,9 @@ def _proc(root: Path, pid: int, *, name: str, swap_kb: int = 0, ram_kb: int = 0)
 
 def _app(root: Path, *, include_system: bool = False) -> AppMemApp:
     return AppMemApp(
-        root=root, uid=UID, interval=NO_AUTO_REFRESH_INTERVAL, include_system=include_system
+        backend=LinuxBackend(root, UID),
+        interval=NO_AUTO_REFRESH_INTERVAL,
+        include_system=include_system,
     )
 
 
@@ -669,7 +673,7 @@ async def test_transient_os_error_skips_the_process_view_tick_and_shows_fresh_da
     _proc(root, 100, name="ghostty", ram_kb=1024)
     app = _app(root)
 
-    real_read_procs = processes_screen.collect_read_procs
+    real_read_procs = collect.read_procs
     calls = {"n": 0}
 
     def _flaky_read_procs(unit_paths: Iterable[Path], root: Path) -> list[ProcStats]:
@@ -687,7 +691,7 @@ async def test_transient_os_error_skips_the_process_view_tick_and_shows_fresh_da
         assert "100" in _row_keys(table)
 
         _proc(root, 100, name="ghostty", ram_kb=4096)  # changes before tick 1
-        monkeypatch.setattr(processes_screen, "collect_read_procs", _flaky_read_procs)
+        monkeypatch.setattr(collect, "read_procs", _flaky_read_procs)
         screen.refresh_now()  # tick 1: raises OSError internally, must not propagate
         ram_cell = table.get_cell("100", "ram")
         assert isinstance(ram_cell, Text)
@@ -722,7 +726,7 @@ async def test_a_programming_error_in_a_process_view_tick_still_propagates(
         screen = pilot.app.screen
         assert isinstance(screen, ProcessesScreen)
 
-        monkeypatch.setattr(processes_screen, "collect_read_procs", _broken_read_procs)
+        monkeypatch.setattr(collect, "read_procs", _broken_read_procs)
         with pytest.raises(TypeError):
             screen.refresh_now()
 
@@ -2044,7 +2048,7 @@ async def test_slow_process_tick_does_not_block_key_handling(
     _proc(root, 100, name="a", ram_kb=1024)
     _proc(root, 101, name="b", ram_kb=1024)
     _proc(root, 102, name="c", ram_kb=1024)
-    real_read_procs = processes_screen.collect_read_procs
+    real_read_procs = collect.read_procs
     started = threading.Event()
     release = threading.Event()
 
@@ -2053,11 +2057,11 @@ async def test_slow_process_tick_does_not_block_key_handling(
         release.wait(timeout=2)  # bounded: the worker thread never hangs forever
         return real_read_procs(unit_paths, root)
 
-    app = AppMemApp(root=root, uid=UID, interval=0.05, include_system=False)
+    app = AppMemApp(backend=LinuxBackend(root, UID), interval=0.05, include_system=False)
     async with app.run_test(size=SCREEN_SIZE) as pilot:
         await pilot.pause()
         await _open_ghostty_process_view(pilot)
-        monkeypatch.setattr(processes_screen, "collect_read_procs", blocking_read_procs)
+        monkeypatch.setattr(collect, "read_procs", blocking_read_procs)
         table = _table(pilot)
         row = table.cursor_row
 
@@ -2094,7 +2098,7 @@ async def test_process_ticks_leave_no_workers_or_results_behind(tmp_path: Path) 
     _app_unit(root, "app-ghostty.service", ram=1 * 1024**2, swap=0, pids=[100, 101])
     _proc(root, 100, name="a", ram_kb=1024)
     _proc(root, 101, name="b", ram_kb=1024)
-    app = AppMemApp(root=root, uid=UID, interval=0.02, include_system=False)
+    app = AppMemApp(backend=LinuxBackend(root, UID), interval=0.02, include_system=False)
     async with app.run_test(size=SCREEN_SIZE) as pilot:
         await pilot.pause()
         await _open_ghostty_process_view(pilot)
@@ -2122,7 +2126,7 @@ async def test_collector_bug_in_a_process_tick_exits_the_app(
     def broken_tick_worker(*args: object, **kwargs: object) -> object:
         raise RuntimeError("collector bug")
 
-    app = AppMemApp(root=root, uid=UID, interval=0.02, include_system=False)
+    app = AppMemApp(backend=LinuxBackend(root, UID), interval=0.02, include_system=False)
     with pytest.raises(RuntimeError, match="collector bug"):
         async with app.run_test(size=SCREEN_SIZE) as pilot:
             await pilot.pause()
@@ -2139,28 +2143,26 @@ async def test_at_most_one_process_tick_read_in_flight(
     root = _base_tree(tmp_path)
     _app_unit(root, "app-ghostty.service", ram=1 * 1024**2, swap=0, pids=[100])
     _proc(root, 100, name="ghostty", ram_kb=1024)
-    real_collect = processes_screen._collect_process_tick  # pyright: ignore[reportPrivateUsage]
+    real_read_procs = LinuxBackend.read_procs
     lock = threading.Lock()
     counts = {"current": 0, "max": 0}
 
-    def slow_collect(
-        root: Path, uid: int, include_system: bool, scope: str, name: str
-    ) -> tuple[list[Path], list[UnitStats], list[ProcStats]]:
+    def slow_read_procs(backend: LinuxBackend, app: AppStats) -> list[ProcStats]:
         with lock:
             counts["current"] += 1
             counts["max"] = max(counts["max"], counts["current"])
         time.sleep(0.3)
         try:
-            return real_collect(root, uid, include_system, scope, name)
+            return real_read_procs(backend, app)
         finally:
             with lock:
                 counts["current"] -= 1
 
-    app = AppMemApp(root=root, uid=UID, interval=0.1, include_system=False)
+    app = AppMemApp(backend=LinuxBackend(root, UID), interval=0.1, include_system=False)
     async with app.run_test(size=SCREEN_SIZE) as pilot:
         await pilot.pause()
         await _open_ghostty_process_view(pilot)
-        monkeypatch.setattr(processes_screen, "_collect_process_tick", slow_collect)
+        monkeypatch.setattr(LinuxBackend, "read_procs", slow_read_procs)
         await pilot.pause(0.6)  # several 0.1s intervals elapse while a 0.3s read is in flight
 
         assert counts["max"] <= 1, "two process-view tick reads were in flight at once"
@@ -2179,19 +2181,17 @@ async def test_stale_tick_result_is_discarded_after_toggling_group(
     _app_unit(root, "app-ghostty.service", ram=1 * 1024**2, swap=0, pids=[100, 101])
     _proc(root, 100, name="claude", ram_kb=1024)
     _proc(root, 101, name="node", ram_kb=1024)
-    real_collect = processes_screen._collect_process_tick  # pyright: ignore[reportPrivateUsage]
+    real_read_procs = LinuxBackend.read_procs
 
-    def slow_collect(
-        root: Path, uid: int, include_system: bool, scope: str, name: str
-    ) -> tuple[list[Path], list[UnitStats], list[ProcStats]]:
+    def slow_read_procs(backend: LinuxBackend, app: AppStats) -> list[ProcStats]:
         time.sleep(0.4)  # the stale (pre-toggle, flat-mode) read
-        return real_collect(root, uid, include_system, scope, name)
+        return real_read_procs(backend, app)
 
-    app = AppMemApp(root=root, uid=UID, interval=0.1, include_system=False)
+    app = AppMemApp(backend=LinuxBackend(root, UID), interval=0.1, include_system=False)
     async with app.run_test(size=SCREEN_SIZE) as pilot:
         await pilot.pause()
         await _open_ghostty_process_view(pilot)
-        monkeypatch.setattr(processes_screen, "_collect_process_tick", slow_collect)
+        monkeypatch.setattr(LinuxBackend, "read_procs", slow_read_procs)
         await pilot.pause(0.15)  # a periodic tick is now reading in flat mode
         await pilot.press("g")  # explicit toggle: synchronous refresh_now, grouped mode
         await pilot.pause()
@@ -2216,14 +2216,12 @@ async def test_stale_tick_is_still_discarded_after_toggling_group_twice(
     _app_unit(root, "app-ghostty.service", ram=1 * 1024**2, swap=0, pids=[100, 101])
     _proc(root, 100, name="claude", ram_kb=1024)
     _proc(root, 101, name="node", ram_kb=1024)
-    real_collect = processes_screen._collect_process_tick  # pyright: ignore[reportPrivateUsage]
+    real_read_procs = LinuxBackend.read_procs
     snapshotted = threading.Event()
     release = threading.Event()
 
-    def snapshot_then_block(
-        root: Path, uid: int, include_system: bool, scope: str, name: str
-    ) -> tuple[list[Path], list[UnitStats], list[ProcStats]]:
-        result = real_collect(root, uid, include_system, scope, name)  # snapshot now, 2 procs
+    def snapshot_then_block(backend: LinuxBackend, app: AppStats) -> list[ProcStats]:
+        result = real_read_procs(backend, app)  # snapshot now, 2 procs
         snapshotted.set()
         release.wait(timeout=5)  # bounded: only returns once both toggles below have committed
         return result
@@ -2233,7 +2231,7 @@ async def test_stale_tick_is_still_discarded_after_toggling_group_twice(
         await _open_ghostty_process_view(pilot)
         screen = pilot.app.screen
         assert isinstance(screen, ProcessesScreen)
-        monkeypatch.setattr(processes_screen, "_collect_process_tick", snapshot_then_block)
+        monkeypatch.setattr(LinuxBackend, "read_procs", snapshot_then_block)
         screen._tick()  # pyright: ignore[reportPrivateUsage]  # exactly one stale worker, no interval
 
         deadline = time.monotonic() + 5
@@ -2241,7 +2239,7 @@ async def test_stale_tick_is_still_discarded_after_toggling_group_twice(
             await pilot.pause(0.01)
         assert snapshotted.is_set(), "the periodic tick never took its (stale) snapshot"
 
-        monkeypatch.setattr(processes_screen, "_collect_process_tick", real_collect)
+        monkeypatch.setattr(LinuxBackend, "read_procs", real_read_procs)
         _proc(root, 102, name="extra", ram_kb=1024)  # a process the stale read never saw
         _app_unit(root, "app-ghostty.service", ram=1 * 1024**2, swap=0, pids=[100, 101, 102])
         await pilot.press("g")  # a newer generation: grouped, fast, sees 3 procs
@@ -2285,12 +2283,12 @@ async def test_esc_from_drill_during_a_failing_read_keeps_rows_then_switches_on_
         await pilot.press("enter")
         await pilot.pause()
 
-        real = processes_screen.collect_read_procs
+        real = collect.read_procs
 
         def boom(*a: object, **k: object) -> list[ProcStats]:
             raise OSError("transient")
 
-        monkeypatch.setattr(processes_screen, "collect_read_procs", boom)
+        monkeypatch.setattr(collect, "read_procs", boom)
         await pilot.press("escape")
         await pilot.pause()
 
@@ -2301,7 +2299,7 @@ async def test_esc_from_drill_during_a_failing_read_keeps_rows_then_switches_on_
         assert "pid" in table.columns, "still showing the drilled (process) columns"
         assert screen._drill_command == "claude", "mode switched despite the failing read"  # pyright: ignore[reportPrivateUsage]
 
-        monkeypatch.setattr(processes_screen, "collect_read_procs", real)
+        monkeypatch.setattr(collect, "read_procs", real)
         await pilot.press("escape")  # the user presses again; this read succeeds
         await pilot.pause()
 
@@ -2331,7 +2329,7 @@ async def test_enter_drill_during_a_failing_tick_keeps_the_grouped_rows(
         def boom(*a: object, **k: object) -> list[ProcStats]:
             raise OSError("transient")
 
-        monkeypatch.setattr(processes_screen, "collect_read_procs", boom)
+        monkeypatch.setattr(collect, "read_procs", boom)
         table.move_cursor(row=table.get_row_index("claude"))
         await pilot.press("enter")
         await pilot.pause()
@@ -2362,7 +2360,7 @@ async def test_toggle_group_during_a_failing_tick_keeps_the_flat_rows(
         def boom(*a: object, **k: object) -> list[ProcStats]:
             raise OSError("transient")
 
-        monkeypatch.setattr(processes_screen, "collect_read_procs", boom)
+        monkeypatch.setattr(collect, "read_procs", boom)
         await pilot.press("g")
         await pilot.pause()
 
@@ -2390,7 +2388,7 @@ async def test_sort_key_still_works_after_a_failing_group_toggle(
         def boom(*a: object, **k: object) -> list[ProcStats]:
             raise OSError("transient")
 
-        monkeypatch.setattr(processes_screen, "collect_read_procs", boom)
+        monkeypatch.setattr(collect, "read_procs", boom)
         await pilot.press("g")  # fails: stays in flat mode
         await pilot.pause()
         await pilot.press("s")  # a sort key must still work in the old mode
@@ -2416,7 +2414,7 @@ async def test_sort_key_still_works_after_a_failing_enter_drill(
         def boom(*a: object, **k: object) -> list[ProcStats]:
             raise OSError("transient")
 
-        monkeypatch.setattr(processes_screen, "collect_read_procs", boom)
+        monkeypatch.setattr(collect, "read_procs", boom)
         table = _table(pilot)
         table.move_cursor(row=table.get_row_index("claude"))
         await pilot.press("enter")  # fails: stays in grouped mode
@@ -2445,7 +2443,7 @@ async def test_enter_on_stale_row_after_a_failing_group_toggle_does_not_drill(
         def boom(*a: object, **k: object) -> list[ProcStats]:
             raise OSError("transient")
 
-        monkeypatch.setattr(processes_screen, "collect_read_procs", boom)
+        monkeypatch.setattr(collect, "read_procs", boom)
         await pilot.press("g")  # fails: stays in flat mode
         await pilot.pause()
         await pilot.press("enter")  # a no-op outside grouped mode

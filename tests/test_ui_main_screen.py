@@ -31,8 +31,10 @@ from textual.widgets import DataTable, OptionList, Static
 from textual.widgets.data_table import ColumnKey
 from textual.worker import Worker
 
-from appmem.collect import AppStats
+from appmem import collect
+from appmem.collect import LinuxBackend
 from appmem.fmt import format_pair
+from appmem.model import AppStats
 from appmem.theme import TERMINAL_THEMES, THEME_NAMES, config_path, resolve_theme
 from appmem.ui import app as ui_app
 from appmem.ui.app import AppMemApp
@@ -115,7 +117,9 @@ def _system_unit(root: Path, *, ram: int, swap: int) -> None:
 
 def _app(root: Path, *, include_system: bool = False) -> AppMemApp:
     return AppMemApp(
-        root=root, uid=UID, interval=NO_AUTO_REFRESH_INTERVAL, include_system=include_system
+        backend=LinuxBackend(root, UID),
+        interval=NO_AUTO_REFRESH_INTERVAL,
+        include_system=include_system,
     )
 
 
@@ -1118,7 +1122,7 @@ async def test_transient_os_error_skips_the_tick_and_next_tick_shows_fresh_data(
     _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
     app = _app(root)
 
-    real_read_system = main_screen.read_system
+    real_read_system = collect.read_system
     calls = {"n": 0}
 
     def _flaky_read_system(root: Path, uid: int) -> object:
@@ -1135,7 +1139,7 @@ async def test_transient_os_error_skips_the_tick_and_next_tick_shows_fresh_data(
         assert _row_names(table) == ["alpha"]
 
         _app_unit(root, "app-alpha.service", ram=5 * 1024**2, swap=0)  # changes before tick 1
-        monkeypatch.setattr(main_screen, "read_system", _flaky_read_system)
+        monkeypatch.setattr(collect, "read_system", _flaky_read_system)
         screen.refresh_now()  # tick 1: raises OSError internally, must not propagate
         ram_cell = table.get_cell(row_key("alpha", "user"), "ram")
         assert isinstance(ram_cell, Text)
@@ -1169,7 +1173,7 @@ async def test_a_programming_error_in_a_tick_still_propagates(
         screen = pilot.app.screen
         assert isinstance(screen, MainScreen)
 
-        monkeypatch.setattr(main_screen, "read_system", _broken_read_system)
+        monkeypatch.setattr(collect, "read_system", _broken_read_system)
         with pytest.raises(TypeError):
             screen.refresh_now()
 
@@ -1828,7 +1832,7 @@ async def test_slow_tick_does_not_block_key_handling(
     root = _base_tree(tmp_path)
     _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
     _app_unit(root, "app-beta.service", ram=2 * 1024**2, swap=0)
-    real_read_system = main_screen.read_system
+    real_read_system = collect.read_system
     started = threading.Event()
     release = threading.Event()
 
@@ -1837,10 +1841,10 @@ async def test_slow_tick_does_not_block_key_handling(
         release.wait(timeout=2)  # bounded: the worker thread never hangs forever
         return real_read_system(root, uid)
 
-    app = AppMemApp(root=root, uid=UID, interval=0.05, include_system=False)
+    app = AppMemApp(backend=LinuxBackend(root, UID), interval=0.05, include_system=False)
     async with app.run_test(size=(120, 30)) as pilot:
         await pilot.pause()
-        monkeypatch.setattr(main_screen, "read_system", blocking_read_system)
+        monkeypatch.setattr(collect, "read_system", blocking_read_system)
         table = _table(pilot)
         row = table.cursor_row
 
@@ -1878,7 +1882,7 @@ async def test_ticks_leave_no_workers_or_results_behind(tmp_path: Path) -> None:
     # result must die by refcount right after it's applied, with no GC help.
     root = _base_tree(tmp_path)
     _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
-    app = AppMemApp(root=root, uid=UID, interval=0.02, include_system=False)
+    app = AppMemApp(backend=LinuxBackend(root, UID), interval=0.02, include_system=False)
     async with app.run_test(size=(120, 30)) as pilot:
         await pilot.pause()
         await pilot.pause(1.0)  # ~50 ticks
@@ -1905,7 +1909,7 @@ async def test_collector_bug_in_a_tick_exits_the_app(
     def broken_tick_worker(*args: object, **kwargs: object) -> object:
         raise RuntimeError("collector bug")
 
-    app = AppMemApp(root=root, uid=UID, interval=0.02, include_system=False)
+    app = AppMemApp(backend=LinuxBackend(root, UID), interval=0.02, include_system=False)
     with pytest.raises(RuntimeError, match="collector bug"):
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause()
@@ -1945,7 +1949,7 @@ async def test_changing_rows_leave_no_strip_cycles_behind(
     names = [f"app-x{i}.service" for i in range(12)]
     for i, name in enumerate(names):
         _app_unit(root, name, ram=(i + 1) * 1024**2, swap=0)
-    app = AppMemApp(root=root, uid=UID, interval=0.02, include_system=False)
+    app = AppMemApp(backend=LinuxBackend(root, UID), interval=0.02, include_system=False)
     async with app.run_test(size=(120, 30)) as pilot:
         await pilot.pause()
         # Relative to the first frame: apps of earlier tests can still be
@@ -1970,15 +1974,15 @@ async def test_at_most_one_tick_read_in_flight(
 ) -> None:
     root = _base_tree(tmp_path)
     _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
-    real_collect_apps = main_screen._collect_apps  # pyright: ignore[reportPrivateUsage]
+    real_collect_apps = LinuxBackend.collect_apps
     lock = threading.Lock()
     counts = {"current": 0, "max": 0}
 
     def slow_collect_apps(
-        root: Path,
-        uid: int,
-        include_system: bool,
+        backend: LinuxBackend,
         *,
+        include_system: bool,
+        strict: bool,
         count_procs: bool,
         previous_procs: dict[str, int],
     ) -> tuple[list[AppStats], dict[str, int]]:
@@ -1988,16 +1992,20 @@ async def test_at_most_one_tick_read_in_flight(
         time.sleep(0.3)
         try:
             return real_collect_apps(
-                root, uid, include_system, count_procs=count_procs, previous_procs=previous_procs
+                backend,
+                include_system=include_system,
+                strict=strict,
+                count_procs=count_procs,
+                previous_procs=previous_procs,
             )
         finally:
             with lock:
                 counts["current"] -= 1
 
-    app = AppMemApp(root=root, uid=UID, interval=0.1, include_system=False)
+    app = AppMemApp(backend=LinuxBackend(root, UID), interval=0.1, include_system=False)
     async with app.run_test(size=(120, 30)) as pilot:
         await pilot.pause()
-        monkeypatch.setattr(main_screen, "_collect_apps", slow_collect_apps)
+        monkeypatch.setattr(LinuxBackend, "collect_apps", slow_collect_apps)
         await pilot.pause(0.6)  # several 0.1s intervals elapse while a 0.3s read is in flight
 
         assert counts["max"] <= 1, "two tick reads were in flight at once"
@@ -2015,26 +2023,30 @@ async def test_stale_tick_result_is_discarded_after_toggling_system(
     root = _base_tree(tmp_path)
     _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
     _system_unit(root, ram=2 * 1024**2, swap=0)
-    real_collect_apps = main_screen._collect_apps  # pyright: ignore[reportPrivateUsage]
+    real_collect_apps = LinuxBackend.collect_apps
 
     def slow_collect_apps(
-        root: Path,
-        uid: int,
-        include_system: bool,
+        backend: LinuxBackend,
         *,
+        include_system: bool,
+        strict: bool,
         count_procs: bool,
         previous_procs: dict[str, int],
     ) -> tuple[list[AppStats], dict[str, int]]:
         if not include_system:
             time.sleep(0.4)  # the stale (pre-toggle) read: lands after the toggle below
         return real_collect_apps(
-            root, uid, include_system, count_procs=count_procs, previous_procs=previous_procs
+            backend,
+            include_system=include_system,
+            strict=strict,
+            count_procs=count_procs,
+            previous_procs=previous_procs,
         )
 
-    app = AppMemApp(root=root, uid=UID, interval=0.1, include_system=False)
+    app = AppMemApp(backend=LinuxBackend(root, UID), interval=0.1, include_system=False)
     async with app.run_test(size=(120, 30)) as pilot:
         await pilot.pause()
-        monkeypatch.setattr(main_screen, "_collect_apps", slow_collect_apps)
+        monkeypatch.setattr(LinuxBackend, "collect_apps", slow_collect_apps)
         await pilot.pause(0.15)  # a periodic tick is now reading with include_system=False
         await pilot.press("x")  # explicit toggle: synchronous refresh_now(include_system=True)
         await pilot.pause()
@@ -2054,8 +2066,7 @@ async def test_every_builtin_theme_renders_the_main_view(tmp_path: Path, theme_n
     _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
 
     app = AppMemApp(
-        root=root,
-        uid=UID,
+        backend=LinuxBackend(root, UID),
         interval=NO_AUTO_REFRESH_INTERVAL,
         include_system=False,
         theme=theme_name,
@@ -2088,8 +2099,7 @@ async def test_startup_theme_warning_shows_as_a_notification(tmp_path: Path) -> 
     _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
 
     app = AppMemApp(
-        root=root,
-        uid=UID,
+        backend=LinuxBackend(root, UID),
         interval=NO_AUTO_REFRESH_INTERVAL,
         include_system=False,
         theme_warnings=("APPMEM_THEME='bogus-theme' is not a known theme; ignoring it",),
@@ -2115,8 +2125,7 @@ async def test_header_colours_follow_the_running_apps_current_theme(tmp_path: Pa
     _app_unit(tmp_path, "app-alpha.service", ram=1 * 1024**2, swap=0)
 
     app = AppMemApp(
-        root=tmp_path,
-        uid=UID,
+        backend=LinuxBackend(tmp_path, UID),
         interval=NO_AUTO_REFRESH_INTERVAL,
         include_system=False,
         theme="dracula",
@@ -2158,7 +2167,10 @@ async def test_writeback_rate_reaches_the_header_in_the_running_theme_colour(
     write_vmstat(root, zswpwb=0)
 
     app = AppMemApp(
-        root=root, uid=UID, interval=NO_AUTO_REFRESH_INTERVAL, include_system=False, theme="dracula"
+        backend=LinuxBackend(root, UID),
+        interval=NO_AUTO_REFRESH_INTERVAL,
+        include_system=False,
+        theme="dracula",
     )
     async with app.run_test(size=(160, 24)) as pilot:
         await pilot.pause()
@@ -2217,7 +2229,10 @@ async def test_t_opens_the_panel_on_the_current_theme_marked(tmp_path: Path) -> 
     _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
 
     app = AppMemApp(
-        root=root, uid=UID, interval=NO_AUTO_REFRESH_INTERVAL, include_system=False, theme="dracula"
+        backend=LinuxBackend(root, UID),
+        interval=NO_AUTO_REFRESH_INTERVAL,
+        include_system=False,
+        theme="dracula",
     )
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause()
@@ -2239,7 +2254,10 @@ async def test_ctrl_p_theme_opens_the_same_panel(tmp_path: Path) -> None:
     _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
 
     app = AppMemApp(
-        root=root, uid=UID, interval=NO_AUTO_REFRESH_INTERVAL, include_system=False, theme="nord"
+        backend=LinuxBackend(root, UID),
+        interval=NO_AUTO_REFRESH_INTERVAL,
+        include_system=False,
+        theme="nord",
     )
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause()
@@ -2264,7 +2282,10 @@ async def test_ctrl_p_theme_while_the_panel_is_open_adds_no_second_panel(
     _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
 
     app = AppMemApp(
-        root=root, uid=UID, interval=NO_AUTO_REFRESH_INTERVAL, include_system=False, theme="nord"
+        backend=LinuxBackend(root, UID),
+        interval=NO_AUTO_REFRESH_INTERVAL,
+        include_system=False,
+        theme="nord",
     )
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause()
@@ -2303,8 +2324,7 @@ async def test_arrow_preview_changes_theme_and_header_colours_and_writes_nothing
     _app_unit(tmp_path, "app-alpha.service", ram=1 * 1024**2, swap=0)
 
     app = AppMemApp(
-        root=tmp_path,
-        uid=UID,
+        backend=LinuxBackend(tmp_path, UID),
         interval=NO_AUTO_REFRESH_INTERVAL,
         include_system=False,
         theme="dracula",
@@ -2475,8 +2495,7 @@ async def test_enter_on_the_files_own_value_writes_nothing(tmp_path: Path) -> No
     config_path().write_text('theme = "gruvbox"\n')
 
     app = AppMemApp(
-        root=root,
-        uid=UID,
+        backend=LinuxBackend(root, UID),
         interval=NO_AUTO_REFRESH_INTERVAL,
         include_system=False,
         theme="gruvbox",
@@ -2511,8 +2530,7 @@ async def test_enter_on_the_startup_theme_that_differs_from_the_file_writes_it(
     config_path().write_text('theme = "gruvbox"\n')
 
     app = AppMemApp(
-        root=root,
-        uid=UID,
+        backend=LinuxBackend(root, UID),
         interval=NO_AUTO_REFRESH_INTERVAL,
         include_system=False,
         theme="dracula",  # e.g. from --theme; differs from the file
@@ -2673,8 +2691,7 @@ async def test_ansi_dark_still_opens_the_panel_on_terminal_dark(tmp_path: Path) 
     resolution = resolve_theme(cli_theme=None, env_theme=None, config_path=config_path())
 
     app = AppMemApp(
-        root=root,
-        uid=UID,
+        backend=LinuxBackend(root, UID),
         interval=NO_AUTO_REFRESH_INTERVAL,
         include_system=False,
         theme=resolution.effective,

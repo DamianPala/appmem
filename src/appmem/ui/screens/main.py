@@ -18,9 +18,8 @@ import os
 import threading
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import ClassVar, cast
 
 from rich.text import Text
@@ -35,20 +34,10 @@ from textual.timer import Timer
 from textual.widgets import DataTable, Static
 from textual.widgets.data_table import ColumnKey, RowKey
 
-from appmem.collect import (
-    AppStats,
-    CgroupUnavailableError,
-    MemoryStatUnavailableError,
-    SystemStats,
-    Unit,
-    filter_visible_apps,
-    group_apps,
-    read_system,
-    unit_scope,
-)
-from appmem.collect import find_units as collect_find_units
-from appmem.collect import read_unit as collect_read_unit
+from appmem.backend import Backend
+from appmem.collect import CgroupUnavailableError, MemoryStatUnavailableError
 from appmem.fmt import format_delta, size, truncate_name
+from appmem.model import AppStats, SystemStats
 from appmem.render import escape_control_chars
 from appmem.ui.header import ThemeColors, render_header
 from appmem.ui.layout import build_footer
@@ -250,42 +239,6 @@ def _bar_fill_colour(theme: Theme) -> str:
 _PROCS_COUNT_INTERVAL = 5
 
 
-def _collect_apps(
-    root: Path,
-    uid: int,
-    include_system: bool,
-    *,
-    count_procs: bool,
-    previous_procs: Mapping[str, int],
-) -> tuple[list[AppStats], dict[str, int]]:
-    """Read every visible app's counters (SPEC.md "Grouping"). Pure and
-    thread-safe (no Textual/UI state touched): shared by the synchronous
-    `refresh_now` path and the threaded periodic tick (SPEC.md "Tech").
-
-    `count_procs=False` skips the recursive `cgroup.procs` walk for a unit
-    already in `previous_procs` (keyed by `str(path)`), carrying its old
-    count forward instead (SPEC.md "Main view"); a unit not in
-    `previous_procs` -- seen for the first time -- is always counted, `count_procs`
-    or not. Returns the visible apps and the unit-path -> procs map to pass
-    back in as `previous_procs` on the next call: it is replaced wholesale
-    each time, so a vanished unit's count is dropped rather than carried
-    forever."""
-    unit_paths = collect_find_units(root, uid, include_system=include_system, strict=False)
-    units: list[Unit] = []
-    procs_by_unit: dict[str, int] = {}
-    for path in unit_paths:
-        key = str(path)
-        recount = count_procs or key not in previous_procs
-        unit_stats = collect_read_unit(path, count_procs=recount)
-        if unit_stats is None:
-            continue
-        if not recount:
-            unit_stats = replace(unit_stats, procs=previous_procs.get(key, 0))
-        procs_by_unit[key] = unit_stats.procs
-        units.append(Unit(path=path, stats=unit_stats, scope=unit_scope(root, path)))
-    return filter_visible_apps(group_apps(root, units)), procs_by_unit
-
-
 @dataclass(frozen=True)
 class _TickResult:
     """A background tick's outcome, plus the generation it was read under --
@@ -315,8 +268,7 @@ class TickDone(Message):
 
 
 def _tick_worker(
-    root: Path,
-    uid: int,
+    backend: Backend,
     include_system: bool,
     generation: int,
     *,
@@ -327,9 +279,12 @@ def _tick_worker(
     only, no Textual calls. Transient errors are swallowed here, same as
     `refresh_now`'s `try` -- the tick is skipped, not the session."""
     try:
-        stats = read_system(root, uid)
-        apps, procs_by_unit = _collect_apps(
-            root, uid, include_system, count_procs=count_procs, previous_procs=previous_procs
+        stats = backend.read_system()
+        apps, procs_by_unit = backend.collect_apps(
+            include_system=include_system,
+            strict=False,
+            count_procs=count_procs,
+            previous_procs=previous_procs,
         )
     except CgroupUnavailableError as exc:
         return _TickResult(generation=generation, cgroup_error=exc)
@@ -365,10 +320,9 @@ class MainScreen(Screen[None]):
         Binding("?", "help", "help", show=False),
     ]
 
-    def __init__(self, *, root: Path, uid: int, interval: float, include_system: bool) -> None:
+    def __init__(self, *, backend: Backend, interval: float, include_system: bool) -> None:
         super().__init__()
-        self._root = root
-        self._uid = uid
+        self._backend = backend
         self._interval = interval
         self._show_system = include_system
         self._show_cache = False
@@ -505,8 +459,7 @@ class MainScreen(Screen[None]):
         # a message, which a screen that is already closing simply drops.
         try:
             payload: _TickResult | Exception = _tick_worker(
-                self._root,
-                self._uid,
+                self._backend,
                 self._show_system,
                 generation,
                 count_procs=count_procs,
@@ -588,7 +541,7 @@ class MainScreen(Screen[None]):
         instead of being swallowed alongside a transient read failure.
         """
         try:
-            stats = read_system(self._root, self._uid)
+            stats = self._backend.read_system()
             apps = self._collect_apps_now()
         except CgroupUnavailableError as exc:
             self._fail_cgroup_unavailable(exc)
@@ -600,17 +553,16 @@ class MainScreen(Screen[None]):
         self._apply_refresh(stats, apps, scroll=scroll)
 
     def _collect_apps_now(self) -> list[AppStats]:
-        """`_collect_apps` with the PROCS cadence applied (SPEC.md "Main
+        """Backend collection with the PROCS cadence applied (SPEC.md "Main
         view"): the synchronous counterpart of the periodic tick's
         `_tick`/`_tick_worker` path, shared by `refresh_now` and
-        `action_reset_delta` (`b`). An exception from `_collect_apps`
+        `action_reset_delta` (`b`). An exception from `collect_apps`
         propagates before `_procs_by_unit` is updated, so a failed collection
         leaves the carried-forward counts exactly as a skipped tick would."""
         count_procs = self._next_count_procs()
-        apps, self._procs_by_unit = _collect_apps(
-            self._root,
-            self._uid,
-            self._show_system,
+        apps, self._procs_by_unit = self._backend.collect_apps(
+            include_system=self._show_system,
+            strict=False,
             count_procs=count_procs,
             previous_procs=self._procs_by_unit,
         )
@@ -1003,9 +955,7 @@ class MainScreen(Screen[None]):
             return
         self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
             ProcessesScreen(
-                root=self._root,
-                uid=self._uid,
-                include_system=self._show_system,
+                backend=self._backend,
                 name=app.name,
                 scope=app.scope,
                 interval=self._interval,

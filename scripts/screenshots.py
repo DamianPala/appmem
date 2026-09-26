@@ -31,6 +31,7 @@ sys.path.insert(0, str(_REPO_ROOT / "tests"))  # tests/helpers.py: no second fix
 from rich.text import Text
 from textual.widgets import DataTable, OptionList
 
+from appmem.collect import LinuxBackend
 from appmem.theme import THEME_NAMES
 from appmem.ui.app import AppMemApp
 from appmem.ui.rows import row_key
@@ -335,7 +336,9 @@ class _FrozenClock:
 
 
 async def _capture(root: Path, out_dir: Path) -> None:
-    app = AppMemApp(root=root, uid=_UID, interval=_NO_AUTO_REFRESH_INTERVAL, include_system=False)
+    app = AppMemApp(
+        backend=LinuxBackend(root, _UID), interval=_NO_AUTO_REFRESH_INTERVAL, include_system=False
+    )
     with patch("appmem.ui.screens.main.datetime", new=_FrozenClock()):
         async with app.run_test(size=_MAIN_SIZE) as pilot:
             await pilot.pause()

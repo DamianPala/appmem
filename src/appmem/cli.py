@@ -447,8 +447,6 @@ def _run_root(
     args: argparse.Namespace,
     *,
     backend: Backend,
-    root: Path,
-    uid: int,
     stdin_isatty: Callable[[], bool],
     stdout_isatty: Callable[[], bool],
 ) -> int:
@@ -483,8 +481,7 @@ def _run_root(
         textual_theme=os.environ.get(TEXTUAL_THEME_ENV) or None,
     )
     app = AppMemApp(
-        root=root,
-        uid=uid,
+        backend=backend,
         interval=interval,
         include_system=args.system,
         theme=theme.effective,
@@ -641,8 +638,6 @@ def main(
     return _run_root(
         args,
         backend=backend,
-        root=resolved_root,
-        uid=resolved_uid,
         stdin_isatty=stdin_isatty,
         stdout_isatty=stdout_isatty,
     )

@@ -12,7 +12,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Literal
 
-from appmem.collect import AppStats, CommandStats, ProcStats, group_by_command, unattributed_row
+from appmem.model import AppStats, CommandStats, ProcStats, group_by_command, unattributed_row
 
 # `\0` can't appear in a process/command name (`_read_proc_name` splits on it),
 # so these keys never collide with a real PID string or command name -- even
