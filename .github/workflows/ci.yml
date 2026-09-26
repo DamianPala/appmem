@@ -54,6 +54,17 @@ jobs:
         env:
           TERM: xterm
 
+      - name: Signal shutdown diagnostic (five runs)
+        if: matrix.os == 'macos-15'
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5; do
+            printf 'SIGTERM attempt %s\n' "$attempt"
+            uv run pytest -q -s tests/test_cli_signals.py
+          done
+        env:
+          TERM: xterm
+
   darwin-native-probe:
     name: Darwin native probe (macOS 15 ARM64)
     runs-on: macos-15
