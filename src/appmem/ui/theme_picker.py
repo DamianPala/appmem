@@ -107,6 +107,13 @@ class ThemePanel(ModalScreen[None]):
         # bubbling up to `AppMemApp`'s own binding and pushing a second
         # panel on top of this one (SPEC.md "Command line").
         Binding("T", "cancel", "cancel", show=False),
+        # `q` on its own, not `AppMemApp`'s `Binding("q", "quit", ...)`:
+        # `ModalScreen` blocks that App-level binding since it isn't
+        # `priority=True` (unlike `ctrl+c`), so without this `q` did nothing
+        # while the panel was open, right next to the main footer's own
+        # visible `q quit` (SPEC.md "Theme panel": quitting here saves
+        # nothing, same as Esc).
+        Binding("q", "quit_app", "quit", show=False),
     ]
 
     def __init__(self, current_theme: str) -> None:
@@ -156,6 +163,13 @@ class ThemePanel(ModalScreen[None]):
     def action_cancel(self) -> None:
         self.app.theme = self._original_theme  # pyright: ignore[reportUnknownMemberType]
         self.dismiss()
+
+    def action_quit_app(self) -> None:
+        # `persist_theme` is only ever called from `on_option_list_option_
+        # selected` (Enter or a click), never from here, so quitting saves
+        # nothing regardless of how far the live preview has moved from the
+        # theme the panel opened with (SPEC.md "Theme panel").
+        self.app.exit()  # pyright: ignore[reportUnknownMemberType]
 
     def _apply(self, theme_name: str | None) -> None:
         assert theme_name is not None  # every `Option` above is built with an `id`

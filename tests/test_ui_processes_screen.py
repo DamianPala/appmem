@@ -98,6 +98,12 @@ def _row_keys(table: RowTable) -> list[str]:
     return list(table.row_keys)
 
 
+def _cursor_visible(table: RowTable) -> bool:
+    top = table.scroll_offset.y
+    rows_on_screen = table.size.height - 1  # line 0 is the fixed header
+    return top <= table.cursor_row < top + rows_on_screen
+
+
 def _title_visual(title: Static) -> Content:
     # `.content` is always the raw string passed to `update()`, unaffected by
     # the `markup` flag either way; `.visual` is what's actually rendered, so
@@ -789,6 +795,35 @@ async def test_grouped_column_order_is_name_ram_swap_total_procs(tmp_path: Path)
 
 
 @pytest.mark.asyncio
+async def test_grouped_procs_sort_shows_marker(tmp_path: Path) -> None:
+    # A4 (run-2 fixes): PROCS was 6 cells wide, but "PROCS ▾"/"PROCS ▴" is 7,
+    # so `RowTable._fit` cut the marker off (SPEC.md "Process view", "the
+    # sort marker sits on the sorted column").
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-ghostty.service", ram=1 * 1024**2, swap=0, pids=[100, 101])
+    _proc(root, 100, name="node", ram_kb=1024)
+    _proc(root, 101, name="claude", ram_kb=1024)
+
+    async with _app(root).run_test(size=SCREEN_SIZE) as pilot:
+        await pilot.pause()
+        await _open_ghostty_process_view(pilot)
+        await pilot.press("g")
+        await pilot.pause()
+        screen = pilot.app.screen
+        assert isinstance(screen, ProcessesScreen)
+        table = _table(pilot)
+
+        screen.on_row_table_header_selected(RowTable.HeaderSelected(table, "procs"))
+        header = table.render_line(0).text
+        region = table.column_region("procs")
+        assert header[region.x : region.x + region.width].strip() in ("PROCS ▾", "PROCS ▴")
+
+        screen.on_row_table_header_selected(RowTable.HeaderSelected(table, "procs"))
+        header = table.render_line(0).text
+        assert header[region.x : region.x + region.width].strip() in ("PROCS ▾", "PROCS ▴")
+
+
+@pytest.mark.asyncio
 async def test_drill_down_column_order_is_pid_name_ram_swap_total(tmp_path: Path) -> None:
     root = _base_tree(tmp_path)
     _app_unit(root, "app-ghostty.service", ram=1 * 1024**2, swap=0, pids=[100, 101])
@@ -842,6 +877,16 @@ async def test_wheel_scroll_does_not_snap_back_flat(tmp_path: Path) -> None:
         assert isinstance(screen, ProcessesScreen)
 
         await _scroll_and_assert_stable(pilot, screen)
+        scrolled_y = _table(pilot).scroll_y
+
+        # A tick that adds a process re-runs the column sync after layout;
+        # that sync must not scroll either (only a resize may).
+        _app_unit(root, "app-ghostty.service", ram=2 * 1024**2, swap=0, pids=[*pids, 200])
+        _proc(root, 200, name="proc200", ram_kb=1024)
+        screen.refresh_now()
+        await pilot.pause()
+        await pilot.pause()
+        assert _table(pilot).scroll_y == scrolled_y
 
 
 @pytest.mark.asyncio
@@ -1464,6 +1509,41 @@ async def test_esc_from_drill_returns_to_grouped_list_on_the_same_command(
 
 
 @pytest.mark.asyncio
+async def test_esc_from_drill_keeps_the_command_on_screen(tmp_path: Path) -> None:
+    # A1 (run-2 fixes): `_exit_drill` passed `scroll=False` after `_switch_
+    # mode` had already rebuilt the table, so Esc restored the cursor on the
+    # right command but left the viewport at the top when that command sat
+    # below the first screen (SPEC.md "Process view": Esc returns to the
+    # grouped list on the same command; "Main view": drill in/out scrolls
+    # the selected row into view).
+    root = _base_tree(tmp_path)
+    pids = list(range(100, 160))
+    _app_unit(root, "app-ghostty.service", ram=len(pids) * 1024**2, swap=0, pids=pids)
+    for i, pid in enumerate(pids):
+        _proc(root, pid, name=f"cmd{i:02d}", ram_kb=1024)
+
+    async with _app(root).run_test(size=SCREEN_SIZE) as pilot:
+        await pilot.pause()
+        await _open_ghostty_process_view(pilot)
+        await pilot.press("g")
+        await pilot.pause()
+        table = _table(pilot)
+        table.move_cursor(50)  # well below the first screen, still a real command row
+        await pilot.pause()
+        command = table.cursor_key
+        assert _cursor_visible(table)
+
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+
+        table = _table(pilot)
+        assert table.cursor_key == command
+        assert _cursor_visible(table), (table.scroll_offset.y, table.cursor_row, table.size)
+
+
+@pytest.mark.asyncio
 async def test_enter_on_synthetic_rows_in_grouped_mode_is_a_noop(tmp_path: Path) -> None:
     root = _base_tree(tmp_path)
     _app_unit(root, "app-ghostty.service", ram=3 * 1024**2, swap=0, pids=[100])
@@ -1633,6 +1713,35 @@ async def test_age_column_recomputes_on_resize(tmp_path: Path) -> None:
 
         await pilot.resize_terminal(120, 35)
         assert "age" in table.column_keys
+
+
+@pytest.mark.asyncio
+async def test_height_only_resize_keeps_cursor_on_screen(tmp_path: Path) -> None:
+    # A2 (run-2 fixes): `_sync_columns` only scrolled the cursor into view
+    # when the computed column widths actually changed, so a resize that
+    # only shrank the height (AGE and NAME's width both depend on width, not
+    # height, so neither changes) never brought the cursor back into the
+    # now-shorter viewport (SPEC.md "Process view").
+    root = _base_tree(tmp_path)
+    pids = list(range(100, 160))
+    _app_unit(root, "app-ghostty.service", ram=len(pids) * 1024**2, swap=0, pids=pids)
+    for i, pid in enumerate(pids):
+        _proc(root, pid, name=f"p{i:02d}", ram_kb=1024)
+
+    async with _app(root).run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await _open_ghostty_process_view(pilot)
+        table = _table(pilot)
+        table.move_cursor(table.row_count - 1)
+        await pilot.pause()
+        assert _cursor_visible(table)
+
+        await pilot.resize_terminal(120, 20)  # width unchanged: no column rebuild
+        await pilot.pause()
+        await pilot.pause()
+
+        table = _table(pilot)
+        assert _cursor_visible(table), (table.scroll_offset.y, table.cursor_row, table.size)
 
 
 @pytest.mark.asyncio

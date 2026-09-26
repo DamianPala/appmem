@@ -116,7 +116,11 @@ _DELTA_COLUMNS: tuple[tuple[SortKey, str, int | None], ...] = (
     ("delta_ram", "ΔRAM", 9),
     ("delta_swap", "ΔSWAP", 9),
 )
-_PROCS_COLUMN: tuple[SortKey, str, int | None] = ("procs", "PROCS", 6)
+_PROCS_COLUMN: tuple[SortKey, str, int | None] = ("procs", "PROCS", 7)
+# 7, not 6: "PROCS ▾"/"PROCS ▴" is 7 cells, so a 6-wide column always cut the
+# sort marker off (SPEC.md "Main view"). Fits every narrow-terminal budget
+# already: `_app_column_width` shrinks APP first, well before PROCS' own
+# floor would ever matter.
 _DELTA_KEYS = frozenset({"delta_swap", "delta_ram"})
 
 
@@ -412,6 +416,9 @@ class MainScreen(Screen[None]):
         """Bumped on every context change (`x` toggled, screen covered or
         resumed). A background result carries the generation it was read
         under; `_apply_tick` discards one that no longer matches."""
+        self._resume_scrolls = False
+        """Set while the process view covers this screen: coming back from it
+        is a drill-out and scrolls; closing help or the theme panel is not."""
 
     def compose(self) -> ComposeResult:
         self._delta_columns_shown = self._show_delta_columns()
@@ -423,6 +430,18 @@ class MainScreen(Screen[None]):
         self._rebuild_columns(table)
         yield table
         yield Static(self._footer_text(), id="footer")
+
+    def _zswap_footer_shown(self) -> bool:
+        """Whether the footer's `w zswap` item shows: `_zswap_enabled` (a
+        machine fact) and wide enough for the ZSWAP column itself, but
+        independent of `_show_zswap` (the user's own `w` choice, SPEC.md
+        "Main view") -- `w` keeps toggling that choice either way, so the
+        item stays while it has an effect the user can see right away, and
+        only goes while the column is hidden by width, where pressing `w`
+        would do nothing until the terminal widens back past
+        `_ZSWAP_MIN_WIDTH`."""
+        width = self.app.size.width  # pyright: ignore[reportUnknownMemberType]
+        return self._zswap_enabled and width >= _ZSWAP_MIN_WIDTH
 
     def _footer_items(self) -> tuple[tuple[tuple[str, ...], str], ...]:
         # `d` (sort by ΔSWAP) and `z` (sort by ZSWAP) are each a no-op while
@@ -440,7 +459,7 @@ class MainScreen(Screen[None]):
             (("x",), "system"),
             (("c",), "cache"),
         ]
-        if self._zswap_enabled:  # `w` does nothing when zswap is off or unsupported
+        if self._zswap_footer_shown():
             items.append((("w",), "zswap"))
         items.extend(
             [
@@ -537,8 +556,13 @@ class MainScreen(Screen[None]):
     def on_screen_resume(self) -> None:
         # A read dispatched before the covering screen closed is now stale,
         # even if nothing we track here actually changed while it was up.
+        # Resuming from the process view is a drill-out, same as Esc
+        # elsewhere: the resort can move the selected app out of the old
+        # viewport, so it scrolls; help and the theme panel keep a wheel
+        # scroll where it was (SPEC.md "Main view").
         self._generation += 1
-        self.refresh_now()  # no stale numbers after Esc from the process view
+        scroll, self._resume_scrolls = self._resume_scrolls, False
+        self.refresh_now(scroll=scroll)  # no stale numbers after Esc from the process view
 
     def on_resize(self, event: events.Resize) -> None:
         # Header, columns and footer never wrap -- recompute on every resize,
@@ -546,6 +570,12 @@ class MainScreen(Screen[None]):
         # 3 lines), not only width.
         self._update_header_lines()
         self._sync_columns()
+        # A height-only resize rebuilds nothing, but the viewport may have
+        # shrunk under the cursor (SPEC.md "Main view": a resize scrolls the
+        # selected row into view). Here, not in `_sync_columns`: ticks call
+        # that too, and a tick must never scroll a wheel-scrolled view.
+        table = self._table()
+        table.move_cursor(table.cursor_row, scroll=True)
         self._update_footer()
 
     def _table(self) -> RowTable:
@@ -998,6 +1028,7 @@ class MainScreen(Screen[None]):
         app = next((app for app in self._last_apps if row_key(app.name, app.scope) == key), None)
         if app is None:  # row vanished between the click and the event
             return
+        self._resume_scrolls = True
         self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
             ProcessesScreen(
                 root=self._root,
