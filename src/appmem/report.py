@@ -1,6 +1,6 @@
 """Builds the JSON-ready documents for `appmem snapshot` and `appmem app`.
 
-Pure functions over `collect`: no UI imports, no argument parsing, no stdout.
+Pure functions over `Backend`: no UI imports, no argument parsing, no stdout.
 Reuses the same grouping and remainder math the TUI's process view already
 has, so a number an agent reads here matches what a person sees on screen for
 the same (scope, name).
@@ -10,27 +10,16 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime
-from functools import partial
-from pathlib import Path
 from typing import Any, NamedTuple
 
-from appmem.collect import (
+from appmem.backend import Backend
+from appmem.model import (
     AppStats,
     CommandStats,
     ProcStats,
     SystemStats,
-    Unit,
-    filter_visible_apps,
-    find_app_units,
-    find_units,
-    group_apps,
     group_by_command,
-    read_private_bytes,
-    read_procs,
-    read_system,
-    read_unit,
     unattributed_row,
-    unit_scope,
 )
 from appmem.naming import unit_label
 
@@ -42,18 +31,14 @@ class AppNotFoundError(Exception):
 # --- snapshot ------------------------------------------------------------------
 
 
-def _collect_visible_apps(root: Path, uid: int, include_system: bool) -> list[AppStats]:
+def _collect_visible_apps(backend: Backend, include_system: bool) -> list[AppStats]:
     """Every app worth showing, sorted by total descending then scope then
     name: the same visibility and ordering `snapshot` promises. Read once;
     both the JSON page and the text report's total come from this one list,
     so nothing walks the cgroup tree twice for a single call."""
-    unit_paths = find_units(root, uid, include_system=include_system, strict=True)
-    units = [
-        Unit(path=path, stats=stats, scope=unit_scope(root, path))
-        for path in unit_paths
-        if (stats := read_unit(path)) is not None
-    ]
-    apps = filter_visible_apps(group_apps(root, units))
+    apps, _ = backend.collect_apps(
+        include_system=include_system, strict=True, count_procs=True, previous_procs={}
+    )
     return sorted(apps, key=lambda app: (-app.total, app.scope, app.name))
 
 
@@ -122,18 +107,18 @@ def _top_command_item(command: CommandStats) -> dict[str, Any]:
     }
 
 
-def _top_commands(root: Path, app: AppStats) -> list[dict[str, Any]]:
+def _top_commands(backend: Backend, app: AppStats) -> list[dict[str, Any]]:
     """The 3 largest commands by total, same grouping as `app NAME`. `[]` for
     an app at or below `_TOP_COMMANDS_MIN_PROCS` processes, whose
     `unit_paths` are never read for this."""
     if app.procs <= _TOP_COMMANDS_MIN_PROCS:
         return []
-    procs = read_procs(app.unit_paths, root)
+    procs = backend.read_procs(app)
     commands = sorted(group_by_command(procs), key=lambda c: -(c.swap + c.ram))[:3]
     return [_top_command_item(command) for command in commands]
 
 
-def _app_item(root: Path, app: AppStats) -> dict[str, Any]:
+def _app_item(backend: Backend, app: AppStats) -> dict[str, Any]:
     return {
         "name": app.name,
         "scope": app.scope,
@@ -145,7 +130,7 @@ def _app_item(root: Path, app: AppStats) -> dict[str, Any]:
         "kernel_bytes": app.kernel,
         "procs": app.procs,
         "unit_count": len(app.unit_paths),
-        "top_commands": _top_commands(root, app),
+        "top_commands": _top_commands(backend, app),
     }
 
 
@@ -160,19 +145,19 @@ class SnapshotResult(NamedTuple):
 
 
 def snapshot_document(
-    root: Path, uid: int, *, include_system: bool, limit: int, now: datetime
+    backend: Backend, *, include_system: bool, limit: int, now: datetime
 ) -> SnapshotResult:
     """One sample of the machine and every app big enough to matter, capped
     at `limit` items and breadcrumbed to the largest one."""
-    stats = read_system(root, uid)
-    apps = _collect_visible_apps(root, uid, include_system)
+    stats = backend.read_system()
+    apps = _collect_visible_apps(backend, include_system)
     page = apps[:limit]
 
     document: dict[str, Any] = {
         "taken_at": now.isoformat(timespec="seconds"),
         "system": _system_dict(stats),
         "pressure": _pressure_dict(stats),
-        "apps": {"items": [_app_item(root, app) for app in page], "has_more": len(apps) > limit},
+        "apps": {"items": [_app_item(backend, app) for app in page], "has_more": len(apps) > limit},
     }
     if page:
         first = page[0]
@@ -186,7 +171,7 @@ def snapshot_document(
 # --- app -----------------------------------------------------------------------
 
 
-def _process_item(proc: ProcStats, *, root: Path) -> dict[str, Any]:
+def _process_item(proc: ProcStats, *, backend: Backend) -> dict[str, Any]:
     return {
         "pid": proc.pid,
         "name": proc.name,
@@ -195,7 +180,7 @@ def _process_item(proc: ProcStats, *, root: Path) -> dict[str, Any]:
         "total_bytes": proc.swap + proc.ram,
         "age_seconds": int(proc.age_seconds),
         "unit": proc.unit,
-        "private_bytes": read_private_bytes(root, proc.pid),
+        "private_bytes": backend.private_bytes(proc.pid),
     }
 
 
@@ -214,28 +199,6 @@ def _paged[T](items: list[T], limit: int, to_item: Callable[[T], dict[str, Any]]
     return {"items": [to_item(item) for item in page], "has_more": len(items) > limit}
 
 
-def _build_app_stats(name: str, scope: str, unit_paths: list[Path]) -> AppStats | None:
-    """`None` when every unit vanished between `find_app_units` finding it and
-    this read: churn, but with nothing left to report, the same as no unit
-    ever matching (scope, name)."""
-    unit_stats = [stats for path in unit_paths if (stats := read_unit(path)) is not None]
-    if not unit_stats:
-        return None
-    return AppStats(
-        name=name,
-        scope=scope,
-        ram=sum(s.ram for s in unit_stats),
-        cache=sum(s.cache for s in unit_stats),
-        swap=sum(s.swap for s in unit_stats),
-        total=sum(s.total for s in unit_stats),
-        procs=sum(s.procs for s in unit_stats),
-        kernel=sum(s.kernel for s in unit_stats),
-        zswapped=sum(s.zswapped for s in unit_stats),
-        zswap_pool=sum(s.zswap_pool for s in unit_stats),
-        unit_paths=tuple(unit_paths),
-    )
-
-
 class AppResult(NamedTuple):
     """`app_document`'s return: the JSON document, plus the total process and
     command counts from the same read the document's own paged lists came
@@ -247,21 +210,15 @@ class AppResult(NamedTuple):
 
 
 def app_document(
-    root: Path, uid: int, name: str, scope: str, *, limit: int, now: datetime
+    backend: Backend, name: str, scope: str, *, limit: int, now: datetime
 ) -> AppResult:
     """One app's units, processes, commands grouped by name, and the
     kernel/unattributed remainder, exactly as the TUI's process view computes
     them for the same (scope, name)."""
-    unit_paths = find_app_units(
-        root, uid, include_system=(scope == "system"), scope=scope, name=name, strict=True
-    )
-    if not unit_paths:
-        raise AppNotFoundError(name)
-
-    app = _build_app_stats(name, scope, unit_paths)
+    app = backend.find_app(scope, name, strict=True)
     if app is None:
         raise AppNotFoundError(name)
-    procs = read_procs(unit_paths, root)
+    procs = backend.read_procs(app)
     unattributed_swap, unattributed_ram = unattributed_row(app, procs)
 
     processes_sorted = sorted(procs, key=lambda p: (-(p.swap + p.ram), p.name, p.pid))
@@ -281,8 +238,10 @@ def app_document(
         "kernel_bytes": app.kernel,
         "zswap_pool_bytes": app.zswap_pool,
         "procs": app.procs,
-        "units": [{"name": path.name, "label": unit_label(path.name)} for path in unit_paths],
-        "processes": _paged(processes_sorted, limit, partial(_process_item, root=root)),
+        "units": [{"name": path.name, "label": unit_label(path.name)} for path in app.unit_paths],
+        "processes": _paged(
+            processes_sorted, limit, lambda proc: _process_item(proc, backend=backend)
+        ),
         "commands": _paged(commands_sorted, limit, _command_item),
         "unattributed_ram_bytes": unattributed_ram,
         "unattributed_swap_bytes": unattributed_swap,

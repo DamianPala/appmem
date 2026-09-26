@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from appmem.cli import main
+from appmem.collect import LinuxBackend
 from appmem.report import snapshot_document
 from helpers import (
     make_unit,
@@ -70,7 +71,7 @@ def test_document_matches_the_expected_shape_for_two_apps_and_a_hidden_one(tmp_p
     write_pressure(tmp_path, some_avg10=0.0, full_avg10=0.0)
 
     document, total_apps = snapshot_document(
-        tmp_path, 1000, include_system=False, limit=50, now=_NOW
+        LinuxBackend(tmp_path, 1000), include_system=False, limit=50, now=_NOW
     )
 
     assert document["taken_at"] == "2026-09-23T00:30:39+02:00"
@@ -100,13 +101,13 @@ def test_system_units_hidden_without_system_and_scoped_with_it(tmp_path: Path) -
     write_pressure(tmp_path, some_avg10=0.0, full_avg10=0.0)
 
     without_system, total_without = snapshot_document(
-        tmp_path, 1000, include_system=False, limit=50, now=_NOW
+        LinuxBackend(tmp_path, 1000), include_system=False, limit=50, now=_NOW
     )
     assert [item["name"] for item in without_system["apps"]["items"]] == ["ghostty"]
     assert total_without == 1
 
     with_system, total_with = snapshot_document(
-        tmp_path, 1000, include_system=True, limit=50, now=_NOW
+        LinuxBackend(tmp_path, 1000), include_system=True, limit=50, now=_NOW
     )
     names_and_scopes = {(item["name"], item["scope"]) for item in with_system["apps"]["items"]}
     assert ("cups", "system") in names_and_scopes
@@ -123,7 +124,9 @@ def test_ties_break_by_scope_then_name(tmp_path: Path) -> None:
     make_unit(user_root / "app.slice" / "app-alpha.service", anon=2 * _MIB)
     write_pressure(tmp_path, some_avg10=0.0, full_avg10=0.0)
 
-    document, _ = snapshot_document(tmp_path, 1000, include_system=False, limit=50, now=_NOW)
+    document, _ = snapshot_document(
+        LinuxBackend(tmp_path, 1000), include_system=False, limit=50, now=_NOW
+    )
 
     assert [item["name"] for item in document["apps"]["items"]] == ["alpha", "zeta"]
 
@@ -135,7 +138,7 @@ def test_limit_cuts_the_page_and_reports_has_more(tmp_path: Path) -> None:
     write_pressure(tmp_path, some_avg10=0.0, full_avg10=0.0)
 
     document, total_apps = snapshot_document(
-        tmp_path, 1000, include_system=False, limit=1, now=_NOW
+        LinuxBackend(tmp_path, 1000), include_system=False, limit=1, now=_NOW
     )
 
     assert [item["name"] for item in document["apps"]["items"]] == ["a"]
@@ -151,7 +154,7 @@ def test_has_more_is_false_when_exactly_limit_apps_exist(tmp_path: Path) -> None
     write_pressure(tmp_path, some_avg10=0.0, full_avg10=0.0)
 
     document, total_apps = snapshot_document(
-        tmp_path, 1000, include_system=False, limit=2, now=_NOW
+        LinuxBackend(tmp_path, 1000), include_system=False, limit=2, now=_NOW
     )
 
     assert document["apps"]["has_more"] is False
@@ -163,7 +166,7 @@ def test_no_items_means_no_next_field(tmp_path: Path) -> None:
     write_pressure(tmp_path, some_avg10=0.0, full_avg10=0.0)
 
     document, total_apps = snapshot_document(
-        tmp_path, 1000, include_system=False, limit=50, now=_NOW
+        LinuxBackend(tmp_path, 1000), include_system=False, limit=50, now=_NOW
     )
 
     assert document["apps"]["items"] == []
@@ -175,7 +178,9 @@ def test_pressure_is_null_without_the_pressure_file(tmp_path: Path) -> None:
     _base_tree(tmp_path)
     # No `proc/pressure/memory` written at all.
 
-    document, _ = snapshot_document(tmp_path, 1000, include_system=False, limit=50, now=_NOW)
+    document, _ = snapshot_document(
+        LinuxBackend(tmp_path, 1000), include_system=False, limit=50, now=_NOW
+    )
 
     assert document["pressure"] is None
 
@@ -194,7 +199,9 @@ def test_system_includes_ram_free_cache_and_shared_bytes(tmp_path: Path) -> None
         shmem_kb=3_000_000,
     )
 
-    document, _ = snapshot_document(tmp_path, 1000, include_system=False, limit=50, now=_NOW)
+    document, _ = snapshot_document(
+        LinuxBackend(tmp_path, 1000), include_system=False, limit=50, now=_NOW
+    )
 
     system = document["system"]
     assert system["ram_free_bytes"] == 2_000_000 * 1024
@@ -215,7 +222,9 @@ def test_cjk_unit_name_decodes_correctly_in_the_json_document(tmp_path: Path) ->
         swap=0,
     )
 
-    document, _ = snapshot_document(tmp_path, 1000, include_system=False, limit=50, now=_NOW)
+    document, _ = snapshot_document(
+        LinuxBackend(tmp_path, 1000), include_system=False, limit=50, now=_NOW
+    )
 
     names = [item["name"] for item in document["apps"]["items"]]
     assert "微信" in names, names
@@ -234,7 +243,9 @@ def test_ram_slab_bytes_reflects_sreclaimable(tmp_path: Path) -> None:
         sreclaimable_kb=2_100_000,
     )
 
-    document, _ = snapshot_document(tmp_path, 1000, include_system=False, limit=50, now=_NOW)
+    document, _ = snapshot_document(
+        LinuxBackend(tmp_path, 1000), include_system=False, limit=50, now=_NOW
+    )
 
     assert document["system"]["ram_slab_bytes"] == 2_100_000 * 1024
 
@@ -259,7 +270,9 @@ def test_snapshot_zswap_system_fields_and_per_app_zswapped_bytes(tmp_path: Path)
     write_zswap_enabled(tmp_path, enabled=True)
     write_vmstat(tmp_path, zswpwb=50)
 
-    document, _ = snapshot_document(tmp_path, 1000, include_system=False, limit=50, now=_NOW)
+    document, _ = snapshot_document(
+        LinuxBackend(tmp_path, 1000), include_system=False, limit=50, now=_NOW
+    )
 
     system = document["system"]
     assert system["zswap_enabled"] is True
@@ -275,7 +288,9 @@ def test_snapshot_zswap_system_fields_are_null_when_disabled(tmp_path: Path) -> 
     write_pressure(tmp_path, some_avg10=0.0, full_avg10=0.0)
     # No zswap fixtures written: the machine simply has no zswap.
 
-    document, _ = snapshot_document(tmp_path, 1000, include_system=False, limit=50, now=_NOW)
+    document, _ = snapshot_document(
+        LinuxBackend(tmp_path, 1000), include_system=False, limit=50, now=_NOW
+    )
 
     system = document["system"]
     assert system["zswap_enabled"] is False
@@ -294,7 +309,9 @@ def test_snapshot_item_kernel_bytes_excludes_the_zswap_pool(tmp_path: Path) -> N
         swap=1 * _MIB,
     )
 
-    document, _ = snapshot_document(tmp_path, 1000, include_system=False, limit=50, now=_NOW)
+    document, _ = snapshot_document(
+        LinuxBackend(tmp_path, 1000), include_system=False, limit=50, now=_NOW
+    )
 
     item = document["apps"]["items"][0]
     assert item["kernel_bytes"] == 2 * _MIB  # 3 MiB kernel - 1 MiB pool
@@ -315,7 +332,9 @@ def test_snapshot_zswap_params_and_compression_ratio(tmp_path: Path) -> None:
     write_zswap_enabled(tmp_path, enabled=True)
     write_zswap_params(tmp_path, compressor="lzo", max_pool_percent=20)
 
-    document, _ = snapshot_document(tmp_path, 1000, include_system=False, limit=50, now=_NOW)
+    document, _ = snapshot_document(
+        LinuxBackend(tmp_path, 1000), include_system=False, limit=50, now=_NOW
+    )
 
     system = document["system"]
     assert system["zswap_compressor"] == "lzo"
@@ -329,7 +348,9 @@ def test_snapshot_zswap_params_null_when_disabled(tmp_path: Path) -> None:
     # zswap disabled (no fixtures written): everything zswap-related is null.
     write_zswap_params(tmp_path, compressor="lzo", max_pool_percent=20)  # ignored: enabled=False
 
-    document, _ = snapshot_document(tmp_path, 1000, include_system=False, limit=50, now=_NOW)
+    document, _ = snapshot_document(
+        LinuxBackend(tmp_path, 1000), include_system=False, limit=50, now=_NOW
+    )
 
     system = document["system"]
     assert system["zswap_compressor"] is None
@@ -351,7 +372,9 @@ def test_snapshot_compression_ratio_null_when_pool_is_zero(tmp_path: Path) -> No
     )
     write_zswap_enabled(tmp_path, enabled=True)
 
-    document, _ = snapshot_document(tmp_path, 1000, include_system=False, limit=50, now=_NOW)
+    document, _ = snapshot_document(
+        LinuxBackend(tmp_path, 1000), include_system=False, limit=50, now=_NOW
+    )
 
     assert document["system"]["zswap_compression_ratio"] is None
 
@@ -382,7 +405,9 @@ def test_top_commands_are_the_three_largest_by_total(tmp_path: Path) -> None:
     ]  # fmt: skip
     _proc_with_names_and_ram(tmp_path, unit, entries)
 
-    document, _ = snapshot_document(tmp_path, 1000, include_system=False, limit=50, now=_NOW)
+    document, _ = snapshot_document(
+        LinuxBackend(tmp_path, 1000), include_system=False, limit=50, now=_NOW
+    )
 
     item = document["apps"]["items"][0]
     top = item["top_commands"]
@@ -400,7 +425,9 @@ def test_top_commands_empty_at_the_process_threshold(tmp_path: Path) -> None:
     make_unit(unit, anon=5 * _MIB, swap=0)
     _proc_with_names_and_ram(tmp_path, unit, [("pipewire", 100)] * 6)  # exactly 6: still empty
 
-    document, _ = snapshot_document(tmp_path, 1000, include_system=False, limit=50, now=_NOW)
+    document, _ = snapshot_document(
+        LinuxBackend(tmp_path, 1000), include_system=False, limit=50, now=_NOW
+    )
 
     item = document["apps"]["items"][0]
     assert item["top_commands"] == []
@@ -412,7 +439,9 @@ def test_elsewhere_is_null_without_the_root_memory_stat(tmp_path: Path) -> None:
     _base_tree(tmp_path)
     write_pressure(tmp_path, some_avg10=0.0, full_avg10=0.0)
 
-    document, _ = snapshot_document(tmp_path, 1000, include_system=False, limit=50, now=_NOW)
+    document, _ = snapshot_document(
+        LinuxBackend(tmp_path, 1000), include_system=False, limit=50, now=_NOW
+    )
 
     assert document["system"]["elsewhere_bytes"] is None
 
@@ -427,7 +456,9 @@ def test_pressure_level_thresholds(
     _base_tree(tmp_path)
     write_pressure(tmp_path, some_avg10=some_avg10, full_avg10=full_avg10)
 
-    document, _ = snapshot_document(tmp_path, 1000, include_system=False, limit=50, now=_NOW)
+    document, _ = snapshot_document(
+        LinuxBackend(tmp_path, 1000), include_system=False, limit=50, now=_NOW
+    )
 
     assert document["pressure"]["level"] == expected_level
 

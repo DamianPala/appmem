@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from appmem import __version__, report
+from appmem import __version__, collect, report
 from appmem.cli import main
 from appmem.collect import CgroupUnavailableError
 from appmem.ui.app import AppMemApp
@@ -367,7 +367,7 @@ def test_snapshot_cgroup_unavailable_when_the_tree_vanishes_mid_read(
     def _vanished(*args: object, **kwargs: object) -> None:
         raise CgroupUnavailableError("missing cgroup path: vanished mid-read")
 
-    monkeypatch.setattr(report, "read_system", _vanished)
+    monkeypatch.setattr(collect, "read_system", _vanished)
 
     with pytest.raises(SystemExit) as exc_info:
         main(
@@ -390,7 +390,7 @@ def test_app_cgroup_unavailable_when_the_tree_vanishes_mid_read(
     def _raise(*args: object, **kwargs: object) -> list[Path]:
         raise CgroupUnavailableError("missing cgroup path: vanished mid-read")
 
-    monkeypatch.setattr(report, "find_app_units", _raise)
+    monkeypatch.setattr(collect, "find_app_units", _raise)
 
     with pytest.raises(SystemExit) as exc_info:
         main(
@@ -617,14 +617,14 @@ def test_snapshot_text_reads_the_cgroup_tree_only_once(
     write_uptime(tmp_path, 1)
     make_unit(user_root / "app.slice" / "app-ghostty.service", anon=2 * 1024 * 1024)
 
-    real_find_units = report.find_units
+    real_find_units = collect.find_units
     calls: list[None] = []
 
     def _counting_find_units(*args: object, **kwargs: object) -> list[Path]:
         calls.append(None)
         return real_find_units(*args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(report, "find_units", _counting_find_units)
+    monkeypatch.setattr(collect, "find_units", _counting_find_units)
 
     main(["snapshot"], root=tmp_path, uid=1000, stdin_isatty=_true, stdout_isatty=_true)
 

@@ -25,7 +25,8 @@ from pathlib import Path
 from typing import Any, NoReturn, Protocol
 
 from appmem import __version__, report, schema
-from appmem.collect import CgroupUnavailableError, find_units
+from appmem.backend import Backend, select_backend
+from appmem.collect import CgroupUnavailableError
 from appmem.render import render_app_text, render_snapshot_text
 from appmem.theme import (
     APPMEM_THEME_ENV,
@@ -445,6 +446,7 @@ def _run_app(app: AppMemApp) -> int:
 def _run_root(
     args: argparse.Namespace,
     *,
+    backend: Backend,
     root: Path,
     uid: int,
     stdin_isatty: Callable[[], bool],
@@ -469,7 +471,7 @@ def _run_root(
         )
 
     try:
-        find_units(root, uid, include_system=args.system)
+        backend.check()
     except CgroupUnavailableError as exc:
         _fail("cgroup_unavailable", str(exc), 1, action="user")
 
@@ -493,14 +495,14 @@ def _run_root(
 
 
 def _run_snapshot(
-    args: argparse.Namespace, *, root: Path, uid: int, stdout_isatty: Callable[[], bool]
+    args: argparse.Namespace, *, backend: Backend, stdout_isatty: Callable[[], bool]
 ) -> int:
     json_flag = bool(args.json)
     include_system = bool(args.system)
     now = datetime.now().astimezone()
     try:
         document, total_apps = report.snapshot_document(
-            root, uid, include_system=include_system, limit=args.limit, now=now
+            backend, include_system=include_system, limit=args.limit, now=now
         )
     except KeyboardInterrupt:
         _fail("interrupted", "interrupted while reading the snapshot", 130, action="user")
@@ -519,13 +521,13 @@ def _run_snapshot(
 
 
 def _run_app_command(
-    args: argparse.Namespace, *, root: Path, uid: int, stdout_isatty: Callable[[], bool]
+    args: argparse.Namespace, *, backend: Backend, stdout_isatty: Callable[[], bool]
 ) -> int:
     json_flag = bool(args.json)
     now = datetime.now().astimezone()
     try:
         document, total_processes, total_commands = report.app_document(
-            root, uid, args.name, args.scope, limit=args.limit, now=now
+            backend, args.name, args.scope, limit=args.limit, now=now
         )
     except KeyboardInterrupt:
         _fail("interrupted", "interrupted while reading the app", 130, action="user")
@@ -626,19 +628,19 @@ def main(
 
     _reject_live_view_flags(args)
 
-    if args.command == "snapshot":
-        return _run_snapshot(
-            args, root=resolved_root, uid=resolved_uid, stdout_isatty=stdout_isatty
-        )
-    if args.command == "app":
-        return _run_app_command(
-            args, root=resolved_root, uid=resolved_uid, stdout_isatty=stdout_isatty
-        )
     if args.command == "schema":
         return _run_schema(args)
 
+    backend = select_backend(resolved_root, resolved_uid)
+
+    if args.command == "snapshot":
+        return _run_snapshot(args, backend=backend, stdout_isatty=stdout_isatty)
+    if args.command == "app":
+        return _run_app_command(args, backend=backend, stdout_isatty=stdout_isatty)
+
     return _run_root(
         args,
+        backend=backend,
         root=resolved_root,
         uid=resolved_uid,
         stdin_isatty=stdin_isatty,
