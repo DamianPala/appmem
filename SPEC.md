@@ -1,4 +1,4 @@
-# appmem: spec v0.19
+# appmem: spec v0.20
 
 A live terminal view of RAM and swap usage **per application**, not per process.
 Think `btm` or `htop`, but rows are apps (Ghostty, Brave, LibreOffice), each summing all of its processes.
@@ -25,7 +25,7 @@ Which app holds the memory and swap? Is memory actually the problem right now? W
 - Themes: Textual's built-in themes, with `terminal-dark`/`terminal-light` for the terminal's own colours. `T` opens a side panel with a live preview, and the choice is remembered in a config file.
 - Non-interactive commands for scripts and agents: `appmem snapshot`, `appmem app NAME`, `appmem schema`, plus an agent skill in `skills/appmem/SKILL.md`.
 
-**Not in v1:** recording/history, charts over time, a streaming `watch` command, CPU or I/O stats, killing processes, settings other than the theme, custom themes (the terminal themes cover a tuned terminal palette), login-session scopes, running as root, Windows, cgroup v1. The development branch has experimental macOS 15+ Apple Silicon support, described below; the published 0.1.0 package remains Linux-only.
+**Not in v1:** recording/history, charts over time, a streaming `watch` command, CPU or I/O stats, killing processes, settings other than the theme, custom themes (the terminal themes cover a tuned terminal palette), login-session scopes, running as root, Windows, cgroup v1. The development branch has experimental macOS 15+ Apple Silicon support, described below; the published 0.2.0 package remains Linux-only.
 
 ## Experimental macOS backend (development branch)
 
@@ -83,7 +83,7 @@ Pressure  none                          system 610 MiB [x]    Δ since 15:58 (12
 - With zswap enabled, the ZSWAP column is shown by default, between SWAP and TOTAL.
 - Under 95 columns ΔSWAP and ΔRAM are hidden, and under 85 ZSWAP is hidden too. Sorting by a hidden column falls back to TOTAL descending.
 - A footer with key caps sits at the bottom of every view and drops its lowest-priority items instead of wrapping. It shows only keys that act in the current view and mode, labelled by what they do there (e.g. `d` is absent while the Δ columns are hidden). `T theme` is the first item to drop.
-- Mouse-wheel scrolling stays where the user put it across refreshes: a tick restores the cursor without scrolling the viewport; only explicit actions (sort, toggles, `b`, drill in/out) scroll the selected row into view.
+- Mouse-wheel scrolling stays where the user put it across refreshes: a tick restores the cursor without scrolling the viewport; only explicit actions (sort, toggles, `b`, drill in/out, a resize) scroll the selected row into view.
 
 ### Process view (after Enter)
 
@@ -141,6 +141,7 @@ It covers what RAM, CACHE, SWAP, TOTAL, pressure and the header's shared/free/ca
 | Key | Action |
 |---|---|
 | click header | sort by that column, click again to reverse |
+| click a row | select it, double click opens it (process view, or a command's processes when grouped) |
 | `r` / `s` / `t` / `d` / `z` | sort by RAM / SWAP / TOTAL / ΔSWAP / ZSWAP (repeat to reverse); a key whose column is hidden is absent and does nothing; other columns sort by click |
 | `↑` `↓` `PgUp` `PgDn` | move |
 | `Home` `End` | jump to the first/last row |
@@ -306,6 +307,7 @@ Splitting terminal children into their own main-view rows is v2.
 - The cursor follows the selected app across refreshes and re-sorts. If that app disappears, the cursor stays at the same row index, or on the last row.
 - Names (apps, processes, units, titles, status line) show C0/C1 control characters escaped (`\x1b[41m`), in the live view as in the text reports; nothing a process or unit is called can write to the terminal.
 - Widths count terminal cells, not characters: names are cut at 32 cells with `…` and a wide character is never split. No line of any view wraps at any width. In the main view, the APP column takes only the width left after the numeric columns (capped at 32, never below 8), at every width and again when a scrollbar appears, so numbers are never cut; long names get `…` first.
+- Below about 55 columns in the main view (about 67 with CACHE shown), APP's own floor of 8 no longer leaves room for every numeric column to stay whole; a number can be cut from there down, the same way a name is above that floor.
 - Periodic reads run off the UI thread, one at a time per screen; keys stay responsive while a read is slow, and a result read for a view the user has since left is dropped.
 
 ## Command line
@@ -336,6 +338,7 @@ The command line conforms to the house CLI Design Standard 0.1.0 (claimed in `ap
   - Moving the cursor applies the highlighted theme to the whole app at once, but never writes the file.
   - Enter, or a click on an item, keeps the theme and saves it. Esc, `T` again, or a click outside the panel restores the theme from before it opened. Quitting while the panel is open saves nothing.
   - At the bottom are fixed-height lines, which never wrap and don't move the panel: an info line (`your terminal's colours` on `terminal-*`, blank otherwise), then `↑↓ preview` and `enter keep  esc cancel`.
+  - The view behind the panel pauses while it's open, the same as under the help screen, and catches up the moment it closes.
 - **Colour contrast.** Table header text reaches at least 4.5:1 against its background in every theme: black or white, whichever contrasts more. In terminal themes, table headers use the terminal's default colours, bold and underlined, since any other pair of palette slots can be unreadable in some palette.
 - **snapshot**: one sample with the same numbers as the main view and header. Apps ≥ 1 MiB TOTAL, sorted by TOTAL, at most `--limit` (default 50) with `has_more`; `next` names the largest app. zswap fields:
   - `zswap_enabled`;

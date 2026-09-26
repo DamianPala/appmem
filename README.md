@@ -37,13 +37,13 @@ appmem
 No root, no config file.
 From a checkout, `uv run appmem`.
 
-The published 0.1.0 package supports Linux. You need Linux with systemd and a desktop that starts apps as systemd units (KDE Plasma and GNOME do), on cgroup v2, which current distributions use by default.
+The published 0.2.0 package supports Linux. You need Linux with systemd and a desktop that starts apps as systemd units (KDE Plasma and GNOME do), on cgroup v2, which current distributions use by default.
 Python 3.12 or newer; uv fetches it for you.
 Kernel 5.10 or newer; the zswap figures need 5.19 and the Pressure line needs pressure tracking (PSI) switched on in the kernel, without them those parts stay off and the rest works.
 
 ### Experimental macOS support in the development branch
 
-The `feat/platform-backends` development branch adds experimental support for macOS 15 or newer on Apple Silicon. It has not been released to PyPI; `uv tool install appmem` still installs the Linux-only 0.1.0 package. From a checkout of that branch, run `uv tool install .` to install this build.
+The `feat/platform-backends` development branch adds experimental support for macOS 15 or newer on Apple Silicon. It has not been released to PyPI; `uv tool install appmem` still installs the Linux-only 0.2.0 package. From a checkout of that branch, run `uv tool install .` to install this build.
 
 The Mac view ranks apps by **physical footprint**, with `APP`, `FOOTPRINT`, `ΔFOOT` and `PROCS` columns. This is the native footprint reported for captured processes, not resident RAM, memory you will necessarily reclaim by closing an app, or an exact Activity Monitor total. `*` marks an app whose known total is partial because some process footprints are unreadable; `?` means none were readable. Growth stays unknown until that app has a complete sample, which establishes a zero baseline. A partial current sample shows unknown; when coverage recovers, growth compares with the retained complete baseline. Vanished or reopened apps start a new baseline. Bundles are grouped by their outermost `.app` path, and bundleless processes follow the nearest app ancestor or a separate session root; missing ancestry can leave grouping partial. Same-named copies at different paths remain separate.
 

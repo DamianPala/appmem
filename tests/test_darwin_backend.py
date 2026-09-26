@@ -22,7 +22,7 @@ from appmem.darwin_native import (
 )
 from appmem.ui.app import AppMemApp
 from appmem.ui.darwin_rows import build_rows, update_baseline
-from appmem.ui.screens.darwin import DarwinMainScreen, DarwinProcessesScreen
+from appmem.ui.screens.darwin import DarwinHelpScreen, DarwinMainScreen, DarwinProcessesScreen
 from appmem.ui.table import RowTable
 
 
@@ -498,14 +498,16 @@ async def test_darwin_process_view_preserves_selection_and_scroll_across_ticks()
         await pilot.pause()
         selected = table.cursor_key
         assert table.scroll_y > 0
+        scrolled_y = table.scroll_y
         reader.memories[35] = ProcessMemory(900, 900, 350)
         reader.add(55, 10, "worker", "/usr/bin/worker", 55)
         screen.refresh_now()
         await pilot.pause()
+        await pilot.pause()
         selected_after = table.cursor_key
         assert selected_after == selected
         assert table.row_count == 37
-        assert table.scroll_y > 0
+        assert table.scroll_y == scrolled_y
         await pilot.press("g")
         assert table.row_count == 2
         table.move_cursor(row=0)
@@ -542,12 +544,14 @@ async def test_darwin_process_view_narrow_columns_and_gone_command() -> None:
             "name",
             "footprint",
         ]
+        assert table.column_region("footprint").right <= table.scrollable_content_region.width
         await pilot.press("g")
         assert list(table.column_keys) == [
             "name",
             "footprint",
             "count",
         ]
+        assert table.column_region("count").right <= table.scrollable_content_region.width
         table.move_cursor(row=1)
         await pilot.press("enter")
         assert table.row_count == 1
@@ -596,7 +600,99 @@ async def test_darwin_rowtable_navigation_and_resize() -> None:
         await pilot.resize_terminal(55, 16)
         assert table.column_keys == ("app", "footprint", "procs")
         assert table.column_region("procs").right <= table.scrollable_content_region.width
-        assert table.scroll_y == 3
+        assert table.scroll_y == 0
         await pilot.resize_terminal(90, 16)
         assert "delta" in table.column_keys
-        assert table.scroll_y == 3
+        assert table.scroll_y == 0
+
+
+def _cursor_visible(table: RowTable) -> bool:
+    return (
+        table.scroll_y
+        <= table.cursor_row
+        < (table.scroll_y + table.scrollable_content_region.height)
+    )
+
+
+@pytest.mark.asyncio
+async def test_darwin_main_resize_and_drill_out_reveal_selection() -> None:
+    reader = Reader()
+    for pid in range(10, 50):
+        reader.add(pid, 1, f"App{pid}", f"/Applications/App{pid}.app/Contents/MacOS/App{pid}", pid)
+    backend = DarwinBackend(501, reader)
+    app = AppMemApp(interval=60, main_screen_factory=lambda: DarwinMainScreen(backend, 60))
+    async with app.run_test(size=(90, 24)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.screen
+        assert isinstance(screen, DarwinMainScreen)
+        table = screen.query_one("#table", RowTable)
+        table.focus()
+        table.move_cursor(row=15, scroll=True)
+        await pilot.resize_terminal(90, 10)
+        await pilot.pause()
+        await pilot.pause()
+        assert _cursor_visible(table)
+
+        selected = table.cursor_key
+        table.scroll_to(y=0, animate=False)
+        await pilot.pause()
+        screen.refresh_now()
+        await pilot.pause()
+        await pilot.pause()
+        assert table.scroll_y == 0
+        await pilot.press("?")
+        await pilot.press("escape")
+        await pilot.pause()
+        assert table.scroll_y == 0
+        await pilot.press("f")
+        assert _cursor_visible(table)
+        await pilot.press("enter")
+        assert isinstance(pilot.app.screen, DarwinProcessesScreen)
+        table.scroll_to(y=0, animate=False)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert pilot.app.screen is screen
+        assert table.cursor_key == selected
+        assert _cursor_visible(table)
+
+
+@pytest.mark.asyncio
+async def test_darwin_detail_group_back_and_overlay_scroll() -> None:
+    reader = Reader()
+    reader.add(10, 1, "App", "/Applications/App.app/Contents/MacOS/App", 100)
+    for pid in range(20, 55):
+        reader.add(pid, 10, f"worker{pid}", f"/usr/bin/worker{pid}", pid)
+    backend = DarwinBackend(501, reader)
+    app = AppMemApp(interval=60, main_screen_factory=lambda: DarwinMainScreen(backend, 60))
+    async with app.run_test(size=(90, 20)) as pilot:
+        await pilot.pause()
+        pilot.app.screen.query_one("#table", RowTable).focus()
+        await pilot.press("enter")
+        screen = pilot.app.screen
+        assert isinstance(screen, DarwinProcessesScreen)
+        table = screen.query_one("#table", RowTable)
+        table.move_cursor(row=20, scroll=True)
+        selected = table.cursor_key
+        await pilot.resize_terminal(90, 10)
+        assert table.cursor_key == selected
+        assert _cursor_visible(table)
+
+        table.scroll_to(y=2, animate=False)
+        await pilot.pause()
+        scrolled_y = table.scroll_y
+        await pilot.press("?")
+        assert isinstance(pilot.app.screen, DarwinHelpScreen)
+        await pilot.press("q")
+        await pilot.pause()
+        assert pilot.app.screen is screen
+        assert table.scroll_y == scrolled_y
+
+        await pilot.press("g")
+        table.move_cursor(row=20, scroll=True)
+        command = table.cursor_key
+        await pilot.press("enter")
+        assert table.row_count == 1
+        await pilot.press("escape")
+        assert table.row_count > 20
+        assert table.cursor_key == command
+        assert _cursor_visible(table)

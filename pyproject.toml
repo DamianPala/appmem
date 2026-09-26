@@ -1,6 +1,6 @@
 [project]
 name = "appmem"
-version = "0.1.0"
+version = "0.2.0"
 description = "Terminal view of application RAM and swap on Linux or footprints on Apple Silicon"
 readme = "README.md"
 license = "MIT"

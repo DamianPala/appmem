@@ -87,6 +87,7 @@ class DarwinMainScreen(LiveScreen):
         self._sort_key = "footprint"
         self._reverse = True
         self._column_widths: tuple[int | None, ...] = ()
+        self._resume_scrolls = False
 
     def compose(self) -> ComposeResult:
         yield Static(id="header1")
@@ -134,6 +135,11 @@ class DarwinMainScreen(LiveScreen):
             )
         except (DarwinUnavailableError, OSError):
             return
+
+    def on_screen_resume(self) -> None:
+        self._invalidate_tick()
+        scroll, self._resume_scrolls = self._resume_scrolls, False
+        self.refresh_now(scroll=scroll)
 
     def _apply_frame(
         self, host: HostMemory, apps: list[DarwinApp], *, scroll: bool = False
@@ -268,6 +274,8 @@ class DarwinMainScreen(LiveScreen):
             self._sort_key, self._reverse = "footprint", True
         self._render_header()
         self._sync_columns(force=True, preserve_scroll=False)
+        table = self._table()
+        table.move_cursor(table.cursor_row, scroll=True)
         self._render_footer()
 
     def action_sort(self, key: str) -> None:
@@ -296,6 +304,7 @@ class DarwinMainScreen(LiveScreen):
     def on_row_table_row_selected(self, event: RowTable.RowSelected) -> None:
         app_id = event.row_key
         if app_id in self._rows:
+            self._resume_scrolls = True
             self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
                 DarwinProcessesScreen(self._backend, app_id, self._interval)
             )
@@ -398,7 +407,7 @@ class DarwinProcessesScreen(LiveScreen):
             self._app = self._backend.find_app(self._app_id)
         except (DarwinUnavailableError, OSError):
             return
-        self._render_detail()
+        self._render_detail(scroll=scroll)
 
     def _visible_processes(self) -> tuple[DarwinProcess, ...]:
         if self._app is None:
@@ -471,12 +480,12 @@ class DarwinProcessesScreen(LiveScreen):
         if grouped:
             specs.append(("count", "PROCS", 7))
             if self.size.width >= 75:
-                specs.append(("unreadable", "UNREADABLE", 11))
+                specs.append(("unreadable", "UNREADABLE", 12))
         elif self.size.width >= 75:
             specs.append(("state", "STATE", 10))
         usable = table.scrollable_content_region.width or self.size.width
         fixed = sum(2 + (width or 0) for key, _, width in specs if key != "name")
-        name_width = max(8, min(32, usable - fixed - 2))
+        name_width = max(9, min(32, usable - fixed - 2))
         return [(key, label, name_width if key == "name" else width) for key, label, width in specs]
 
     def _rebuild_columns(self, table: RowTable) -> None:
@@ -509,12 +518,12 @@ class DarwinProcessesScreen(LiveScreen):
     def _selection(self, table: RowTable) -> tuple[str | None, int]:
         return table.cursor_key, table.cursor_row
 
-    def _restore(self, table: RowTable, key: str | None, index: int) -> None:
+    def _restore(self, table: RowTable, key: str | None, index: int, *, scroll: bool) -> None:
         if table.row_count:
             target = (
                 table.get_row_index(key) if key in self._rows else min(index, table.row_count - 1)
             )
-            table.move_cursor(row=target, scroll=False)
+            table.move_cursor(row=target, scroll=scroll)
 
     def _set_detail_row(self, table: RowTable, row: _DetailRow) -> None:
         old = self._rows.get(row.key)
@@ -527,7 +536,9 @@ class DarwinProcessesScreen(LiveScreen):
                 if before.plain != after.plain:
                     table.update_cell(row.key, column, after)
 
-    def _apply_rows(self, rows: list[_DetailRow], *, force_columns: bool = False) -> None:
+    def _apply_rows(
+        self, rows: list[_DetailRow], *, force_columns: bool = False, scroll: bool = False
+    ) -> None:
         table = self._table()
         selected, index = self._selection(table)
         scroll_y = table.scroll_y
@@ -546,9 +557,10 @@ class DarwinProcessesScreen(LiveScreen):
             self._set_detail_row(table, row)
         self._rows = new_rows
         table.reorder([row.key for row in self._sorted_rows(rows)])
-        self._restore(table, selected, index)
-        table.scroll_to(y=scroll_y, animate=False)
-        if scroll_y > 0:
+        self._restore(table, selected, index, scroll=scroll)
+        if not scroll:
+            table.scroll_to(y=scroll_y, animate=False)
+        if not scroll and scroll_y > 0:
             self.call_after_refresh(lambda: table.scroll_to(y=scroll_y, animate=False))
         if changed_count:
             self.call_after_refresh(self._sync_columns)
@@ -559,7 +571,7 @@ class DarwinProcessesScreen(LiveScreen):
         if tuple(width for _, _, width in specs) != self._column_widths:
             self._apply_rows(list(self._rows.values()), force_columns=True)
 
-    def _render_detail(self, *, force_columns: bool = False) -> None:
+    def _render_detail(self, *, force_columns: bool = False, scroll: bool = False) -> None:
         app = self._app
         if self._command is not None and not self._visible_processes():
             self._command = None
@@ -575,7 +587,7 @@ class DarwinProcessesScreen(LiveScreen):
             else f"{escape_control_chars(app.name)}  footprint {_amount(app.footprint_bytes)}"
         )
         self.query_one("#title", Static).update(truncate_name(title, self.size.width))
-        self._apply_rows(self._build_rows(), force_columns=force_columns)
+        self._apply_rows(self._build_rows(), force_columns=force_columns, scroll=scroll)
         self._render_status()
         sort_keys = ("f", "n", "p", "u") if "unreadable" in self._column_keys else ("f", "n", "p")
         footer: list[tuple[tuple[str, ...], str]] = [
@@ -607,7 +619,7 @@ class DarwinProcessesScreen(LiveScreen):
         if self._grouped and self._command is None and event.row_key in self._rows:
             self._command = event.row_key
             self._invalidate_tick()
-            self._render_detail(force_columns=True)
+            self._render_detail(force_columns=True, scroll=True)
 
     def action_sort(self, key: str) -> None:
         if key not in ("footprint", "name", "count", "unreadable"):
@@ -616,7 +628,7 @@ class DarwinProcessesScreen(LiveScreen):
             return
         self._reverse = not self._reverse if self._sort_key == key else key != "name"
         self._sort_key = key
-        self._apply_rows(list(self._rows.values()), force_columns=True)
+        self._apply_rows(list(self._rows.values()), force_columns=True, scroll=True)
 
     def on_row_table_header_selected(self, event: RowTable.HeaderSelected) -> None:
         key = event.column_key
@@ -626,13 +638,17 @@ class DarwinProcessesScreen(LiveScreen):
         self._grouped = not self._grouped
         self._command = None
         self._invalidate_tick()
-        self._render_detail(force_columns=True)
+        self._render_detail(force_columns=True, scroll=True)
 
     def action_back(self) -> None:
         if self._command is not None:
+            command = self._command
             self._command = None
             self._invalidate_tick()
-            self._render_detail(force_columns=True)
+            self._render_detail(force_columns=True, scroll=True)
+            table = self._table()
+            if command in self._rows:
+                table.move_cursor(row=table.get_row_index(command), scroll=True)
         else:
             self.app.pop_screen()  # pyright: ignore[reportUnknownMemberType]
 
@@ -641,10 +657,16 @@ class DarwinProcessesScreen(LiveScreen):
 
     def on_resize(self, event: events.Resize) -> None:
         self._render_detail(force_columns=True)
+        table = self._table()
+        table.move_cursor(table.cursor_row, scroll=True)
 
 
 class DarwinHelpScreen(Screen[None]):
-    BINDINGS: ClassVar[list[BindingType]] = [Binding("escape", "back", "back", show=False)]
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("escape", "back", "back", show=False),
+        Binding("?", "back", "back", show=False),
+        Binding("q", "back", "back", show=False),
+    ]
 
     def compose(self) -> ComposeResult:
         yield Static(
@@ -660,8 +682,11 @@ class DarwinHelpScreen(Screen[None]):
             "Host Free is free physical pages, not available memory. Compressor physical "
             "and logical sizes differ. Native pressure is a kernel state, not PSI. "
             "Zero global swap means none allocated. Per-app swap is unavailable.\n\n"
-            "f/d sort footprint/growth, b reset growth, Enter details, g group commands, "
-            "Esc back, T theme, q quit."
+            "Click a header to sort; click a row to select it, double click to open it. "
+            "Main: f/d sort footprint/growth, b reset growth, Enter details. "
+            "Details: f/n/p/u sort footprint/command/PID or count/unreadable, "
+            "g group commands, Enter group members. Esc goes back; T opens themes. "
+            "?/q close this help; q quits from a live view."
         )
 
     def action_back(self) -> None:

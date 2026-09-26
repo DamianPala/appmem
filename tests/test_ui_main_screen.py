@@ -40,6 +40,7 @@ from appmem.ui.screens import help as help_screen
 from appmem.ui.screens import main as main_screen
 from appmem.ui.screens.help import HelpScreen
 from appmem.ui.screens.main import MainScreen
+from appmem.ui.screens.processes import ProcessesScreen
 from appmem.ui.table import RowTable
 from appmem.ui.theme_picker import ThemePanel
 from helpers import (
@@ -129,6 +130,12 @@ def _row_names(table: RowTable) -> list[str]:
         _scope, _, name = key.partition("\0")
         names.append(name)
     return names
+
+
+def _cursor_visible(table: RowTable) -> bool:
+    top = table.scroll_offset.y
+    rows_on_screen = table.size.height - 1  # line 0 is the fixed header
+    return top <= table.cursor_row < top + rows_on_screen
 
 
 async def _click_header(pilot: Pilot[None], table: RowTable, column_key: str) -> None:
@@ -952,9 +959,132 @@ async def test_wheel_scroll_does_not_snap_back_on_refresh_ticks(tmp_path: Path) 
 
         assert table.scroll_y == scrolled_y  # no snap-back to the cursor's row
 
+        # A tick that adds a row re-runs the column sync after layout; that
+        # sync must not scroll either (only a resize may).
+        _app_unit(root, "app-newcomer.service", ram=1024**2, swap=0)
+        screen.refresh_now()
+        await pilot.pause()
+        await pilot.pause()
+        assert table.scroll_y == scrolled_y
+
+
+# --- a resize scrolls the selected row into view (run-2 fixes A2) --------------
+
 
 @pytest.mark.asyncio
-async def test_wheel_scroll_survives_column_resize(tmp_path: Path) -> None:
+async def test_height_only_resize_keeps_cursor_on_screen(tmp_path: Path) -> None:
+    # A2: `_sync_columns` only called `_rebuild_table(scroll=True)` when the
+    # computed column widths actually changed, so a resize that only shrank
+    # the height (leaving every width alone) never scrolled the cursor back
+    # into the now-shorter viewport (SPEC.md "Main view").
+    root = _base_tree(tmp_path)
+    for index in range(60):  # more rows than either terminal size can show
+        _app_unit(root, f"app-app{index:02d}.service", ram=(index + 2) * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        table = _table(pilot)
+        table.move_cursor(table.row_count - 1)
+        await pilot.pause()
+        assert _cursor_visible(table)
+
+        await pilot.resize_terminal(120, 20)  # width unchanged: no column rebuild
+        await pilot.pause()
+        await pilot.pause()
+
+        table = _table(pilot)
+        assert _cursor_visible(table), (table.scroll_offset.y, table.cursor_row, table.size)
+
+
+@pytest.mark.asyncio
+async def test_width_and_height_shrink_still_keeps_cursor_on_screen(tmp_path: Path) -> None:
+    # Unchanged existing behaviour: a resize that also crosses a column
+    # threshold already rebuilt the table with `scroll=True`.
+    root = _base_tree(tmp_path)
+    for index in range(60):
+        _app_unit(root, f"app-app{index:02d}.service", ram=(index + 2) * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        table = _table(pilot)
+        table.move_cursor(table.row_count - 1)
+        await pilot.pause()
+
+        await pilot.resize_terminal(90, 20)  # crosses 95: ΔSWAP/ΔRAM hidden, columns rebuilt
+        await pilot.pause()
+        await pilot.pause()
+
+        table = _table(pilot)
+        assert _cursor_visible(table), (table.scroll_offset.y, table.cursor_row, table.size)
+
+
+# --- resuming from the process view scrolls the selection into view (A3) -------
+
+
+@pytest.mark.asyncio
+async def test_back_from_process_view_keeps_selected_app_on_screen(tmp_path: Path) -> None:
+    # A3: `on_screen_resume` called `refresh_now()` with the default
+    # `scroll=False`, so a resort while the process view was open (the
+    # selected app's rank dropping) could leave the selection off-screen
+    # after Esc (SPEC.md "Main view": drilling out scrolls the selection
+    # into view; returning from the process view is a drill-out).
+    root = _base_tree(tmp_path)
+    for index in range(40):
+        _app_unit(root, f"app-app{index:02d}.service", ram=(40 - index) * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(120, 24)) as pilot:
+        await pilot.pause()
+        table = _table(pilot)
+        table.move_cursor(10)
+        await pilot.pause()
+        selected = table.cursor_key
+        assert _cursor_visible(table)
+
+        await pilot.press("enter")
+        await pilot.pause()
+        screen = pilot.app.screen
+        assert isinstance(screen, ProcessesScreen)
+
+        # While the process view is open, the selected app's rank collapses to
+        # last (1 MiB TOTAL, not less: a lower value would hide the row
+        # instead of demoting it, per SPEC.md "Behaviour details").
+        _app_unit(root, "app-app10.service", ram=1 * 1024**2, swap=0)
+
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.pause()
+
+        screen = pilot.app.screen
+        assert isinstance(screen, MainScreen)
+        table = _table(pilot)
+        assert table.cursor_key == selected
+        assert _cursor_visible(table), (table.scroll_offset.y, table.cursor_row, table.size)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", ["question_mark", "T"])
+async def test_closing_help_or_theme_panel_keeps_wheel_scroll(tmp_path: Path, key: str) -> None:
+    # Only a return from the process view is a drill-out; closing help or the
+    # theme panel resumes this screen too but must not scroll (SPEC.md "Main view").
+    root = _base_tree(tmp_path)
+    for index in range(60):
+        _app_unit(root, f"app-app{index:02d}.service", ram=(index + 2) * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(120, 20)) as pilot:
+        await pilot.pause()
+        table = _table(pilot)
+        table.post_message(events.MouseScrollDown(table, 10, 10, 0, 0, 0, False, False, False))
+        await pilot.pause()
+        scrolled_y = table.scroll_y
+        assert scrolled_y > 0
+        await pilot.press(key, "escape")
+        await pilot.pause()
+        await pilot.pause()
+        assert table.scroll_y == scrolled_y
+
+
+@pytest.mark.asyncio
+async def test_column_resize_scrolls_selected_app_into_view(tmp_path: Path) -> None:
     root = _base_tree(tmp_path)
     for index in range(60):
         _app_unit(root, f"app-app{index:02d}.service", ram=(index + 2) * 1024**2, swap=0)
@@ -965,11 +1095,10 @@ async def test_wheel_scroll_survives_column_resize(tmp_path: Path) -> None:
         table.post_message(events.MouseScrollDown(table, 10, 10, 0, 0, 0, False, False, False))
         await pilot.pause()
         assert table.scroll_y > 0
-        scrolled_y = table.scroll_y
-
         await pilot.resize_terminal(95, 20)
         await pilot.pause()
-        assert table.scroll_y == scrolled_y
+        assert table.scroll_y == 0
+        assert _cursor_visible(table)
 
 
 # --- cursor follows the selected app across an explicit sort -------------------
@@ -1012,6 +1141,32 @@ async def test_cursor_follows_selected_app_across_a_real_pilot_header_click(
 
         assert _row_names(table) == ["bravo", "charlie", "alpha"]  # the click moved alpha
         assert table.cursor_key == row_key("alpha", "user")
+
+
+# --- PROCS shows its own sort marker (run-2 fixes A4) ---------------------------
+
+
+@pytest.mark.asyncio
+async def test_procs_sort_shows_marker(tmp_path: Path) -> None:
+    # A4: PROCS was 6 cells wide, but "PROCS ▾"/"PROCS ▴" is 7, so `RowTable.
+    # _fit` cut the marker off -- the only column where this happened
+    # (SPEC.md "Main view": "the sort marker sits on the sorted column").
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+    _app_unit(root, "app-bravo.service", ram=2 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        table = _table(pilot)
+
+        await _click_header(pilot, table, "procs")
+        header = table.render_line(0).text
+        region = table.column_region("procs")
+        assert header[region.x : region.x + region.width].strip() in ("PROCS ▾", "PROCS ▴")
+
+        await _click_header(pilot, table, "procs")
+        header = table.render_line(0).text
+        assert header[region.x : region.x + region.width].strip() in ("PROCS ▾", "PROCS ▴")
 
 
 # --- sorting compares full raw values, never truncated rendered text -----------
@@ -1571,28 +1726,46 @@ async def test_theme_footer_item_shows_wide_and_drops_before_reset_delta(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_zswap_footer_item_drops_right_after_cache(tmp_path: Path) -> None:
-    # "zswap" sits in `_FOOTER_DROP_ORDER` right after "cache" (SPEC.md "Main
-    # view"): it survives "cache" dropping, then drops itself before "system".
+async def test_zswap_footer_item_hidden_below_85_columns(tmp_path: Path) -> None:
+    # Run-2 fix A7: below `_ZSWAP_MIN_WIDTH` the ZSWAP column is already
+    # hidden by width, so pressing `w` there has no visible effect until the
+    # terminal widens back past 85 (SPEC.md "Main view"). Before the fix, the
+    # footer item stayed until the *line's own* width forced a drop (well
+    # below 85, alongside "cache"), long after the column itself was gone.
     root = _zswap_base_tree(tmp_path)
     _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
 
-    async with _app(root).run_test(size=(60, 24)) as pilot:
-        await pilot.pause()
-        footer = pilot.app.screen.query_one("#footer", Static)
-        content = footer.content
-        assert isinstance(content, Text)
-        assert "cache" not in content.plain
-        assert "w zswap" in content.plain
-        assert "x system" in content.plain
-
-    async with _app(root).run_test(size=(55, 24)) as pilot:
+    async with _app(root).run_test(size=(84, 24)) as pilot:
         await pilot.pause()
         footer = pilot.app.screen.query_one("#footer", Static)
         content = footer.content
         assert isinstance(content, Text)
         assert "w zswap" not in content.plain
+        assert "c cache" in content.plain  # the item right after it stays
         assert "x system" in content.plain
+
+        await pilot.press("w")  # still toggles the remembered choice
+        screen = pilot.app.screen
+        assert isinstance(screen, MainScreen)
+        assert screen._show_zswap is False  # pyright: ignore[reportPrivateUsage]
+
+        await pilot.resize_terminal(90, 24)  # back above the width threshold
+        await pilot.pause()
+        table = _table(pilot)
+        assert "zswap" not in table.column_keys  # the remembered `w` choice held
+
+
+@pytest.mark.asyncio
+async def test_zswap_footer_item_shown_at_85_columns(tmp_path: Path) -> None:
+    root = _zswap_base_tree(tmp_path)
+    _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(85, 24)) as pilot:
+        await pilot.pause()
+        footer = pilot.app.screen.query_one("#footer", Static)
+        content = footer.content
+        assert isinstance(content, Text)
+        assert "w zswap" in content.plain
 
 
 @pytest.mark.asyncio
@@ -2603,20 +2776,28 @@ async def test_write_failure_notifies_and_the_app_keeps_running(tmp_path: Path) 
 
 @pytest.mark.asyncio
 async def test_quit_while_previewing_writes_nothing(tmp_path: Path) -> None:
+    # A5 (run-2 fixes): `q` used to do nothing while the panel was open --
+    # `ThemePanel` is a `ModalScreen`, which blocks `AppMemApp`'s own `q`
+    # binding unless it's `priority=True` (only `ctrl+c` was) -- right next
+    # to the main footer's own visible `q quit` (SPEC.md "Theme panel":
+    # quitting while the panel is open saves nothing, same as Esc).
     root = _base_tree(tmp_path)
     _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
 
-    async with _app(root).run_test(size=(100, 30)) as pilot:
+    app = _app(root)
+    async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause()
 
         await pilot.press("T")
         await pilot.pause()
+        assert isinstance(pilot.app.screen, ThemePanel)
         await pilot.press("down")
         await pilot.pause()
 
         await pilot.press("q")
         await pilot.pause()
 
+        assert app.return_code == 0
         assert not config_path().exists()
 
 

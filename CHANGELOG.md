@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.2.0] - 2026-09-26
+
+### Added
+
+- `Home` and `End` move the selection to the first and last row
+
+### Changed
+
+- A click on a row selects it and a double click opens it, as `?` and `--help` now list. Before, a single click on the already selected row opened it
+- The live view uses about a third less CPU. At 200x50 the main view went from about 4.5 % to about 3 % of one core, and the process view from about 7.5 % to about 5 %. The table now repaints only the rows that changed, and each refresh reads less from the kernel
+- The PROCS column refreshes every five seconds at the default interval instead of every second. The memory columns still refresh every second, and a newly started app gets its count right away
+
+### Fixed
+
+- The selected row stays on screen after `Esc` from one command's processes back to the grouped list, after a resize that changes only the terminal's height, and when you come back from the process view to a re-sorted list. A scroll made with the mouse wheel still stays where you left it
+- `q` quits while the theme panel is open, without saving the previewed theme
+- Sorting by PROCS shows its sort marker, which the column was one cell too narrow to fit
+- The footer no longer offers `w zswap` when the terminal is too narrow to show the ZSWAP column
+
 ## [0.1.0] - 2026-09-25
 
 First release. appmem shows which apps are using your RAM and swap, live in the terminal, with one row per app instead of one per process. It reads the memory counters the kernel keeps for every app systemd starts, so it needs Linux with systemd, cgroup v2 and Python 3.12 or newer, and no root.
@@ -19,4 +38,5 @@ First release. appmem shows which apps are using your RAM and swap, live in the 
 - Commands for scripts and AI agents: `appmem snapshot` for the machine and every app, `appmem app NAME` for one app's units, processes and commands, and `appmem schema` describing every command, flag, output field and exit code. They print text on a terminal and JSON when piped or with `--json`, and every error is one JSON line on stderr with a stable `kind`
 - Agent skill in `skills/appmem/SKILL.md` that tells an AI agent how to read the numbers, when memory is really the problem and what to recommend closing
 
+[0.2.0]: https://github.com/DamianPala/appmem/compare/0.1.0...0.2.0
 [0.1.0]: https://github.com/DamianPala/appmem/releases/tag/0.1.0

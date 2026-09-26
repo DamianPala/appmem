@@ -79,7 +79,7 @@ _GROUP_COLUMNS: tuple[tuple[str, str, int | None], ...] = (
     ("ram", "RAM", 10),
     ("swap", "SWAP", 10),
     ("total", "TOTAL", 10),
-    ("procs", "PROCS", 6),
+    ("procs", "PROCS", 7),  # 7, not 6: "PROCS ▾"/"PROCS ▴" is 7 cells (SPEC.md "Process view")
 )
 _LEFT_ALIGNED = {"name", "unit"}
 
@@ -336,6 +336,10 @@ class ProcessesScreen(LiveScreen):
         self._render_title()
         self._update_status_line()
         self._sync_columns()
+        # Same as the main view: a height-only resize can hide the cursor,
+        # and only a resize (never a tick's `_sync_columns`) may scroll here.
+        table = self._table()
+        table.move_cursor(table.cursor_row, scroll=True)
         self._update_footer()
 
     def _table(self) -> RowTable:
@@ -873,9 +877,13 @@ class ProcessesScreen(LiveScreen):
         self.app.pop_screen()  # pyright: ignore[reportUnknownMemberType]
 
     def _exit_drill(self) -> None:
+        # Explicit action (Esc out of a drill-down): `scroll=True` so the
+        # command's row, restored by `cursor_key` below, is also scrolled
+        # into view -- `_switch_mode` rebuilds the table before this runs,
+        # which otherwise left the viewport at the top (SPEC.md "Main view").
         command = self._drill_command
         self._switch_mode(
-            grouped=self._grouped, drill_command=None, scroll=False, cursor_key=command
+            grouped=self._grouped, drill_command=None, scroll=True, cursor_key=command
         )
 
     def action_help(self) -> None:

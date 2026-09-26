@@ -161,6 +161,10 @@ _KEYS_INTRO = "Keys:"
 # One line per key, same order as SPEC.md "Keys" and `appmem --help`.
 _KEYS: tuple[tuple[str, str], ...] = (
     ("click header", "sort by that column, click again to reverse"),
+    (
+        "click a row",
+        "select it, double click opens it (process view, or a command's processes when grouped)",
+    ),
     ("r / s / t / d", "sort by RAM / SWAP / TOTAL / ΔSWAP (repeat to reverse)"),
     ("up/down PgUp PgDn", "move"),
     ("Home End", "jump to the first/last row"),
@@ -243,8 +247,11 @@ def _keys(zswap_enabled: bool) -> tuple[tuple[str, str], ...]:
     if not zswap_enabled:
         return _KEYS
     # `z` next to the other sort keys, `w` next to the other column toggles.
+    # Both insertion points are found by key, not a fixed index, so a row
+    # added earlier in `_KEYS` (like "click a row") never shifts them.
     keys = list(_KEYS)
-    keys.insert(2, _ZSWAP_KEYS[0])
+    after_sort = next(i for i, (key, _desc) in enumerate(keys) if key == "r / s / t / d") + 1
+    keys.insert(after_sort, _ZSWAP_KEYS[0])
     after_c = next(i for i, (key, _desc) in enumerate(keys) if key == "c") + 1
     keys.insert(after_c, _ZSWAP_KEYS[1])
     return tuple(keys)

@@ -8,7 +8,7 @@ description: Diagnose per-application memory on Linux or experimental Apple Sili
 appmem sums the memory and swap counters the kernel keeps for every systemd app cgroup and reports them per application, with a drill-down to processes and commands.
 Use its non-interactive commands; the live TUI (bare `appmem`) is for the human.
 
-- Linux published package: `uv tool install appmem`. Experimental Mac support is only in the `feat/platform-backends` development branch; from that branch's checkout use `uv tool install .`.
+- Linux published 0.2.0 package: `uv tool install appmem`. Experimental Mac support is only in the `feat/platform-backends` development branch; from that branch's checkout use `uv tool install .`.
 - Always pass `--json`; some agent shells look like a terminal and would get text.
 - `appmem schema` and `appmem schema COMMAND` are the catalog: every command, flag, output field with its meaning, and exit code. Read a field's `description` there before interpreting it.
 - No root needed.
