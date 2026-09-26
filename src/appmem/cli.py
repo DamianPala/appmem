@@ -22,7 +22,7 @@ import sys
 from collections.abc import Callable, Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import Any, NoReturn, Protocol
+from typing import Any, NoReturn, Protocol, cast
 
 from appmem import __version__, darwin_report, darwin_schema, report, schema
 from appmem.backend import Backend, select_backend
@@ -674,6 +674,12 @@ def _reject_live_view_flags(args: argparse.Namespace) -> None:
         )
 
 
+def _preserve_darwin_json_next(document: dict[str, object], json_flag: bool) -> None:
+    next_argv = document.get("next")
+    if json_flag and isinstance(next_argv, list):
+        cast("list[str]", next_argv).append("--json")
+
+
 def _run_darwin(
     args: argparse.Namespace,
     uid: int,
@@ -694,6 +700,7 @@ def _run_darwin(
             document, _ = darwin_report.snapshot_document(
                 backend, limit=args.limit, now=datetime.now().astimezone()
             )
+            _preserve_darwin_json_next(document, args.json)
             output = (
                 json.dumps(document)
                 if args.json or not stdout_isatty()
@@ -714,6 +721,7 @@ def _run_darwin(
                     hint="Use an id or name from appmem snapshot",
                 )
             document, _, _ = found
+            _preserve_darwin_json_next(document, args.json)
             output = (
                 json.dumps(document)
                 if args.json or not stdout_isatty()
@@ -739,6 +747,15 @@ def _run_darwin(
             theme_warnings=theme.warnings,
         )
         return _run_app(app)
+    except KeyboardInterrupt:
+        if args.command not in ("snapshot", "app"):
+            raise
+        _fail(
+            "interrupted",
+            f"interrupted while reading the {args.command}",
+            130,
+            action="user",
+        )
     except DarwinUnavailableError as exc:
         _fail(
             "platform_unavailable",

@@ -373,7 +373,8 @@ def follow_next(
         and all(isinstance(item, str) for item in next_argv),
         "published next command is invalid",
     )
-    continued = cli_json(cli, root, [*cast("list[str]", next_argv[1:]), "--json"], deadline)
+    require("--json" in next_argv, "published next command lost JSON mode")
+    continued = cli_json(cli, root, cast("list[str]", next_argv[1:]), deadline)
     validate(continued, schema)
     return continued
 

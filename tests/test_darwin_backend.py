@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -22,7 +23,13 @@ from appmem.darwin_native import (
 )
 from appmem.ui.app import AppMemApp
 from appmem.ui.darwin_rows import build_rows, update_baseline
-from appmem.ui.screens.darwin import DarwinHelpScreen, DarwinMainScreen, DarwinProcessesScreen
+from appmem.ui.screens.darwin import (
+    DarwinDetailTick,
+    DarwinHelpScreen,
+    DarwinMainScreen,
+    DarwinMainTick,
+    DarwinProcessesScreen,
+)
 from appmem.ui.table import RowTable
 
 
@@ -193,6 +200,25 @@ def test_independent_bundleless_roots_and_partial_coverage() -> None:
     assert denied.unreadable_processes == 1
 
 
+def test_launchd_webkit_service_stays_separate_from_safari() -> None:
+    reader = Reader()
+    reader.add(10, 1, "Safari", "/Applications/Safari.app/Contents/MacOS/Safari", 100)
+    reader.add(
+        20,
+        1,
+        "WebContent",
+        "/System/Library/Frameworks/WebKit.framework/XPCServices/WebContent.xpc/Contents/MacOS/WebContent",
+        200,
+    )
+    apps = DarwinBackend(501, reader).collect_apps()
+    assert len(apps) == 2
+    assert {app.name: tuple(member.pid for member in app.members) for app in apps} == {
+        "Safari": (10,),
+        "WebContent": (20,),
+    }
+    assert all(not app.grouping_partial for app in apps)
+
+
 def test_missing_cycle_and_pid_reuse_are_bounded() -> None:
     reader = Reader()
     reader.add(10, 11, "a", None, 100)
@@ -300,14 +326,75 @@ def test_darwin_cli_snapshot_and_app_by_id(
     monkeypatch.setattr(cli_module, "DarwinBackend", backend_for_uid)
     monkeypatch.setattr(cli_module.sys, "platform", "darwin")
     assert cli_module.main(["snapshot", "--json"], uid=501) == 0
-    import json
-
     snapshot = json.loads(capsys.readouterr().out)
     app_id = snapshot["apps"][0]["id"]
     assert cli_module.main(["app", app_id, "--json"], uid=501) == 0
     detail = json.loads(capsys.readouterr().out)
     assert detail["app"]["id"] == app_id
     assert detail["commands"][0]["footprint_bytes"] == 100
+
+
+@pytest.mark.parametrize("command", ["snapshot", "app"])
+@pytest.mark.parametrize("stage", ["backend", "document"])
+def test_darwin_named_command_interrupt_is_structured(
+    command: str,
+    stage: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    reader = Reader()
+    reader.add(10, 1, "App", "/Applications/App.app/Contents/MacOS/App", 100)
+    backend = DarwinBackend(501, reader)
+
+    def interrupt() -> None:
+        raise KeyboardInterrupt
+
+    def interrupt_backend(uid: int) -> DarwinBackend:
+        assert uid == 501
+        raise KeyboardInterrupt
+
+    def backend_for_uid(uid: int) -> DarwinBackend:
+        assert uid == 501
+        return backend
+
+    if stage == "backend":
+        monkeypatch.setattr(cli_module, "DarwinBackend", interrupt_backend)
+    else:
+        monkeypatch.setattr(cli_module, "DarwinBackend", backend_for_uid)
+        monkeypatch.setattr(reader, "pids", interrupt)
+    monkeypatch.setattr(cli_module.sys, "platform", "darwin")
+    args = ["snapshot", "--json"] if command == "snapshot" else ["app", "App", "--json"]
+    with pytest.raises(SystemExit) as error:
+        cli_module.main(args, uid=501, stdout_isatty=lambda: True)
+    assert error.value.code == 130
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "Traceback" not in output.err
+    assert json.loads(output.err.splitlines()[-1])["error"]["kind"] == "interrupted"
+
+
+def test_darwin_json_next_keeps_json_on_tty(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    reader = Reader()
+    reader.add(10, 1, "App", "/Applications/App.app/Contents/MacOS/App", 100)
+    reader.add(11, 10, "worker", "/usr/bin/worker", 20)
+    reader.add(20, 1, "Other", "/Applications/Other.app/Contents/MacOS/Other", 200)
+    backend = DarwinBackend(501, reader)
+
+    def backend_for_uid(uid: int) -> DarwinBackend:
+        assert uid == 501
+        return backend
+
+    monkeypatch.setattr(cli_module, "DarwinBackend", backend_for_uid)
+    monkeypatch.setattr(cli_module.sys, "platform", "darwin")
+    for args in (["snapshot", "--limit", "1", "--json"], ["app", "App", "--limit", "1", "--json"]):
+        assert cli_module.main(args, uid=501, stdout_isatty=lambda: True) == 0
+        first = json.loads(capsys.readouterr().out)
+        assert first["next"][-1] == "--json"
+        assert cli_module.main(first["next"][1:], uid=501, stdout_isatty=lambda: True) == 0
+        continued = json.loads(capsys.readouterr().out)
+        assert continued["platform"] == "darwin"
 
 
 def test_darwin_system_scope_is_structured_invalid_input(
@@ -696,3 +783,129 @@ async def test_darwin_detail_group_back_and_overlay_scroll() -> None:
         assert table.row_count > 20
         assert table.cursor_key == command
         assert _cursor_visible(table)
+
+
+@pytest.mark.asyncio
+async def test_darwin_main_read_failure_is_visible_and_recovers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reader = Reader()
+    reader.add(10, 1, "App", "/Applications/App.app/Contents/MacOS/App", 100)
+    backend = DarwinBackend(501, reader)
+    failed = True
+    original_host = reader.host
+
+    def host() -> ReadResult[HostMemory]:
+        return ReadResult(None, Unavailable.ERROR) if failed else original_host()
+
+    monkeypatch.setattr(reader, "host", host)
+    app = AppMemApp(interval=60, main_screen_factory=lambda: DarwinMainScreen(backend, 60))
+    async with app.run_test(size=(90, 20)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.screen
+        assert isinstance(screen, DarwinMainScreen)
+        table = screen.query_one("#table", RowTable)
+        header = screen.query_one("#header1", Static)
+        assert table.row_count == 0
+        assert "Read unavailable; retrying" in str(header.content)
+
+        failed = False
+        screen.refresh_now()
+        assert table.row_count == 1
+        selected = table.cursor_key
+        assert "Physical" in str(header.content)
+
+        failed = True
+        screen._read_tick(screen._generation)  # pyright: ignore[reportPrivateUsage]
+        await pilot.pause()
+        assert table.cursor_key == selected
+        assert "stale values" in str(header.content)
+        failed = False
+        screen._read_tick(screen._generation)  # pyright: ignore[reportPrivateUsage]
+        await pilot.pause()
+        assert "Physical" in str(header.content)
+
+
+@pytest.mark.asyncio
+async def test_darwin_detail_read_failure_is_visible_and_recovers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reader = Reader()
+    reader.add(10, 1, "App", "/Applications/App.app/Contents/MacOS/App", 100)
+    reader.add(11, 10, "worker", "/usr/bin/worker", 20)
+    backend = DarwinBackend(501, reader)
+    failed = False
+    original_pids = reader.pids
+
+    def pids() -> ReadResult[list[int]]:
+        return ReadResult(None, Unavailable.ERROR) if failed else original_pids()
+
+    monkeypatch.setattr(reader, "pids", pids)
+    app = AppMemApp(interval=60, main_screen_factory=lambda: DarwinMainScreen(backend, 60))
+    async with app.run_test(size=(90, 20)) as pilot:
+        await pilot.pause()
+        pilot.app.screen.query_one("#table", RowTable).focus()
+        failed = True
+        await pilot.press("enter")
+        screen = pilot.app.screen
+        assert isinstance(screen, DarwinProcessesScreen)
+        table = screen.query_one("#table", RowTable)
+        status = screen.query_one("#status", Static)
+        assert table.row_count == 0
+        assert "Read unavailable; retrying" in str(status.content)
+
+        failed = False
+        screen.refresh_now()
+        assert table.row_count == 2
+        selected = table.cursor_key
+        assert "Read unavailable" not in str(status.content)
+
+        failed = True
+        screen._read_tick(screen._generation)  # pyright: ignore[reportPrivateUsage]
+        await pilot.pause()
+        assert table.cursor_key == selected
+        assert "stale values" in str(status.content)
+        failed = False
+        screen._read_tick(screen._generation)  # pyright: ignore[reportPrivateUsage]
+        await pilot.pause()
+        assert "Read unavailable" not in str(status.content)
+
+
+@pytest.mark.parametrize(
+    ("screen_type", "tick_type"),
+    [(DarwinMainScreen, DarwinMainTick), (DarwinProcessesScreen, DarwinDetailTick)],
+)
+@pytest.mark.parametrize("error_type", [ValueError, SystemExit])
+def test_darwin_worker_posts_unexpected_error_and_clears_inflight(
+    screen_type: type[DarwinMainScreen] | type[DarwinProcessesScreen],
+    tick_type: type[DarwinMainTick] | type[DarwinDetailTick],
+    error_type: type[ValueError] | type[SystemExit],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = DarwinBackend(501, Reader())
+    screen = (
+        DarwinMainScreen(backend, 60)
+        if screen_type is DarwinMainScreen
+        else DarwinProcessesScreen(backend, "App", 60)
+    )
+    events: list[DarwinMainTick | DarwinDetailTick] = []
+    monkeypatch.setattr(screen, "post_message", events.append)
+
+    def programming_error(*_args: object) -> None:
+        raise error_type("programming error")
+
+    monkeypatch.setattr(
+        backend,
+        "read_system" if screen_type is DarwinMainScreen else "find_app",
+        programming_error,
+    )
+    screen._tick_in_flight = True  # pyright: ignore[reportPrivateUsage]
+    screen._read_tick(0)  # pyright: ignore[reportPrivateUsage]
+    assert len(events) == 1
+    assert isinstance(events[0], tick_type)
+    with pytest.raises(error_type, match="programming error"):
+        if isinstance(screen, DarwinMainScreen):
+            screen.on_darwin_main_tick(cast("DarwinMainTick", events[0]))
+        else:
+            screen.on_darwin_detail_tick(cast("DarwinDetailTick", events[0]))
+    assert not screen._tick_in_flight  # pyright: ignore[reportPrivateUsage]

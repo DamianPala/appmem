@@ -72,7 +72,7 @@ def test_pagination_follows_new_inventory_until_both_ids_are_visible(
                 "has_more": len(inventory) > limit,
             }
             if page["has_more"]:
-                page["next"] = ["appmem", "snapshot", "--limit", str(len(inventory))]
+                page["next"] = ["appmem", "snapshot", "--limit", str(len(inventory)), "--json"]
         else:
             app_id = args[1]
             limit = int(args[args.index("--limit") + 1])
@@ -82,7 +82,7 @@ def test_pagination_follows_new_inventory_until_both_ids_are_visible(
                 "has_more_commands": False,
             }
             if limit == 1:
-                page["next"] = ["appmem", "app", app_id, "--limit", "2"]
+                page["next"] = ["appmem", "app", app_id, "--limit", "2", "--json"]
         return subprocess.CompletedProcess(command, 0, json.dumps(page), "")
 
     monkeypatch.setattr(harness, "run_command", run_command)
@@ -118,7 +118,7 @@ def test_pagination_stops_when_controlled_identity_never_appears(
         page = {
             "apps": [{"id": "other"}],
             "has_more": True,
-            "next": ["appmem", "snapshot", "--limit", str(calls + 1)],
+            "next": ["appmem", "snapshot", "--limit", str(calls + 1), "--json"],
         }
         return subprocess.CompletedProcess(command, 0, json.dumps(page), "")
 

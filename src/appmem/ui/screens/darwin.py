@@ -27,6 +27,14 @@ def _amount(value: int | None) -> str:
     return "?" if value is None else size(value)
 
 
+def _read_error(had_data: bool) -> str:
+    return (
+        "Read unavailable; showing stale values; retrying"
+        if had_data
+        else "Read unavailable; retrying"
+    )
+
+
 def _host_lines(host: HostMemory, width: int) -> tuple[str, str, str]:
     pressure = {1: "normal", 2: "warning", 4: "critical"}.get(host.pressure_level or 0)
     return (
@@ -59,8 +67,9 @@ class _MainFrame:
 class DarwinMainTick(Message):
     bubble: ClassVar[bool] = False
 
-    def __init__(self, frame: _MainFrame | Exception) -> None:
+    def __init__(self, generation: int, frame: _MainFrame | BaseException) -> None:
         super().__init__()
+        self.generation = generation
         self.frame = frame
 
 
@@ -88,6 +97,7 @@ class DarwinMainScreen(LiveScreen):
         self._reverse = True
         self._column_widths: tuple[int | None, ...] = ()
         self._resume_scrolls = False
+        self._read_failed = False
 
     def compose(self) -> ComposeResult:
         yield Static(id="header1")
@@ -115,16 +125,24 @@ class DarwinMainScreen(LiveScreen):
 
     def _read_tick(self, generation: int) -> None:
         try:
-            frame: _MainFrame | Exception = _MainFrame(
+            frame: _MainFrame | BaseException = _MainFrame(
                 generation, self._backend.read_system(), self._backend.collect_apps()
             )
-        except (DarwinUnavailableError, OSError) as exc:
+        except BaseException as exc:
             frame = exc
-        self.post_message(DarwinMainTick(frame))
+        self.post_message(DarwinMainTick(generation, frame))
 
     def on_darwin_main_tick(self, event: DarwinMainTick) -> None:
         self._finish_tick()
-        if isinstance(event.frame, Exception) or not self._accept_tick(event.frame.generation):
+        if isinstance(event.frame, BaseException) and not isinstance(
+            event.frame, (DarwinUnavailableError, OSError)
+        ):
+            raise event.frame
+        if not self._accept_tick(event.generation):
+            return
+        if isinstance(event.frame, BaseException):
+            self._read_failed = True
+            self._render_header()
             return
         self._apply_frame(event.frame.host, event.frame.apps)
 
@@ -134,7 +152,8 @@ class DarwinMainScreen(LiveScreen):
                 self._backend.read_system(), self._backend.collect_apps(), scroll=scroll
             )
         except (DarwinUnavailableError, OSError):
-            return
+            self._read_failed = True
+            self._render_header()
 
     def on_screen_resume(self) -> None:
         self._invalidate_tick()
@@ -145,6 +164,7 @@ class DarwinMainScreen(LiveScreen):
         self, host: HostMemory, apps: list[DarwinApp], *, scroll: bool = False
     ) -> None:
         self._host = host
+        self._read_failed = False
         self._apps = apps
         self._baseline = update_baseline(apps, self._baseline)
         self._apply_rows(build_rows(apps, self._baseline), scroll=scroll)
@@ -152,6 +172,11 @@ class DarwinMainScreen(LiveScreen):
         self._render_footer()
 
     def _render_header(self) -> None:
+        if self._read_failed:
+            self.query_one("#header1", Static).update(
+                truncate_name(_read_error(self._host is not None), self.size.width)
+            )
+            return
         if self._host is None:
             return
         for index, line in enumerate(_host_lines(self._host, self.size.width), 1):
@@ -319,8 +344,9 @@ class _DetailFrame:
 class DarwinDetailTick(Message):
     bubble: ClassVar[bool] = False
 
-    def __init__(self, frame: _DetailFrame | Exception) -> None:
+    def __init__(self, generation: int, frame: _DetailFrame | BaseException) -> None:
         super().__init__()
+        self.generation = generation
         self.frame = frame
 
 
@@ -363,6 +389,7 @@ class DarwinProcessesScreen(LiveScreen):
         self._reverse = True
         self._column_widths: tuple[int | None, ...] = ()
         self._column_keys: tuple[str, ...] = ()
+        self._read_failed = False
 
     def compose(self) -> ComposeResult:
         yield Static(id="title", markup=False)
@@ -388,25 +415,37 @@ class DarwinProcessesScreen(LiveScreen):
 
     def _read_tick(self, generation: int) -> None:
         try:
-            frame: _DetailFrame | Exception = _DetailFrame(
+            frame: _DetailFrame | BaseException = _DetailFrame(
                 generation, self._backend.find_app(self._app_id)
             )
-        except (DarwinUnavailableError, OSError) as exc:
+        except BaseException as exc:
             frame = exc
-        self.post_message(DarwinDetailTick(frame))
+        self.post_message(DarwinDetailTick(generation, frame))
 
     def on_darwin_detail_tick(self, event: DarwinDetailTick) -> None:
         self._finish_tick()
-        if isinstance(event.frame, Exception) or not self._accept_tick(event.frame.generation):
+        if isinstance(event.frame, BaseException) and not isinstance(
+            event.frame, (DarwinUnavailableError, OSError)
+        ):
+            raise event.frame
+        if not self._accept_tick(event.generation):
+            return
+        if isinstance(event.frame, BaseException):
+            self._read_failed = True
+            self._render_status()
             return
         self._app = event.frame.app
+        self._read_failed = False
         self._render_detail()
 
     def refresh_now(self, *, scroll: bool = False) -> None:
         try:
             self._app = self._backend.find_app(self._app_id)
         except (DarwinUnavailableError, OSError):
+            self._read_failed = True
+            self._render_status()
             return
+        self._read_failed = False
         self._render_detail(scroll=scroll)
 
     def _visible_processes(self) -> tuple[DarwinProcess, ...]:
@@ -603,6 +642,11 @@ class DarwinProcessesScreen(LiveScreen):
 
     def _render_status(self) -> None:
         table = self._table()
+        if self._read_failed:
+            self.query_one("#status", Static).update(
+                truncate_name(_read_error(self._app is not None), self.size.width)
+            )
+            return
         status = "Captured process footprints; ? means unreadable"
         if self._command is not None:
             status = f"Command {escape_control_chars(self._command)}"
@@ -678,7 +722,9 @@ class DarwinHelpScreen(Screen[None]):
             "The first complete sample shows zero. A partial current sample shows unknown; "
             "recovery compares with the retained complete baseline.\n"
             "Bundleless processes follow the nearest app ancestor or a separate session root. "
-            "Missing ancestry can make grouping partial.\n"
+            "Missing ancestry can make grouping partial. Shared XPC/WebKit services "
+            "started by launchd can remain separate rows (for example Safari and "
+            "WebContent), so an app row may omit related service footprints.\n"
             "Host Free is free physical pages, not available memory. Compressor physical "
             "and logical sizes differ. Native pressure is a kernel state, not PSI. "
             "Zero global swap means none allocated. Per-app swap is unavailable.\n\n"
