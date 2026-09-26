@@ -275,10 +275,11 @@ def test_system_before_or_after_the_command_name_behaves_the_same(
 
 
 def test_root_help_names_the_commands_schema_and_json_and_how_to_get_command_help(
+    tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     with pytest.raises(SystemExit):
-        main(["--help"], stdin_isatty=_true, stdout_isatty=_true)
+        main(["--help"], root=tmp_path, stdin_isatty=_true, stdout_isatty=_true)
 
     out = capsys.readouterr().out
     assert "appmem schema" in out
@@ -297,10 +298,10 @@ def test_root_help_names_the_commands_schema_and_json_and_how_to_get_command_hel
     ],
 )
 def test_each_command_help_names_its_own_flags_and_defaults(
-    argv: list[str], expected_flags: list[str], capsys: pytest.CaptureFixture[str]
+    argv: list[str], expected_flags: list[str], tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     with pytest.raises(SystemExit):
-        main(argv, stdin_isatty=_true, stdout_isatty=_true)
+        main(argv, root=tmp_path, stdin_isatty=_true, stdout_isatty=_true)
 
     out = capsys.readouterr().out
     for flag in expected_flags:
@@ -462,10 +463,11 @@ def test_broken_pipe_on_stdout_exits_zero_with_no_stderr(
 
 
 def test_help_lists_flags_keys_and_pressure_and_an_example(
+    tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     with pytest.raises(SystemExit) as exc_info:
-        main(["--help"], stdin_isatty=_true, stdout_isatty=_true)
+        main(["--help"], root=tmp_path, stdin_isatty=_true, stdout_isatty=_true)
 
     assert exc_info.value.code == 0
     out = capsys.readouterr().out

@@ -340,6 +340,39 @@ def test_darwin_schema_needs_no_native_collection(
     assert '"footprint_bytes"' in capsys.readouterr().out
 
 
+@pytest.mark.parametrize(
+    ("argv", "markers"),
+    [
+        (["--help"], ("-i, --interval", "default: 1", "appmem snapshot --help")),
+        (["snapshot", "--help"], ("--limit N", "default: 50", "--system is unsupported")),
+        (["app", "--help"], ("--scope user", "default: user", "default: 100")),
+    ],
+)
+def test_darwin_help_lists_supported_flags_and_defaults(
+    argv: list[str],
+    markers: tuple[str, ...],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(cli_module.sys, "platform", "darwin")
+    with pytest.raises(SystemExit) as error:
+        cli_module.main(argv, uid=501)
+    assert error.value.code == 0
+    help_text = capsys.readouterr().out
+    assert all(marker in help_text for marker in markers)
+    assert "idle pages were paged out" not in help_text
+
+
+def test_darwin_schema_index_matches_cli_dispatch(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import json
+
+    monkeypatch.setattr(cli_module.sys, "platform", "darwin")
+    assert cli_module.main(["schema", "--json"], uid=501) == 0
+    assert json.loads(capsys.readouterr().out) == darwin_schema.index()
+
+
 def test_growth_requires_complete_coverage_and_resets_after_reopen() -> None:
     reader = Reader()
     reader.add(10, 1, "App", "/Applications/App.app/Contents/MacOS/App", 100)

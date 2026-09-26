@@ -171,12 +171,27 @@ appmem: experimental Apple Silicon application footprint view.
 Usage:
   appmem [-i SECONDS] [--theme NAME]
   appmem snapshot [--limit N] [--json]
-  appmem app NAME [--limit N] [--json]
+  appmem app NAME [--scope user] [--limit N] [--json]
   appmem schema [COMMAND]
+
+Options:
+  -i, --interval SECONDS  Live refresh interval >= 0.2 (default: 1)
+  --theme NAME            Live view theme
+  --json                  Write JSON for named commands; live view requires a terminal
+  -h, --help              Show this help and exit
+  -V, --version           Show the version and exit
+
+Commands:
+  snapshot  Host memory and application footprints
+  app NAME  One application's process and command footprints
+  schema    Describe commands and output shapes as JSON
+
+Run `appmem schema` for machine-readable fields, or `appmem snapshot --help`
+and `appmem app --help` for each command's flags.
 
 Footprint is a per-process native physical footprint, not resident RAM or
 reclaimable memory. Denied process reads make app totals partial or unknown.
-Use appmem schema for fields and coverage. macOS 15+ Apple Silicon is required.
+macOS 15+ Apple Silicon is required. --system is unsupported.
 
 Keys: Enter details, g group by command, b reset growth baseline,
       up/down move, T theme, ? help, q/Ctrl+C quit.
@@ -184,12 +199,19 @@ Keys: Enter details, g group by command, b reset growth baseline,
 _DARWIN_SNAPSHOT_HELP_TEXT = """\
 appmem snapshot: native host memory and user application footprints.
 Usage: appmem snapshot [--limit N] [--json]
---system is unsupported on macOS. JSON is the default outside a terminal.
+  --limit N   Maximum app items (default: 50)
+  --json      Write JSON; also the default outside a terminal
+  -h, --help  Show this help and exit
+--system is unsupported on macOS. Use `appmem schema snapshot` for the JSON shape.
 """
 _DARWIN_APP_HELP_TEXT = """\
 appmem app: one application's captured process and command footprints.
-Usage: appmem app NAME [--limit N] [--json]
-NAME is the stable app id or displayed name. Only user scope is supported.
+Usage: appmem app NAME [--scope user] [--limit N] [--json]
+  --scope user  User scope (default: user); system scope is unsupported
+  --limit N     Maximum process and command items (default: 100)
+  --json        Write JSON; also the default outside a terminal
+  -h, --help    Show this help and exit
+NAME is the stable app id or displayed name. Use `appmem schema app` for the JSON shape.
 """
 
 

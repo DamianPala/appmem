@@ -77,11 +77,13 @@ def test_cli_unknown_schema_path_is_invalid_input_with_next(
     assert error["next"] == ["appmem", "schema"]
 
 
-def test_cli_schema_json_flag_writes_the_same_json(capsys: pytest.CaptureFixture[str]) -> None:
-    main(["schema"], stdin_isatty=_true, stdout_isatty=_true)
+def test_cli_schema_json_flag_writes_the_same_json(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    main(["schema"], root=tmp_path, stdin_isatty=_true, stdout_isatty=_true)
     without_flag = capsys.readouterr().out
 
-    main(["schema", "--json"], stdin_isatty=_true, stdout_isatty=_true)
+    main(["schema", "--json"], root=tmp_path, stdin_isatty=_true, stdout_isatty=_true)
     with_flag = capsys.readouterr().out
 
     assert without_flag == with_flag
