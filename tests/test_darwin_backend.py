@@ -7,9 +7,8 @@ from datetime import UTC, datetime
 from typing import Any, cast
 
 import pytest
-from rich.text import Text
 from textual.content import Content
-from textual.widgets import DataTable, Static
+from textual.widgets import Static
 
 from appmem import cli as cli_module
 from appmem import darwin_report, darwin_schema
@@ -24,6 +23,7 @@ from appmem.darwin_native import (
 from appmem.ui.app import AppMemApp
 from appmem.ui.darwin_rows import build_rows, update_baseline
 from appmem.ui.screens.darwin import DarwinMainScreen, DarwinProcessesScreen
+from appmem.ui.table import RowTable
 
 
 class Reader:
@@ -402,8 +402,8 @@ async def test_darwin_live_view_uses_footprint_columns_and_drill_down() -> None:
     async with app.run_test(size=(90, 22)) as pilot:
         await pilot.pause()
         assert isinstance(pilot.app.screen, DarwinMainScreen)
-        table = cast("DataTable[str | Text]", pilot.app.screen.query_one("#table", DataTable))
-        assert [column.key.value for column in table.ordered_columns] == [
+        table = pilot.app.screen.query_one("#table", RowTable)
+        assert list(table.column_keys) == [
             "app",
             "footprint",
             "delta",
@@ -413,9 +413,7 @@ async def test_darwin_live_view_uses_footprint_columns_and_drill_down() -> None:
         table.focus()
         await pilot.press("enter")
         assert isinstance(pilot.app.screen, DarwinProcessesScreen)
-        detail_table = cast(
-            "DataTable[str | Text]", pilot.app.screen.query_one("#table", DataTable)
-        )
+        detail_table = pilot.app.screen.query_one("#table", RowTable)
         assert detail_table.row_count == 2
         await pilot.press("g")
         assert detail_table.row_count == 2
@@ -430,7 +428,7 @@ async def test_darwin_detail_renders_untrusted_markup_as_literal_text() -> None:
     app = AppMemApp(interval=60, main_screen_factory=lambda: DarwinMainScreen(backend, 60))
     async with app.run_test(size=(90, 22)) as pilot:
         await pilot.pause()
-        pilot.app.screen.query_one("#table", DataTable).focus()
+        pilot.app.screen.query_one("#table", RowTable).focus()
         await pilot.press("enter")
         screen = pilot.app.screen
         assert isinstance(screen, DarwinProcessesScreen)
@@ -438,7 +436,7 @@ async def test_darwin_detail_renders_untrusted_markup_as_literal_text() -> None:
         assert title.plain.startswith("[bold]App[-]")
         assert title.spans == []
 
-        table = cast("DataTable[str | Text]", screen.query_one("#table", DataTable))
+        table = screen.query_one("#table", RowTable)
         table.move_cursor(row=1)
         await pilot.pause()
         status = cast("Content", screen.query_one("#status", Static).visual)
@@ -456,22 +454,22 @@ async def test_darwin_process_view_preserves_selection_and_scroll_across_ticks()
     app = AppMemApp(interval=60, main_screen_factory=lambda: DarwinMainScreen(backend, 60))
     async with app.run_test(size=(90, 16)) as pilot:
         await pilot.pause()
-        main_table = cast("DataTable[str | Text]", pilot.app.screen.query_one("#table", DataTable))
+        main_table = pilot.app.screen.query_one("#table", RowTable)
         main_table.focus()
         await pilot.press("enter")
         assert isinstance(pilot.app.screen, DarwinProcessesScreen)
         screen = pilot.app.screen
-        table = cast("DataTable[str | Text]", screen.query_one("#table", DataTable))
+        table = screen.query_one("#table", RowTable)
         assert table.row_count == 36
         table.move_cursor(row=20)
         await pilot.pause()
-        selected, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
+        selected = table.cursor_key
         assert table.scroll_y > 0
         reader.memories[35] = ProcessMemory(900, 900, 350)
         reader.add(55, 10, "worker", "/usr/bin/worker", 55)
         screen.refresh_now()
         await pilot.pause()
-        selected_after, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
+        selected_after = table.cursor_key
         assert selected_after == selected
         assert table.row_count == 37
         assert table.scroll_y > 0
@@ -495,24 +493,24 @@ async def test_darwin_process_view_narrow_columns_and_gone_command() -> None:
         await pilot.pause()
         main_screen = pilot.app.screen
         assert isinstance(main_screen, DarwinMainScreen)
-        main_columns = main_screen.query_one("#table", DataTable).ordered_columns
-        assert [column.key.value for column in main_columns] == [
+        main_columns = main_screen.query_one("#table", RowTable).column_keys
+        assert list(main_columns) == [
             "app",
             "footprint",
             "procs",
         ]
-        pilot.app.screen.query_one("#table", DataTable).focus()
+        pilot.app.screen.query_one("#table", RowTable).focus()
         await pilot.press("enter")
         assert isinstance(pilot.app.screen, DarwinProcessesScreen)
         screen = pilot.app.screen
-        table = cast("DataTable[str | Text]", screen.query_one("#table", DataTable))
-        assert [column.key.value for column in table.ordered_columns] == [
+        table = screen.query_one("#table", RowTable)
+        assert list(table.column_keys) == [
             "pid",
             "name",
             "footprint",
         ]
         await pilot.press("g")
-        assert [column.key.value for column in table.ordered_columns] == [
+        assert list(table.column_keys) == [
             "name",
             "footprint",
             "count",
@@ -524,8 +522,48 @@ async def test_darwin_process_view_narrow_columns_and_gone_command() -> None:
         screen.refresh_now()
         await pilot.pause()
         assert table.row_count == 1
-        assert [column.key.value for column in table.ordered_columns] == [
+        assert list(table.column_keys) == [
             "name",
             "footprint",
             "count",
         ]
+
+
+@pytest.mark.asyncio
+async def test_darwin_rowtable_navigation_and_resize() -> None:
+    reader = Reader()
+    for pid in range(10, 50):
+        reader.add(
+            pid,
+            1,
+            f"App{pid}",
+            f"/Applications/App{pid}.app/Contents/MacOS/App{pid}",
+            pid * 100,
+        )
+    backend = DarwinBackend(501, reader)
+    app = AppMemApp(interval=60, main_screen_factory=lambda: DarwinMainScreen(backend, 60))
+    async with app.run_test(size=(90, 16)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.screen
+        assert isinstance(screen, DarwinMainScreen)
+        table = screen.query_one("#table", RowTable)
+        assert table.row_count == 40
+        table.focus()
+        await pilot.press("end")
+        assert table.cursor_row == 39
+        await pilot.press("home")
+        assert table.cursor_row == 0
+        await pilot.press("pagedown")
+        assert table.cursor_row > 0
+        await pilot.press("pageup")
+        assert table.cursor_row == 0
+        table.scroll_to(y=3, animate=False)
+        await pilot.pause()
+        assert table.scroll_y == 3
+        await pilot.resize_terminal(55, 16)
+        assert table.column_keys == ("app", "footprint", "procs")
+        assert table.column_region("procs").right <= table.scrollable_content_region.width
+        assert table.scroll_y == 3
+        await pilot.resize_terminal(90, 16)
+        assert "delta" in table.column_keys
+        assert table.scroll_y == 3

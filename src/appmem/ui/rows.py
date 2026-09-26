@@ -17,7 +17,7 @@ SortKey = Literal[
 ]
 """A `Literal`, not a plain `str`: pyright strict then catches a typo'd column
 name at the call site instead of it surfacing as a runtime `KeyError` in
-`_DEFAULT_REVERSE`. Still doubles as a `DataTable` column key, which only
+`_DEFAULT_REVERSE`. Still doubles as a `RowTable` column key, which only
 ever needs `str`."""
 
 DEFAULT_SORT_KEY: SortKey = "total"
@@ -59,7 +59,7 @@ def _identity(app: AppStats) -> Identity:
 
 
 def row_key(name: str, scope: str) -> str:
-    """Unique `DataTable`/dict-safe key for an app identity. `\\0` can't appear
+    """Unique `RowTable`/dict-safe key for an app identity. `\\0` can't appear
     in a systemd unit (and therefore app) name, so this never collides across
     scopes (SPEC.md "Grouping": app identity is scope + name)."""
     return f"{scope}\0{name}"

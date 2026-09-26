@@ -22,20 +22,19 @@ import tempfile
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import cast
 from unittest.mock import patch
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT / "tests"))  # tests/helpers.py: no second fixture builder
 
-from rich.text import Text
-from textual.widgets import DataTable, OptionList
+from textual.widgets import OptionList
 
 from appmem.collect import LinuxBackend
 from appmem.theme import THEME_NAMES
 from appmem.ui.app import AppMemApp
 from appmem.ui.rows import row_key
 from appmem.ui.screens.main import MainScreen
+from appmem.ui.table import RowTable
 from appmem.ui.theme_picker import ThemePanel
 from helpers import (
     make_unit,
@@ -350,7 +349,7 @@ async def _capture(root: Path, out_dir: Path) -> None:
             await pilot.pause()
             app.save_screenshot("main.svg", path=str(out_dir))
 
-            table = cast("DataTable[str | Text]", pilot.app.query_one(DataTable))
+            table = pilot.app.query_one(RowTable)
             table.move_cursor(row=table.get_row_index(row_key("ghostty", "user")))
             await pilot.press("enter")
             await pilot.pause()

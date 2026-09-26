@@ -28,8 +28,7 @@ from textual.binding import Binding, BindingType
 from textual.color import Color
 from textual.message import Message
 from textual.theme import Theme
-from textual.widgets import DataTable, Static
-from textual.widgets.data_table import ColumnKey, RowKey
+from textual.widgets import Static
 
 from appmem.backend import Backend
 from appmem.collect import CgroupUnavailableError, MemoryStatUnavailableError
@@ -54,8 +53,7 @@ from appmem.ui.rows import (
 from appmem.ui.screens.help import HelpScreen
 from appmem.ui.screens.live import LiveScreen
 from appmem.ui.screens.processes import ProcessesScreen
-from appmem.ui.table import CellTable
-from appmem.ui.table_order import reorder_rows
+from appmem.ui.table import RowTable
 from appmem.writeback import Sample, update_writeback
 
 # Key caps (reverse video); at full width the plain text is exactly
@@ -88,7 +86,7 @@ _ZSWAP_MIN_WIDTH = 85
 # (SPEC.md "Main view").
 _APP_MIN_WIDTH = 8
 _APP_MAX_WIDTH = 32
-# `DataTable`'s default `cell_padding` (1 cell each side of every column).
+# `RowTable`'s own cell padding (1 cell each side of every column).
 _CELL_PADDING = 2
 
 # Width `None` = auto: the APP column grows to the longest name (capped at 32 by
@@ -133,11 +131,6 @@ def _format_cell(key: SortKey, row: Row, *, app_cap: int = _APP_MAX_WIDTH) -> st
     if key == "app":
         return _format_app_cell(row, app_cap)
     return _CELL_FORMATTERS[key](row)
-
-
-def _key_str(key: RowKey | ColumnKey) -> str:
-    assert key.value is not None
-    return key.value
 
 
 def _rich_color(theme_color: str) -> str:
@@ -292,11 +285,12 @@ def _tick_worker(
 
 
 class MainScreen(LiveScreen):
-    """The per-app table: header lines, the DataTable, and the footer (SPEC.md)."""
+    """The per-app table: header lines, the RowTable, and the footer (SPEC.md)."""
 
-    # DataTable defaults to `height: auto; max-height: 100%`, which with many rows
-    # makes the screen taller than the terminal and scrolls both header lines and
-    # the footer out of view. `1fr` gives the table only the space left over.
+    # `RowTable` (a bare `ScrollView`) doesn't run away to fit its content the
+    # way `DataTable`'s own `height: auto; max-height: 100%` default used to,
+    # but `1fr` is kept explicit so the table only ever claims the space left
+    # over from the header lines and the footer, regardless of row count.
     DEFAULT_CSS = """
     MainScreen #table { height: 1fr; }
     MainScreen #header1, MainScreen #header2, MainScreen #header3, MainScreen #footer {
@@ -374,7 +368,7 @@ class MainScreen(LiveScreen):
         yield Static(id="header1")
         yield Static(id="header2")
         yield Static(id="header3")
-        table: DataTable[str | Text] = CellTable(id="table", cursor_type="row")
+        table: RowTable = RowTable(id="table")
         self._rebuild_columns(table)
         yield table
         yield Static(self._footer_text(), id="footer")
@@ -498,10 +492,8 @@ class MainScreen(LiveScreen):
         self._sync_columns()
         self._update_footer()
 
-    def _table(self) -> DataTable[str | Text]:
-        # `isinstance()` (which `query_one` uses) rejects a parameterized generic,
-        # so we query by the bare class and `cast` to the concrete cell type.
-        return cast("DataTable[str | Text]", self.query_one("#table", DataTable))
+    def _table(self) -> RowTable:
+        return self.query_one("#table", RowTable)
 
     # --- collection tick ----------------------------------------------------
 
@@ -527,9 +519,10 @@ class MainScreen(LiveScreen):
         (`OSError`/`ValueError`, same treatment as `MemoryStatUnavailableError`)
         skips this tick and keeps the last frame, the next tick recovers
         (SPEC.md "Behaviour details"). Applying the result to the screen runs
-        outside the `try`, so a programming error there (e.g. `reorder_rows`'s
-        `ValueError` invariant check) still propagates and ends the session,
-        instead of being swallowed alongside a transient read failure.
+        outside the `try`, so a programming error there (e.g. `RowTable.
+        reorder`'s `ValueError` invariant check) still propagates and ends
+        the session, instead of being swallowed alongside a transient read
+        failure.
         """
         try:
             stats = self._backend.read_system()
@@ -693,9 +686,9 @@ class MainScreen(LiveScreen):
         table = self._table()
         widths = tuple(width for _key, _label, width in self._column_specs(table))
         if widths != self._column_widths:
-            self._rebuild_table(scroll=False)  # a resize, not an explicit selection action
+            self._rebuild_table(scroll=False)
 
-    def _column_specs(self, table: DataTable[str | Text]) -> list[tuple[SortKey, str, int | None]]:
+    def _column_specs(self, table: RowTable) -> list[tuple[SortKey, str, int | None]]:
         specs = list(_BASE_COLUMNS)
         if self._show_cache:
             specs.append(_CACHE_COLUMN)
@@ -711,7 +704,7 @@ class MainScreen(LiveScreen):
         return specs
 
     def _app_column_width(
-        self, specs: list[tuple[SortKey, str, int | None]], table: DataTable[str | Text]
+        self, specs: list[tuple[SortKey, str, int | None]], table: RowTable
     ) -> int | None:
         """Shrink the (otherwise auto-sized) APP column so the fixed-width
         numeric columns after it always stay fully on screen, at every
@@ -731,7 +724,7 @@ class MainScreen(LiveScreen):
             return None
         return max(budget, _APP_MIN_WIDTH)
 
-    def _app_cap(self, table: DataTable[str | Text]) -> int:
+    def _app_cap(self, table: RowTable) -> int:
         width = self._column_specs(table)[0][2]
         return width if width is not None else _APP_MAX_WIDTH
 
@@ -741,25 +734,24 @@ class MainScreen(LiveScreen):
         marker = "▾" if self._sort_reverse else "▴"
         return f"{label} {marker}"
 
-    def _rebuild_columns(self, table: DataTable[str | Text]) -> None:
+    def _rebuild_columns(self, table: RowTable) -> None:
         table.clear(columns=True)
         specs = self._column_specs(table)
         for key, label, width in specs:
             table.add_column(self._header_label(key, label), width=width, key=key)
         self._column_widths = tuple(width for _key, _label, width in specs)
 
-    def _refresh_column_labels(self, table: DataTable[str | Text]) -> None:
+    def _refresh_column_labels(self, table: RowTable) -> None:
         for key, label, _width in self._column_specs(table):
-            table.columns[ColumnKey(key)].label = Text(self._header_label(key, label))
-        table.refresh()
+            table.set_column_label(key, self._header_label(key, label))
 
     # --- row diffing ------------------------------------------------------------
 
     def _cell_value(self, key: SortKey, row: Row, *, app_cap: int) -> Text:
-        # Always a literal `Text`, never a plain `str`: `DataTable` renders a `str`
-        # cell through `Text.from_markup`, so an app name containing `[bold]`-style
-        # brackets would otherwise be parsed as markup instead of shown literally
-        # (SPEC.md "Behaviour details").
+        # Always a `Text`: `RowTable` renders a cell's `.plain` text and base
+        # `.style` literally, never through markup parsing, so an app name
+        # containing `[bold]`-style brackets shows literally (SPEC.md
+        # "Behaviour details").
         text = _format_cell(key, row, app_cap=app_cap)
         if key == "app":
             return Text(text)
@@ -768,7 +760,7 @@ class MainScreen(LiveScreen):
         dim = key in _DELTA_KEYS and (text == "·" or self._young_baseline)
         return Text(text, justify="right", style="dim" if dim else "")
 
-    def _row_cells(self, row: Row, table: DataTable[str | Text]) -> list[str | Text]:
+    def _row_cells(self, row: Row, table: RowTable) -> list[Text]:
         app_cap = self._app_cap(table)
         return [
             self._cell_value(key, row, app_cap=app_cap)
@@ -776,11 +768,11 @@ class MainScreen(LiveScreen):
         ]
 
     def _update_row_cells(
-        self, table: DataTable[str | Text], old: Row, row: Row, *, force_delta_restyle: bool
+        self, table: RowTable, old: Row, row: Row, *, force_delta_restyle: bool
     ) -> None:
-        # Only cells whose text changed: each `update_cell` still re-renders
-        # that cell and its row (`CellTable`), so a no-op update is not free.
-        # Δ cells are the one exception: the baseline crossing 60 s changes
+        # Only cells whose text changed: each `update_cell` still invalidates
+        # that row's cached strip and refreshes its screen line, so a no-op
+        # update is not free. Δ cells are the one exception: the baseline crossing 60 s changes
         # their dim style without necessarily changing their text.
         app_cap = self._app_cap(table)
         for key, _label, _width in self._column_specs(table):
@@ -792,16 +784,15 @@ class MainScreen(LiveScreen):
                     row_key(row.name, row.scope), key, self._cell_value(key, row, app_cap=app_cap)
                 )
 
-    def _current_selection(self, table: DataTable[str | Text]) -> tuple[str | None, int]:
+    def _current_selection(self, table: RowTable) -> tuple[str | None, int]:
         index = table.cursor_row
         if table.row_count == 0:
             return None, index
-        row_key_obj, _column_key = table.coordinate_to_cell_key(table.cursor_coordinate)
-        return _key_str(row_key_obj), index
+        return table.cursor_key, index
 
     def _restore_selection(
         self,
-        table: DataTable[str | Text],
+        table: RowTable,
         previous_key: str | None,
         previous_index: int,
         *,
@@ -814,9 +805,9 @@ class MainScreen(LiveScreen):
         else:
             table.move_cursor(row=min(previous_index, table.row_count - 1), scroll=scroll)
 
-    def _resort(self, table: DataTable[str | Text]) -> None:
+    def _resort(self, table: RowTable) -> None:
         ordered = sort_rows(self._rows.values(), self._sort_key, self._sort_reverse)
-        reorder_rows(table, [row_key(row.name, row.scope) for row in ordered])
+        table.reorder([row_key(row.name, row.scope) for row in ordered])
 
     def _apply_rows(self, rows: list[Row], *, scroll: bool) -> None:
         table = self._table()
@@ -847,16 +838,19 @@ class MainScreen(LiveScreen):
     # --- table rebuilds -----------------------------------------------------------
 
     def _rebuild_table(self, *, scroll: bool) -> None:
-        """Rebuild the DataTable's columns and repopulate its rows after a
+        """Rebuild the table's columns and repopulate its rows after a
         change to which columns are visible (CACHE toggle, Δ columns hidden or
         shown by width), preserving sort and selection."""
         table = self._table()
         previous_key, previous_index = self._current_selection(table)
+        previous_scroll_y = table.scroll_y
         self._rebuild_columns(table)
         for key, row in self._rows.items():
             table.add_row(*self._row_cells(row, table), key=key)
         self._resort(table)
         self._restore_selection(table, previous_key, previous_index, scroll=scroll)
+        if not scroll and previous_scroll_y > 0:
+            table.scroll_to(y=previous_scroll_y, animate=False)
 
     # --- actions ----------------------------------------------------------------
 
@@ -880,8 +874,8 @@ class MainScreen(LiveScreen):
             return  # `z` while ZSWAP is hidden (width, `w`, or zswap off): no invisible sort
         self._set_sort(cast("SortKey", column))
 
-    def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
-        self._set_sort(cast("SortKey", _key_str(event.column_key)))
+    def on_row_table_header_selected(self, event: RowTable.HeaderSelected) -> None:
+        self._set_sort(cast("SortKey", event.column_key))
 
     def action_toggle_cache(self) -> None:
         self._show_cache = not self._show_cache
@@ -937,8 +931,8 @@ class MainScreen(LiveScreen):
             HelpScreen(zswap_enabled=self._zswap_enabled)
         )
 
-    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        key = _key_str(event.row_key)
+    def on_row_table_row_selected(self, event: RowTable.RowSelected) -> None:
+        key = event.row_key
         app = next((app for app in self._last_apps if row_key(app.name, app.scope) == key), None)
         if app is None:  # row vanished between the click and the event
             return

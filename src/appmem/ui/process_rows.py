@@ -73,7 +73,7 @@ _MAIN_TO_PROCESS_SORT: dict[str, ProcessSortKey] = {
 
 @dataclass(frozen=True)
 class ProcessRow:
-    """One process-view row. `key` is the `DataTable` row key: `str(pid)` for a
+    """One process-view row. `key` is the `RowTable` row key: `str(pid)` for a
     real process, `KERNEL_KEY`/`UNATTRIBUTED_KEY` for the two synthetic rows
     built by `kernel_process_row`/`unattributed_process_row` (`pid`/
     `age_seconds` are `None` only for those)."""

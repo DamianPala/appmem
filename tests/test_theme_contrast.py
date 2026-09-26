@@ -1,9 +1,9 @@
 """Table-header contrast (SPEC.md "Main view").
 
 `ansi-dark` on Ghostty's Tokyo Night palette left the header row (APP, RAM,
-SWAP, ...) unreadable: Textual's own `&:ansi > .datatable--header` rule
+SWAP, ...) unreadable: the app's own `&:ansi > .rowtable--header` rule
 colours it `ansi_bright_blue` on `ansi_default`, and both land on the same
-blue on that palette. These tests read the style `DataTable` actually
+blue on that palette. These tests read the style `RowTable` actually
 renders with (`get_component_styles`, not a copy of the CSS rule) for every
 built-in theme, so a future CSS change that regresses contrast fails here
 instead of only showing up against a real terminal palette.
@@ -15,17 +15,16 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import cast
 
 import pytest
 from rich.color import Color as RichColor
 from rich.color_triplet import ColorTriplet
 from rich.style import Style
-from textual.widgets import DataTable
 
 from appmem.collect import LinuxBackend
 from appmem.theme import TERMINAL_THEME_NAMES, THEME_NAMES
 from appmem.ui.app import AppMemApp
+from appmem.ui.table import RowTable
 
 _MIN_CONTRAST = 4.5
 
@@ -57,8 +56,8 @@ async def _header_style(theme_name: str) -> Style:
         theme=theme_name,
     )
     async with app.run_test(size=(120, 30)):
-        table = cast("DataTable[object]", app.query_one(DataTable))
-        return table.get_component_styles("datatable--header").rich_style
+        table = app.query_one(RowTable)
+        return table.get_component_styles("rowtable--header").rich_style
 
 
 @pytest.mark.asyncio

@@ -16,19 +16,16 @@ import time
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
-from typing import cast
 
 import pytest
 from rich.cells import cell_len
 from rich.text import Text
 from textual import events
 from textual.color import Color
-from textual.coordinate import Coordinate
 from textual.pilot import Pilot
 from textual.strip import Strip
 from textual.theme import BUILTIN_THEMES, Theme
-from textual.widgets import DataTable, OptionList, Static
-from textual.widgets.data_table import ColumnKey
+from textual.widgets import OptionList, Static
 from textual.worker import Worker
 
 from appmem import collect
@@ -43,6 +40,7 @@ from appmem.ui.screens import help as help_screen
 from appmem.ui.screens import main as main_screen
 from appmem.ui.screens.help import HelpScreen
 from appmem.ui.screens.main import MainScreen
+from appmem.ui.table import RowTable
 from appmem.ui.theme_picker import ThemePanel
 from helpers import (
     make_unit,
@@ -57,8 +55,8 @@ UID = 1000
 NO_AUTO_REFRESH_INTERVAL = 100.0
 
 
-def _table(pilot: Pilot[None]) -> DataTable[str | Text]:
-    return cast("DataTable[str | Text]", pilot.app.query_one(DataTable))
+def _table(pilot: Pilot[None]) -> RowTable:
+    return pilot.app.query_one(RowTable)
 
 
 def _base_tree(tmp_path: Path) -> Path:
@@ -123,23 +121,21 @@ def _app(root: Path, *, include_system: bool = False) -> AppMemApp:
     )
 
 
-def _row_names(table: DataTable[str | Text]) -> list[str]:
+def _row_names(table: RowTable) -> list[str]:
     # Row keys are "<scope>\0<name>" (SPEC.md "Grouping"); every app in these
     # fixtures is "user" scope, so stripping the prefix recovers the app name.
     names: list[str] = []
-    for row in table.ordered_rows:
-        assert row.key.value is not None
-        _scope, _, name = row.key.value.partition("\0")
+    for key in table.row_keys:
+        _scope, _, name = key.partition("\0")
         names.append(name)
     return names
 
 
-async def _click_header(pilot: Pilot[None], table: DataTable[str | Text], column_key: str) -> None:
-    # A genuine pilot `click`, not calling `on_data_table_header_selected`
+async def _click_header(pilot: Pilot[None], table: RowTable, column_key: str) -> None:
+    # A genuine pilot `click`, not calling `on_row_table_header_selected`
     # directly (SPEC.md "Tests"): computes the header cell's x offset from
     # the table's own column layout and clicks the header row (y=0).
-    column_index = table.get_column_index(column_key)
-    region = table._get_column_region(column_index)  # pyright: ignore[reportPrivateUsage]
+    region = table.column_region(column_key)
     await pilot.click(table, offset=(region.x + 1, 0))
     await pilot.pause()
 
@@ -171,11 +167,11 @@ async def test_header_click_sorts_then_second_click_reverses(tmp_path: Path) -> 
         screen = pilot.app.screen
         assert isinstance(screen, MainScreen)
 
-        header_event = DataTable.HeaderSelected(table, ColumnKey("swap"), 1, Text("SWAP"))
-        screen.on_data_table_header_selected(header_event)
+        header_event = RowTable.HeaderSelected(table, "swap")
+        screen.on_row_table_header_selected(header_event)
         assert _row_names(table) == ["bravo", "charlie", "alpha"]
 
-        screen.on_data_table_header_selected(header_event)
+        screen.on_row_table_header_selected(header_event)
         assert _row_names(table) == ["alpha", "charlie", "bravo"]
 
 
@@ -223,8 +219,7 @@ async def test_cursor_stays_on_same_app_after_a_reordering_refresh(tmp_path: Pat
         _app_unit(root, "app-charlie.service", ram=0, swap=1 * 1024**2)
         screen.refresh_now()
 
-        cursor_key, _column_key = table.coordinate_to_cell_key(table.cursor_coordinate)
-        assert cursor_key.value == row_key("charlie", "user")
+        assert table.cursor_key == row_key("charlie", "user")
 
 
 @pytest.mark.asyncio
@@ -242,8 +237,8 @@ async def test_hiding_cache_while_sorted_by_it_falls_back_to_total_desc(tmp_path
         assert isinstance(screen, MainScreen)
 
         await pilot.press("c")  # show CACHE
-        header_event = DataTable.HeaderSelected(table, ColumnKey("cache"), 1, Text("CACHE"))
-        screen.on_data_table_header_selected(header_event)  # explicit sort by CACHE desc
+        header_event = RowTable.HeaderSelected(table, "cache")
+        screen.on_row_table_header_selected(header_event)  # explicit sort by CACHE desc
         assert _row_names(table) == ["alpha", "bravo"]
 
         await pilot.press("c")  # hide CACHE while it's the active sort column
@@ -261,16 +256,16 @@ async def test_c_toggles_the_cache_column(tmp_path: Path) -> None:
     async with _app(root).run_test() as pilot:
         await pilot.pause()
         table = _table(pilot)
-        assert "cache" not in table.columns
+        assert "cache" not in table.column_keys
 
         await pilot.press("c")
-        assert "cache" in table.columns
+        assert "cache" in table.column_keys
         cache_cell = table.get_cell(row_key("alpha", "user"), "cache")
         assert isinstance(cache_cell, Text)
         assert cache_cell.plain == "5 MiB"
 
         await pilot.press("c")
-        assert "cache" not in table.columns
+        assert "cache" not in table.column_keys
 
 
 # --- zswap column (mirrors CACHE, SPEC.md "Main view") -------------------------
@@ -287,7 +282,7 @@ async def test_zswap_column_shown_by_default_when_enabled(tmp_path: Path) -> Non
         await pilot.pause()
         table = _table(pilot)
 
-        assert "zswap" in table.columns  # shown from the first tick, no `w` needed
+        assert "zswap" in table.column_keys  # shown from the first tick, no `w` needed
         zswap_cell = table.get_cell(row_key("alpha", "user"), "zswap")
         assert isinstance(zswap_cell, Text)
         assert zswap_cell.plain == "5 MiB"
@@ -302,7 +297,7 @@ async def test_zswap_column_absent_when_disabled(tmp_path: Path) -> None:
         await pilot.pause()
         table = _table(pilot)
 
-        assert "zswap" not in table.columns
+        assert "zswap" not in table.column_keys
 
 
 @pytest.mark.asyncio
@@ -313,13 +308,13 @@ async def test_w_toggles_the_zswap_column(tmp_path: Path) -> None:
     async with _app(root).run_test(size=(120, 35)) as pilot:  # >= _ZSWAP_MIN_WIDTH
         await pilot.pause()
         table = _table(pilot)
-        assert "zswap" in table.columns  # shown by default
+        assert "zswap" in table.column_keys  # shown by default
 
         await pilot.press("w")
-        assert "zswap" not in table.columns
+        assert "zswap" not in table.column_keys
 
         await pilot.press("w")
-        assert "zswap" in table.columns
+        assert "zswap" in table.column_keys
         zswap_cell = table.get_cell(row_key("alpha", "user"), "zswap")
         assert isinstance(zswap_cell, Text)
         assert zswap_cell.plain == "5 MiB"
@@ -336,7 +331,7 @@ async def test_w_does_nothing_when_zswap_is_disabled(tmp_path: Path) -> None:
 
         await pilot.press("w")
 
-        assert "zswap" not in table.columns
+        assert "zswap" not in table.column_keys
 
 
 # --- ZSWAP hides below its own width threshold, on top of `w`/zswap-off --------
@@ -351,7 +346,7 @@ async def test_zswap_column_hidden_below_85_columns(tmp_path: Path) -> None:
         await pilot.pause()
         table = _table(pilot)
 
-        assert "zswap" not in table.columns
+        assert "zswap" not in table.column_keys
 
 
 @pytest.mark.asyncio
@@ -363,7 +358,7 @@ async def test_zswap_column_shown_at_85_columns(tmp_path: Path) -> None:
         await pilot.pause()
         table = _table(pilot)
 
-        assert "zswap" in table.columns
+        assert "zswap" in table.column_keys
 
 
 @pytest.mark.asyncio
@@ -374,13 +369,13 @@ async def test_zswap_column_recomputes_on_resize(tmp_path: Path) -> None:
     async with _app(root).run_test(size=(120, 35)) as pilot:
         await pilot.pause()
         table = _table(pilot)
-        assert "zswap" in table.columns
+        assert "zswap" in table.column_keys
 
         await pilot.resize_terminal(80, 24)
-        assert "zswap" not in table.columns
+        assert "zswap" not in table.column_keys
 
         await pilot.resize_terminal(120, 35)
-        assert "zswap" in table.columns
+        assert "zswap" in table.column_keys
 
 
 @pytest.mark.asyncio
@@ -403,11 +398,10 @@ async def test_numeric_columns_fit_on_screen_with_zswap_and_a_32_char_name(
     async with _app(root).run_test(size=(width, 24)) as pilot:
         await pilot.pause()
         table = _table(pilot)
-        assert "zswap" in table.columns
-        assert ("delta_swap" in table.columns) == (width >= 95)
+        assert "zswap" in table.column_keys
+        assert ("delta_swap" in table.column_keys) == (width >= 95)
         for key in ("ram", "swap", "zswap", "total", "procs"):
-            idx = table.get_column_index(key)
-            region = table._get_column_region(idx)  # pyright: ignore[reportPrivateUsage]
+            region = table.column_region(key)
             assert region.right <= table.size.width, (key, region, table.size.width)
 
 
@@ -428,9 +422,7 @@ async def test_numeric_columns_still_fit_when_new_rows_bring_a_scrollbar(tmp_pat
         screen.refresh_now()
         await pilot.pause()
 
-        region = table._get_column_region(  # pyright: ignore[reportPrivateUsage]
-            table.get_column_index("procs")
-        )
+        region = table.column_region("procs")
         deadline = time.monotonic() + 1.0
         while time.monotonic() < deadline:
             if (
@@ -439,9 +431,7 @@ async def test_numeric_columns_still_fit_when_new_rows_bring_a_scrollbar(tmp_pat
             ):
                 break
             await pilot.pause(0.01)  # width sync runs after the row change's next refresh
-            region = table._get_column_region(  # pyright: ignore[reportPrivateUsage]
-                table.get_column_index("procs")
-            )
+            region = table.column_region("procs")
         assert table.scrollbar_size_vertical > 0
         assert region.right <= table.scrollable_content_region.width, (
             region,
@@ -466,8 +456,8 @@ async def test_hiding_zswap_while_sorted_by_it_falls_back_to_total_desc(tmp_path
         assert isinstance(screen, MainScreen)
 
         # ZSWAP is already shown by default; sort by it (a header click, or `z`).
-        header_event = DataTable.HeaderSelected(table, ColumnKey("zswap"), 1, Text("ZSWAP"))
-        screen.on_data_table_header_selected(header_event)  # explicit sort by ZSWAP desc
+        header_event = RowTable.HeaderSelected(table, "zswap")
+        screen.on_row_table_header_selected(header_event)  # explicit sort by ZSWAP desc
         assert _row_names(table) == ["alpha", "bravo"]
 
         await pilot.press("w")  # hide ZSWAP while it's the active sort column
@@ -492,22 +482,22 @@ async def test_zswap_disabled_mid_session_hides_the_shown_column_and_falls_back_
         assert isinstance(screen, MainScreen)
 
         # ZSWAP is already shown by default; sort by it.
-        header_event = DataTable.HeaderSelected(table, ColumnKey("zswap"), 1, Text("ZSWAP"))
-        screen.on_data_table_header_selected(header_event)  # sort by it
-        assert "zswap" in table.columns
+        header_event = RowTable.HeaderSelected(table, "zswap")
+        screen.on_row_table_header_selected(header_event)  # sort by it
+        assert "zswap" in table.column_keys
         assert screen._sort_key == "zswap"  # pyright: ignore[reportPrivateUsage]
 
         write_zswap_enabled(root, enabled=False)
         screen.refresh_now()
 
-        assert "zswap" not in table.columns
+        assert "zswap" not in table.column_keys
         assert screen._sort_key != "zswap"  # pyright: ignore[reportPrivateUsage]
         footer = screen.query_one("#footer", Static).content
         assert isinstance(footer, Text)
         assert "r s t d sort" in footer.plain  # `z` left the sort item with the column
 
         await pilot.press("w")  # a no-op again, same as before zswap ever turned on
-        assert "zswap" not in table.columns
+        assert "zswap" not in table.column_keys
 
 
 @pytest.mark.asyncio
@@ -593,7 +583,7 @@ async def test_column_order_with_cache_and_zswap_shown_is_ram_swap_cache_zswap_t
         await pilot.pause()
         await pilot.press("c")  # ZSWAP is already shown by default
         table = _table(pilot)
-        keys = [column.key.value for column in table.ordered_columns]
+        keys = list(table.column_keys)
 
         assert keys == [
             "app",
@@ -750,9 +740,7 @@ async def test_long_app_names_are_not_truncated(tmp_path: Path) -> None:
 
     async with _app(root).run_test(size=(120, 35)) as pilot:
         await pilot.pause()
-        app_column = _table(pilot).columns[ColumnKey("app")]
-
-        assert app_column.get_render_width(_table(pilot)) >= len(name)
+        assert _table(pilot).column_width("app") >= len(name)
 
 
 @pytest.mark.asyncio
@@ -910,7 +898,7 @@ async def test_column_order_is_app_ram_swap_total_procs(tmp_path: Path) -> None:
     async with _app(root).run_test(size=(120, 35)) as pilot:
         await pilot.pause()
         table = _table(pilot)
-        keys = [column.key.value for column in table.ordered_columns]
+        keys = list(table.column_keys)
 
         assert keys == ["app", "ram", "swap", "total", "delta_ram", "delta_swap", "procs"]
 
@@ -924,7 +912,7 @@ async def test_column_order_with_cache_shown_is_ram_swap_cache_total(tmp_path: P
         await pilot.pause()
         await pilot.press("c")
         table = _table(pilot)
-        keys = [column.key.value for column in table.ordered_columns]
+        keys = list(table.column_keys)
 
         assert keys == [
             "app",
@@ -965,6 +953,25 @@ async def test_wheel_scroll_does_not_snap_back_on_refresh_ticks(tmp_path: Path) 
         assert table.scroll_y == scrolled_y  # no snap-back to the cursor's row
 
 
+@pytest.mark.asyncio
+async def test_wheel_scroll_survives_column_resize(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    for index in range(60):
+        _app_unit(root, f"app-app{index:02d}.service", ram=(index + 2) * 1024**2, swap=0)
+
+    async with _app(root).run_test(size=(120, 20)) as pilot:
+        await pilot.pause()
+        table = _table(pilot)
+        table.post_message(events.MouseScrollDown(table, 10, 10, 0, 0, 0, False, False, False))
+        await pilot.pause()
+        assert table.scroll_y > 0
+        scrolled_y = table.scroll_y
+
+        await pilot.resize_terminal(95, 20)
+        await pilot.pause()
+        assert table.scroll_y == scrolled_y
+
+
 # --- cursor follows the selected app across an explicit sort -------------------
 
 
@@ -984,8 +991,7 @@ async def test_cursor_follows_selected_app_across_explicit_sort_by_key(tmp_path:
         await pilot.press("s")  # explicit sort by SWAP desc: alpha moves to the last row
 
         assert _row_names(table)[-1] == "alpha"  # the sort actually moved it
-        cursor_key, _column_key = table.coordinate_to_cell_key(table.cursor_coordinate)
-        assert cursor_key.value == row_key("alpha", "user")
+        assert table.cursor_key == row_key("alpha", "user")
 
 
 @pytest.mark.asyncio
@@ -1005,8 +1011,7 @@ async def test_cursor_follows_selected_app_across_a_real_pilot_header_click(
         await _click_header(pilot, table, "swap")  # a real click, SWAP desc
 
         assert _row_names(table) == ["bravo", "charlie", "alpha"]  # the click moved alpha
-        cursor_key, _column_key = table.coordinate_to_cell_key(table.cursor_coordinate)
-        assert cursor_key.value == row_key("alpha", "user")
+        assert table.cursor_key == row_key("alpha", "user")
 
 
 # --- sorting compares full raw values, never truncated rendered text -----------
@@ -1031,8 +1036,8 @@ async def test_sorting_by_app_uses_full_name_not_truncated_rendered_text(
         assert isinstance(screen, MainScreen)
         assert _row_names(table) == [f"{prefix}c2", f"{prefix}b1"]  # TOTAL desc, not insertion
 
-        header_event = DataTable.HeaderSelected(table, ColumnKey("app"), 1, Text("APP"))
-        screen.on_data_table_header_selected(header_event)  # sort by APP, A-Z
+        header_event = RowTable.HeaderSelected(table, "app")
+        screen.on_row_table_header_selected(header_event)  # sort by APP, A-Z
 
         assert _row_names(table) == [f"{prefix}b1", f"{prefix}c2"]
 
@@ -1200,16 +1205,15 @@ async def test_a_value_error_from_the_apply_path_still_propagates(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # `ValueError` is only swallowed when it comes from the collector reads
-    # inside the `try`. `reorder_rows`'s own invariant check
-    # (`src/appmem/ui/table_order.py`) also raises `ValueError`, but from the
-    # apply step outside the `try` -- a broken invariant there is a
-    # programming error, not a transient read failure, and must still
-    # surface instead of silently freezing the table.
+    # inside the `try`. `RowTable.reorder`'s own invariant check also raises
+    # `ValueError`, but from the apply step outside the `try` -- a broken
+    # invariant there is a programming error, not a transient read failure,
+    # and must still surface instead of silently freezing the table.
     root = _base_tree(tmp_path)
     _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
     app = _app(root)
 
-    def _broken_reorder_rows(table: object, ordered_keys: object) -> None:
+    def _broken_reorder(self: RowTable, ordered_keys: list[str]) -> None:
         raise ValueError("broken invariant")
 
     async with app.run_test() as pilot:
@@ -1217,7 +1221,7 @@ async def test_a_value_error_from_the_apply_path_still_propagates(
         screen = pilot.app.screen
         assert isinstance(screen, MainScreen)
 
-        monkeypatch.setattr(main_screen, "reorder_rows", _broken_reorder_rows)
+        monkeypatch.setattr(RowTable, "reorder", _broken_reorder)
         with pytest.raises(ValueError, match="broken invariant"):
             screen.refresh_now()
 
@@ -1234,8 +1238,8 @@ async def test_delta_columns_hidden_below_95_columns(tmp_path: Path) -> None:
         await pilot.pause()
         table = _table(pilot)
 
-        assert "delta_swap" not in table.columns
-        assert "delta_ram" not in table.columns
+        assert "delta_swap" not in table.column_keys
+        assert "delta_ram" not in table.column_keys
 
 
 @pytest.mark.asyncio
@@ -1247,8 +1251,8 @@ async def test_delta_columns_shown_at_or_above_95_columns(tmp_path: Path) -> Non
         await pilot.pause()
         table = _table(pilot)
 
-        assert "delta_swap" in table.columns
-        assert "delta_ram" in table.columns
+        assert "delta_swap" in table.column_keys
+        assert "delta_ram" in table.column_keys
 
 
 @pytest.mark.asyncio
@@ -1259,13 +1263,13 @@ async def test_delta_columns_recompute_on_resize(tmp_path: Path) -> None:
     async with _app(root).run_test(size=(120, 35)) as pilot:
         await pilot.pause()
         table = _table(pilot)
-        assert "delta_ram" in table.columns
+        assert "delta_ram" in table.column_keys
 
         await pilot.resize_terminal(80, 24)
-        assert "delta_ram" not in table.columns
+        assert "delta_ram" not in table.column_keys
 
         await pilot.resize_terminal(120, 35)
-        assert "delta_ram" in table.columns
+        assert "delta_ram" in table.column_keys
 
 
 @pytest.mark.asyncio
@@ -1693,9 +1697,8 @@ async def test_c1_control_in_app_name_is_escaped_in_the_table(tmp_path: Path) ->
     async with _app(root).run_test() as pilot:
         await pilot.pause()
         table = _table(pilot)
-        keys = [key.value for key in table.rows]
+        keys = list(table.row_keys)
         assert len(keys) == 1
-        assert keys[0] is not None
         cell = table.get_cell(keys[0], "app")
         assert isinstance(cell, Text)
         assert not any(0x80 <= ord(char) <= 0x9F for char in cell.plain), repr(cell.plain)
@@ -1782,8 +1785,7 @@ async def test_total_column_fits_on_screen_at_60_columns_with_a_long_name(tmp_pa
     async with _app(root).run_test(size=(60, 24)) as pilot:
         await pilot.pause()
         table = _table(pilot)
-        idx = table.get_column_index("total")
-        region = table._get_column_region(idx)  # pyright: ignore[reportPrivateUsage]
+        region = table.column_region("total")
         assert region.right <= table.size.width, (region, table.size.width)
 
 
@@ -1795,18 +1797,16 @@ async def test_total_column_fits_after_resizing_from_90_to_60(tmp_path: Path) ->
     async with _app(root).run_test(size=(90, 24)) as pilot:
         await pilot.pause()
         table = _table(pilot)
-        idx = table.get_column_index("app")
-        cell = str(table.get_cell_at(Coordinate(0, idx)))
+        row_key = table.row_keys[0]
+        cell = table.get_cell(row_key, "app").plain
         assert "…" not in cell, "already cropped at 90 columns"
 
         await pilot.resize_terminal(60, 24)
         await pilot.pause()
 
-        idx = table.get_column_index("total")
-        region = table._get_column_region(idx)  # pyright: ignore[reportPrivateUsage]
+        region = table.column_region("total")
         assert region.right <= table.size.width, (region, table.size.width)
-        idx = table.get_column_index("app")
-        cell = str(table.get_cell_at(Coordinate(0, idx)))
+        cell = table.get_cell(row_key, "app").plain
         assert "…" in cell, "long name not cropped at 60 columns"
 
 
@@ -1818,18 +1818,16 @@ async def test_app_column_widens_back_after_resizing_from_60_to_90(tmp_path: Pat
     async with _app(root).run_test(size=(60, 24)) as pilot:
         await pilot.pause()
         table = _table(pilot)
-        idx = table.get_column_index("app")
-        cell = str(table.get_cell_at(Coordinate(0, idx)))
+        row_key = table.row_keys[0]
+        cell = table.get_cell(row_key, "app").plain
         assert "…" in cell, "long name not cropped at 60 columns"
 
         await pilot.resize_terminal(90, 24)
         await pilot.pause()
 
-        idx = table.get_column_index("total")
-        region = table._get_column_region(idx)  # pyright: ignore[reportPrivateUsage]
+        region = table.column_region("total")
         assert region.right <= table.size.width, (region, table.size.width)
-        idx = table.get_column_index("app")
-        cell = str(table.get_cell_at(Coordinate(0, idx)))
+        cell = table.get_cell(row_key, "app").plain
         assert "…" not in cell, "still cropped back at 90 columns"
 
 

@@ -89,6 +89,7 @@ Keys:
   r / s / t / d / z    sort by RAM / SWAP / TOTAL / ΔSWAP / ZSWAP (repeat to reverse;
                        z only where the ZSWAP column is shown); other columns sort by click
   up/down PgUp PgDn    move
+  Home End             jump to the first/last row
   Enter                open the process view for the selected app;
                        grouped: the processes of the selected command
   g                    process view: toggle grouping by command

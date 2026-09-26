@@ -106,7 +106,7 @@ Bare `appmem` without a terminal exits 1 and points to `appmem snapshot`.
 ## Cost
 
 Reading the counters once a second takes about 1 % of one CPU core.
-The live view takes 4 to 12 % of one core on a busy desktop, more with a tall terminal and many apps.
+The live view takes 3 to 12 % of one core on a busy desktop, more with a tall terminal and many apps.
 Refreshing every two seconds instead of every second (`appmem -i 2`) cuts that in half.
 
 ## Development

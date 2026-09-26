@@ -23,8 +23,7 @@ from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.message import Message
-from textual.widgets import DataTable, Static
-from textual.widgets.data_table import ColumnKey, RowKey
+from textual.widgets import Static
 
 from appmem.backend import Backend
 from appmem.collect import CgroupUnavailableError, MemoryStatUnavailableError
@@ -60,8 +59,7 @@ from appmem.ui.process_rows import (
 )
 from appmem.ui.screens.help import HelpScreen
 from appmem.ui.screens.live import LiveScreen
-from appmem.ui.table import CellTable
-from appmem.ui.table_order import reorder_rows
+from appmem.ui.table import RowTable
 
 _PROCESS_COLUMNS: tuple[tuple[str, str, int | None], ...] = (
     ("pid", "PID", 7),  # pid_max 4194304: 7 digits
@@ -94,7 +92,7 @@ _NARROW_WIDTH = 95
 # already scrolls sideways rather than shrinking.
 _NAME_MIN_WIDTH = 8
 _NAME_MAX_WIDTH = 32
-# `DataTable`'s default `cell_padding` (1 cell each side of every column).
+# `RowTable`'s own cell padding (1 cell each side of every column).
 _CELL_PADDING = 2
 
 # Below the footer's natural width, drop items lowest priority first;
@@ -142,18 +140,13 @@ def _format_command_cell(key: str, row: CommandRow, *, name_cap: int = _NAME_MAX
 
 
 def _cell_value(key: str, text: str, *, dim: bool = False) -> Text:
-    # Always a literal `Text`, never a plain `str`: `DataTable` renders a `str`
-    # cell through `Text.from_markup`, which would parse markup-like process
-    # or unit names instead of showing them literally.
+    # Always a `Text`: `RowTable` renders a cell's `.plain` text and base
+    # `.style` literally, never through markup parsing, so a process or
+    # unit name containing `[bold]`-style brackets shows literally.
     style = "dim italic" if dim else ""
     if key in _LEFT_ALIGNED:
         return Text(text, style=style)
     return Text(text, justify="right", style=style)
-
-
-def _key_str(key: RowKey | ColumnKey) -> str:
-    assert key.value is not None
-    return key.value
 
 
 @dataclass(frozen=True)
@@ -196,8 +189,10 @@ def _tick_worker(backend: Backend, scope: str, name: str, *, generation: int) ->
 class ProcessesScreen(LiveScreen):
     """Per-process table for one app (SPEC.md "Process view")."""
 
-    # Same reason as MainScreen: DataTable's `height: auto` would push the
-    # title off screen with many rows.
+    # `RowTable` (a bare `ScrollView`) doesn't run away to fit its content the
+    # way `DataTable`'s own `height: auto; max-height: 100%` default used to,
+    # but `1fr` is kept explicit so the table only ever claims the space left
+    # over from the title and the footer, regardless of row count.
     DEFAULT_CSS = """
     ProcessesScreen #table { height: 1fr; }
     ProcessesScreen #title, ProcessesScreen #status, ProcessesScreen #footer {
@@ -254,7 +249,7 @@ class ProcessesScreen(LiveScreen):
     def compose(self) -> ComposeResult:
         self._age_shown = self._show_age_column()
         yield Static(id="title", markup=False)
-        table: DataTable[str | Text] = CellTable(id="table", cursor_type="row")
+        table: RowTable = RowTable(id="table")
         self._rebuild_columns(table)
         yield table
         yield Static(id="status")
@@ -343,8 +338,8 @@ class ProcessesScreen(LiveScreen):
         self._sync_columns()
         self._update_footer()
 
-    def _table(self) -> DataTable[str | Text]:
-        return cast("DataTable[str | Text]", self.query_one("#table", DataTable))
+    def _table(self) -> RowTable:
+        return self.query_one("#table", RowTable)
 
     def _set_rich(self, selector: str, content: Text) -> None:
         widget = self.query_one(selector, Static)
@@ -376,11 +371,11 @@ class ProcessesScreen(LiveScreen):
         widths = tuple(width for _key, _label, width in self._columns(table))
         if widths == self._column_widths:
             return
-        self._rebuild_current_table()  # a resize, not an explicit selection action
+        self._rebuild_current_table()
         if sort_hidden:
             self.refresh_now()  # the cached rows are still in AGE order: re-sort them
 
-    def _columns(self, table: DataTable[str | Text]) -> tuple[tuple[str, str, int | None], ...]:
+    def _columns(self, table: RowTable) -> tuple[tuple[str, str, int | None], ...]:
         base = _GROUP_COLUMNS if self._showing_group_table else self._process_column_base()
         return self._with_name_width(base, table)
 
@@ -388,7 +383,7 @@ class ProcessesScreen(LiveScreen):
         return _PROCESS_COLUMNS if self._age_shown else _PROCESS_COLUMNS_NARROW
 
     def _with_name_width(
-        self, columns: tuple[tuple[str, str, int | None], ...], table: DataTable[str | Text]
+        self, columns: tuple[tuple[str, str, int | None], ...], table: RowTable
     ) -> tuple[tuple[str, str, int | None], ...]:
         """Shrink the (otherwise auto-sized) NAME column, toward
         `_NAME_MIN_WIDTH` if needed, at every width -- not only below a
@@ -417,7 +412,7 @@ class ProcessesScreen(LiveScreen):
             for key, label, width in columns
         )
 
-    def _name_cap(self, table: DataTable[str | Text]) -> int:
+    def _name_cap(self, table: RowTable) -> int:
         for key, _label, width in self._columns(table):
             if key == "name":
                 return width if width is not None else _NAME_MAX_WIDTH
@@ -429,17 +424,16 @@ class ProcessesScreen(LiveScreen):
         marker = "▾" if self._sort_reverse else "▴"
         return f"{label} {marker}"
 
-    def _rebuild_columns(self, table: DataTable[str | Text]) -> None:
+    def _rebuild_columns(self, table: RowTable) -> None:
         table.clear(columns=True)
         specs = self._columns(table)
         for key, label, width in specs:
             table.add_column(self._header_label(key, label), width=width, key=key)
         self._column_widths = tuple(width for _key, _label, width in specs)
 
-    def _refresh_column_labels(self, table: DataTable[str | Text]) -> None:
+    def _refresh_column_labels(self, table: RowTable) -> None:
         for key, label, _width in self._columns(table):
-            table.columns[ColumnKey(key)].label = Text(self._header_label(key, label))
-        table.refresh()
+            table.set_column_label(key, self._header_label(key, label))
 
     def _rebuild_current_table(self) -> None:
         """Rebuild columns and repopulate from the already-sorted cached rows
@@ -447,6 +441,7 @@ class ProcessesScreen(LiveScreen):
         hidden/shown by width), not the underlying data shape."""
         table = self._table()
         previous_key, previous_index = self._current_selection(table)
+        previous_scroll_y = table.scroll_y
         self._rebuild_columns(table)
         if self._showing_group_table:
             for key, row in self._command_rows.items():
@@ -455,6 +450,8 @@ class ProcessesScreen(LiveScreen):
             for key, row in self._process_rows.items():
                 table.add_row(*self._process_cells(row, table), key=key)
         self._restore_selection(table, previous_key, previous_index, scroll=False)
+        if previous_scroll_y > 0:
+            table.scroll_to(y=previous_scroll_y, animate=False)
         self._update_status_line()
 
     # --- collection tick ----------------------------------------------------
@@ -499,8 +496,8 @@ class ProcessesScreen(LiveScreen):
 
         A failing read (`_read_once` returning `None`) is not applied at
         all, leaving the last frame on screen; applying a successful one
-        runs outside any `try`, so a programming error there (e.g.
-        `reorder_rows`'s `ValueError` invariant check) still propagates and
+        runs outside any `try`, so a programming error there (e.g. `RowTable.
+        reorder`'s `ValueError` invariant check) still propagates and
         ends the session instead of being swallowed alongside a transient
         read failure. Switching mode (`g`, Enter, Esc) does not go through
         here -- see `_switch_mode`.
@@ -650,7 +647,7 @@ class ProcessesScreen(LiveScreen):
 
     # --- row diffing: process rows --------------------------------------------
 
-    def _process_cells(self, row: ProcessRow, table: DataTable[str | Text]) -> list[str | Text]:
+    def _process_cells(self, row: ProcessRow, table: RowTable) -> list[Text]:
         name_cap = self._name_cap(table)
         return [
             _cell_value(key, _format_process_cell(key, row, name_cap=name_cap), dim=row.dim)
@@ -690,7 +687,7 @@ class ProcessesScreen(LiveScreen):
                 table.add_row(*self._process_cells(row, table), key=key)
         self._process_rows = new_by_key
 
-        reorder_rows(table, [row.key for row in ordered])
+        table.reorder([row.key for row in ordered])
         self._restore_selection(table, previous_key, previous_index, scroll=scroll)
         self._update_status_line()
         if row_count_changed:
@@ -700,7 +697,7 @@ class ProcessesScreen(LiveScreen):
             self.call_after_refresh(self._sync_columns)
 
     def _update_process_cells(
-        self, table: DataTable[str | Text], key: str, old: ProcessRow, row: ProcessRow
+        self, table: RowTable, key: str, old: ProcessRow, row: ProcessRow
     ) -> None:
         name_cap = self._name_cap(table)
         for col_key, _label, _width in self._columns(table):
@@ -711,7 +708,7 @@ class ProcessesScreen(LiveScreen):
 
     # --- row diffing: grouped (command) rows -----------------------------------
 
-    def _command_cells(self, row: CommandRow, table: DataTable[str | Text]) -> list[str | Text]:
+    def _command_cells(self, row: CommandRow, table: RowTable) -> list[Text]:
         name_cap = self._name_cap(table)
         return [
             _cell_value(key, _format_command_cell(key, row, name_cap=name_cap), dim=row.dim)
@@ -743,7 +740,7 @@ class ProcessesScreen(LiveScreen):
                 table.add_row(*self._command_cells(row, table), key=key)
         self._command_rows = new_by_key
 
-        reorder_rows(table, [row.key for row in ordered])
+        table.reorder([row.key for row in ordered])
         self._restore_selection(table, previous_key, previous_index, scroll=scroll)
         self._update_status_line()
         if row_count_changed:
@@ -752,7 +749,7 @@ class ProcessesScreen(LiveScreen):
             self.call_after_refresh(self._sync_columns)
 
     def _update_command_cells(
-        self, table: DataTable[str | Text], key: str, old: CommandRow, row: CommandRow
+        self, table: RowTable, key: str, old: CommandRow, row: CommandRow
     ) -> None:
         name_cap = self._name_cap(table)
         for col_key, _label, _width in self._columns(table):
@@ -763,16 +760,15 @@ class ProcessesScreen(LiveScreen):
 
     # --- selection, shared by both modes -----------------------------------------
 
-    def _current_selection(self, table: DataTable[str | Text]) -> tuple[str | None, int]:
+    def _current_selection(self, table: RowTable) -> tuple[str | None, int]:
         index = table.cursor_row
         if table.row_count == 0:
             return None, index
-        row_key, _column_key = table.coordinate_to_cell_key(table.cursor_coordinate)
-        return _key_str(row_key), index
+        return table.cursor_key, index
 
     def _restore_selection(
         self,
-        table: DataTable[str | Text],
+        table: RowTable,
         previous_key: str | None,
         previous_index: int,
         *,
@@ -804,18 +800,18 @@ class ProcessesScreen(LiveScreen):
     def action_sort(self, column: str) -> None:
         self._set_sort(column)
 
-    def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
-        self._set_sort(_key_str(event.column_key))
+    def on_row_table_header_selected(self, event: RowTable.HeaderSelected) -> None:
+        self._set_sort(event.column_key)
 
-    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+    def on_row_table_row_highlighted(self, event: RowTable.RowHighlighted) -> None:
         self._update_status_line()  # live as the cursor moves, not just on Enter
 
-    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+    def on_row_table_row_selected(self, event: RowTable.RowSelected) -> None:
         # Enter on a command in grouped mode drills into its members. A
         # no-op everywhere else, including on the synthetic rows.
         if not self._showing_group_table:
             return
-        key = _key_str(event.row_key)
+        key = event.row_key
         if key in SYNTHETIC_KEYS:
             return
         self._enter_drill(key)

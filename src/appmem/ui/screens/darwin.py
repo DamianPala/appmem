@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import ClassVar, cast
+from typing import ClassVar
 
 from rich.text import Text
 from textual import events
@@ -11,8 +11,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.message import Message
 from textual.screen import Screen
-from textual.widgets import DataTable, Static
-from textual.widgets.data_table import ColumnKey, RowKey
+from textual.widgets import Static
 
 from appmem.darwin_backend import DarwinApp, DarwinBackend, DarwinProcess, DarwinUnavailableError
 from appmem.darwin_native import HostMemory
@@ -21,13 +20,7 @@ from appmem.render import escape_control_chars
 from appmem.ui.darwin_rows import DarwinRow, build_rows, sort_rows, update_baseline
 from appmem.ui.layout import build_footer
 from appmem.ui.screens.live import LiveScreen
-from appmem.ui.table import CellTable
-from appmem.ui.table_order import reorder_rows
-
-
-def _key(value: RowKey | ColumnKey) -> str:
-    assert value.value is not None
-    return value.value
+from appmem.ui.table import RowTable
 
 
 def _amount(value: int | None) -> str:
@@ -99,13 +92,13 @@ class DarwinMainScreen(LiveScreen):
         yield Static(id="header1")
         yield Static(id="header2")
         yield Static(id="header3")
-        table: DataTable[str | Text] = CellTable(id="table", cursor_type="row")
+        table: RowTable = RowTable(id="table")
         self._rebuild_columns(table)
         yield table
         yield Static(id="footer")
 
-    def _table(self) -> DataTable[str | Text]:
-        return cast("DataTable[str | Text]", self.query_one("#table", DataTable))
+    def _table(self) -> RowTable:
+        return self.query_one("#table", RowTable)
 
     def on_mount(self) -> None:
         self.watch(self._table(), "show_vertical_scrollbar", self._on_scrollbar, init=False)
@@ -178,7 +171,7 @@ class DarwinMainScreen(LiveScreen):
             )
         )
 
-    def _specs(self, table: DataTable[str | Text]) -> list[tuple[str, str, int | None]]:
+    def _specs(self, table: RowTable) -> list[tuple[str, str, int | None]]:
         specs: list[tuple[str, str, int | None]] = [
             ("app", "APP", None),
             ("footprint", "FOOTPRINT", 12),
@@ -191,7 +184,7 @@ class DarwinMainScreen(LiveScreen):
         specs[0] = ("app", "APP", max(8, min(32, usable - other - 2)))
         return specs
 
-    def _rebuild_columns(self, table: DataTable[str | Text]) -> None:
+    def _rebuild_columns(self, table: RowTable) -> None:
         table.clear(columns=True)
         specs = self._specs(table)
         for key, label, width in specs:
@@ -201,7 +194,7 @@ class DarwinMainScreen(LiveScreen):
             )
         self._column_widths = tuple(width for _, _, width in specs)
 
-    def _cells(self, row: DarwinRow, table: DataTable[str | Text]) -> list[Text]:
+    def _cells(self, row: DarwinRow, table: RowTable) -> list[Text]:
         app_width = self._specs(table)[0][2] or 32
         values = {
             "app": truncate_name(escape_control_chars(row.name), app_width),
@@ -215,15 +208,10 @@ class DarwinMainScreen(LiveScreen):
             for key, _, _ in self._specs(table)
         ]
 
-    def _selected(self, table: DataTable[str | Text]) -> tuple[str | None, int]:
-        if not table.row_count:
-            return None, table.cursor_row
-        row_key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
-        return _key(row_key), table.cursor_row
+    def _selected(self, table: RowTable) -> tuple[str | None, int]:
+        return table.cursor_key, table.cursor_row
 
-    def _restore(
-        self, table: DataTable[str | Text], key: str | None, index: int, scroll: bool
-    ) -> None:
+    def _restore(self, table: RowTable, key: str | None, index: int, scroll: bool) -> None:
         if table.row_count:
             target = (
                 table.get_row_index(key)
@@ -244,37 +232,42 @@ class DarwinMainScreen(LiveScreen):
             if old is None:
                 table.add_row(*self._cells(row, table), key=key)
             elif old != row:
-                for column, value in zip(table.columns, self._cells(row, table), strict=True):
-                    table.update_cell(key, column, value)
+                for column, before, after in zip(
+                    table.column_keys, self._cells(old, table), self._cells(row, table), strict=True
+                ):
+                    if before.plain != after.plain:
+                        table.update_cell(key, column, after)
         self._rows = new_rows
-        reorder_rows(table, [row.key for row in sort_rows(rows, self._sort_key, self._reverse)])
+        table.reorder([row.key for row in sort_rows(rows, self._sort_key, self._reverse)])
         self._restore(table, selected, index, scroll)
         if changed_count:
             self.call_after_refresh(self._sync_columns)
 
-    def _sync_columns(self, *, force: bool = False) -> None:
+    def _sync_columns(self, *, force: bool = False, preserve_scroll: bool = True) -> None:
         table = self._table()
         widths = tuple(width for _, _, width in self._specs(table))
         if widths == self._column_widths and not force:
             return
         selected, index = self._selected(table)
+        previous_scroll_y = table.scroll_y
         self._rebuild_columns(table)
         for row in self._rows.values():
             table.add_row(*self._cells(row, table), key=row.key)
-        reorder_rows(
-            table,
+        table.reorder(
             [
                 row.key
                 for row in sort_rows(list(self._rows.values()), self._sort_key, self._reverse)
             ],
         )
         self._restore(table, selected, index, False)
+        if preserve_scroll and previous_scroll_y > 0:
+            table.scroll_to(y=previous_scroll_y, animate=False)
 
     def on_resize(self, event: events.Resize) -> None:
         if self._sort_key == "delta" and self.size.width < 65:
             self._sort_key, self._reverse = "footprint", True
         self._render_header()
-        self._sync_columns(force=True)
+        self._sync_columns(force=True, preserve_scroll=False)
         self._render_footer()
 
     def action_sort(self, key: str) -> None:
@@ -285,13 +278,11 @@ class DarwinMainScreen(LiveScreen):
         self._sync_columns(force=True)
         table = self._table()
         selected, index = self._selected(table)
-        reorder_rows(
-            table, [row.key for row in sort_rows(list(self._rows.values()), key, self._reverse)]
-        )
+        table.reorder([row.key for row in sort_rows(list(self._rows.values()), key, self._reverse)])
         self._restore(table, selected, index, True)
 
-    def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
-        self.action_sort(_key(event.column_key))
+    def on_row_table_header_selected(self, event: RowTable.HeaderSelected) -> None:
+        self.action_sort(event.column_key)
 
     def action_reset_delta(self) -> None:
         self.refresh_now(scroll=True)
@@ -302,8 +293,8 @@ class DarwinMainScreen(LiveScreen):
     def action_help(self) -> None:
         self.app.push_screen(DarwinHelpScreen())  # pyright: ignore[reportUnknownMemberType]
 
-    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        app_id = _key(event.row_key)
+    def on_row_table_row_selected(self, event: RowTable.RowSelected) -> None:
+        app_id = event.row_key
         if app_id in self._rows:
             self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
                 DarwinProcessesScreen(self._backend, app_id, self._interval)
@@ -366,13 +357,13 @@ class DarwinProcessesScreen(LiveScreen):
 
     def compose(self) -> ComposeResult:
         yield Static(id="title", markup=False)
-        table: DataTable[str | Text] = CellTable(id="table", cursor_type="row")
+        table: RowTable = RowTable(id="table")
         yield table
         yield Static(id="status", markup=False)
         yield Static(id="footer")
 
-    def _table(self) -> DataTable[str | Text]:
-        return cast("DataTable[str | Text]", self.query_one("#table", DataTable))
+    def _table(self) -> RowTable:
+        return self.query_one("#table", RowTable)
 
     def on_mount(self) -> None:
         self.watch(self._table(), "show_vertical_scrollbar", self._on_scrollbar, init=False)
@@ -471,7 +462,7 @@ class DarwinProcessesScreen(LiveScreen):
         known.sort(key=lambda row: (row.footprint_bytes or 0, row.name), reverse=self._reverse)
         return known + sorted(unknown, key=lambda row: row.name)
 
-    def _specs(self, table: DataTable[str | Text]) -> list[tuple[str, str, int | None]]:
+    def _specs(self, table: RowTable) -> list[tuple[str, str, int | None]]:
         grouped = self._grouped and self._command is None
         specs: list[tuple[str, str, int | None]] = []
         if not grouped:
@@ -488,7 +479,7 @@ class DarwinProcessesScreen(LiveScreen):
         name_width = max(8, min(32, usable - fixed - 2))
         return [(key, label, name_width if key == "name" else width) for key, label, width in specs]
 
-    def _rebuild_columns(self, table: DataTable[str | Text]) -> None:
+    def _rebuild_columns(self, table: RowTable) -> None:
         table.clear(columns=True)
         specs = self._specs(table)
         sort_column = "pid" if self._sort_key == "count" and not self._grouped else self._sort_key
@@ -498,7 +489,7 @@ class DarwinProcessesScreen(LiveScreen):
         self._column_keys = tuple(key for key, _, _ in specs)
         self._column_widths = tuple(width for _, _, width in specs)
 
-    def _cells(self, row: _DetailRow, table: DataTable[str | Text]) -> list[Text]:
+    def _cells(self, row: _DetailRow, table: RowTable) -> list[Text]:
         specs = self._specs(table)
         name_width = next(width for key, _, width in specs if key == "name") or 32
         values = {
@@ -515,26 +506,26 @@ class DarwinProcessesScreen(LiveScreen):
             for key, _, _ in specs
         ]
 
-    def _selection(self, table: DataTable[str | Text]) -> tuple[str | None, int]:
-        if not table.row_count:
-            return None, table.cursor_row
-        key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
-        return _key(key), table.cursor_row
+    def _selection(self, table: RowTable) -> tuple[str | None, int]:
+        return table.cursor_key, table.cursor_row
 
-    def _restore(self, table: DataTable[str | Text], key: str | None, index: int) -> None:
+    def _restore(self, table: RowTable, key: str | None, index: int) -> None:
         if table.row_count:
             target = (
                 table.get_row_index(key) if key in self._rows else min(index, table.row_count - 1)
             )
             table.move_cursor(row=target, scroll=False)
 
-    def _set_detail_row(self, table: DataTable[str | Text], row: _DetailRow) -> None:
+    def _set_detail_row(self, table: RowTable, row: _DetailRow) -> None:
         old = self._rows.get(row.key)
         if old is None:
             table.add_row(*self._cells(row, table), key=row.key)
         elif old != row:
-            for column, value in zip(table.columns, self._cells(row, table), strict=True):
-                table.update_cell(row.key, column, value)
+            for column, before, after in zip(
+                table.column_keys, self._cells(old, table), self._cells(row, table), strict=True
+            ):
+                if before.plain != after.plain:
+                    table.update_cell(row.key, column, after)
 
     def _apply_rows(self, rows: list[_DetailRow], *, force_columns: bool = False) -> None:
         table = self._table()
@@ -554,7 +545,7 @@ class DarwinProcessesScreen(LiveScreen):
         for row in new_rows.values():
             self._set_detail_row(table, row)
         self._rows = new_rows
-        reorder_rows(table, [row.key for row in self._sorted_rows(rows)])
+        table.reorder([row.key for row in self._sorted_rows(rows)])
         self._restore(table, selected, index)
         table.scroll_to(y=scroll_y, animate=False)
         if scroll_y > 0:
@@ -609,12 +600,12 @@ class DarwinProcessesScreen(LiveScreen):
                 status = self._rows[selected].status
         self.query_one("#status", Static).update(truncate_name(status, self.size.width))
 
-    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+    def on_row_table_row_highlighted(self, event: RowTable.RowHighlighted) -> None:
         self._render_status()
 
-    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        if self._grouped and self._command is None and _key(event.row_key) in self._rows:
-            self._command = _key(event.row_key)
+    def on_row_table_row_selected(self, event: RowTable.RowSelected) -> None:
+        if self._grouped and self._command is None and event.row_key in self._rows:
+            self._command = event.row_key
             self._invalidate_tick()
             self._render_detail(force_columns=True)
 
@@ -627,8 +618,8 @@ class DarwinProcessesScreen(LiveScreen):
         self._sort_key = key
         self._apply_rows(list(self._rows.values()), force_columns=True)
 
-    def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
-        key = _key(event.column_key)
+    def on_row_table_header_selected(self, event: RowTable.HeaderSelected) -> None:
+        key = event.column_key
         self.action_sort({"pid": "count"}.get(key, key))
 
     def action_toggle_group(self) -> None:
