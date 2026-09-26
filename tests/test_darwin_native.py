@@ -17,6 +17,7 @@ from appmem.darwin_native import (
     VMStatistics64,
     classify_error,
     decode_vm,
+    validate_sdk_abi,
 )
 
 
@@ -29,6 +30,23 @@ def test_fixed_abi_layout() -> None:
         VMStatistics64
     )
     assert VMStatistics64.swapped_count.offset == ctypes.sizeof(VMStatistics64) - 8
+
+
+@pytest.mark.parametrize("vm_sdk_size", [152, 160])
+def test_probe_accepts_only_supported_sdk_vm_layouts(vm_sdk_size: int) -> None:
+    layout = {
+        "bsdshort_size": ctypes.sizeof(BSDShortInfo),
+        "rusage_size": ctypes.sizeof(RUsageV4),
+        "footprint_offset": RUsageV4.phys_footprint.offset,
+        "vm_sdk_size": vm_sdk_size,
+        "vm_logical_offset": VMStatistics64.total_uncompressed_pages_in_compressor.offset,
+        "swap_size": ctypes.sizeof(SwapUsage),
+    }
+    validate_sdk_abi(layout)
+    with pytest.raises(RuntimeError, match="required ABI mismatch"):
+        validate_sdk_abi({**layout, "footprint_offset": 0})
+    with pytest.raises(RuntimeError, match="unsupported SDK"):
+        validate_sdk_abi({**layout, "vm_sdk_size": 144})
 
 
 def test_vm_response_accepts_older_revision_without_swapped_count() -> None:

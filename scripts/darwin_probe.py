@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import ctypes
 import json
 import os
 import platform
@@ -18,13 +17,10 @@ import time
 from pathlib import Path
 
 from appmem.darwin_native import (
-    BSDShortInfo,
     DarwinNative,
     ReadResult,
-    RUsageV4,
-    SwapUsage,
     Unavailable,
-    VMStatistics64,
+    validate_sdk_abi,
 )
 
 MIB = 1024 * 1024
@@ -87,22 +83,12 @@ def abi(binary: Path) -> dict[str, int]:
         "bsdshort_size",
         "rusage_size",
         "footprint_offset",
-        "vm_size",
+        "vm_sdk_size",
         "vm_logical_offset",
-        "vm_swapped_offset",
         "swap_size",
     )
     actual: dict[str, int] = dict(zip(keys, map(int, output.split()), strict=True))
-    expected = {
-        "bsdshort_size": ctypes.sizeof(BSDShortInfo),
-        "rusage_size": ctypes.sizeof(RUsageV4),
-        "footprint_offset": RUsageV4.phys_footprint.offset,
-        "vm_size": ctypes.sizeof(VMStatistics64),
-        "vm_logical_offset": VMStatistics64.total_uncompressed_pages_in_compressor.offset,
-        "vm_swapped_offset": VMStatistics64.swapped_count.offset,
-        "swap_size": ctypes.sizeof(SwapUsage),
-    }
-    require(actual == expected, f"SDK/ctypes ABI mismatch: {actual} != {expected}")
+    validate_sdk_abi(actual)
     return actual
 
 

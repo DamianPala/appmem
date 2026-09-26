@@ -150,6 +150,22 @@ class SwapUsage(c.Structure):
     ]
 
 
+def validate_sdk_abi(actual: dict[str, int]) -> None:
+    """Check the stable prefix while allowing either known SDK VM revision."""
+    vm_prefix_size = VMStatistics64.total_uncompressed_pages_in_compressor.offset + 8
+    expected = {
+        "bsdshort_size": c.sizeof(BSDShortInfo),
+        "rusage_size": c.sizeof(RUsageV4),
+        "footprint_offset": RUsageV4.phys_footprint.offset,
+        "vm_logical_offset": VMStatistics64.total_uncompressed_pages_in_compressor.offset,
+        "swap_size": c.sizeof(SwapUsage),
+    }
+    if {key: actual.get(key) for key in expected} != expected:
+        raise RuntimeError(f"SDK/ctypes required ABI mismatch: {actual} != {expected}")
+    if actual.get("vm_sdk_size") not in (vm_prefix_size, c.sizeof(VMStatistics64)):
+        raise RuntimeError(f"unsupported SDK vm_statistics64 size: {actual.get('vm_sdk_size')}")
+
+
 @dataclass(frozen=True)
 class ProcessIdentity:
     pid: int
