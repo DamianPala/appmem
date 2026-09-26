@@ -49,17 +49,6 @@ jobs:
       - name: Type check
         run: uv run pyright
 
-      - name: Signal shutdown diagnostic (five runs)
-        if: matrix.os == 'macos-15'
-        run: |
-          set -euo pipefail
-          for attempt in 1 2 3 4 5; do
-            printf 'SIGTERM attempt %s\n' "$attempt"
-            uv run pytest -q -s tests/test_cli_signals.py
-          done
-        env:
-          TERM: xterm
-
       - name: Test
         run: uv run pytest -q
         env:
@@ -88,5 +77,40 @@ jobs:
         with:
           name: darwin-native-probe
           path: darwin-probe.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  darwin-installed-wheel:
+    name: Darwin installed wheel (Python ${{ matrix.python-version }})
+    runs-on: macos-15
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.14"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install matrix Python
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Installed wheel acceptance
+        run: >-
+          python3 scripts/darwin_integration.py
+          --python ${{ matrix.python-version }}
+          --output darwin-integration-${{ matrix.python-version }}.json
+        env:
+          TERM: xterm
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: darwin-installed-wheel-${{ matrix.python-version }}
+          path: darwin-integration-${{ matrix.python-version }}.json
           if-no-files-found: ignore
           retention-days: 14

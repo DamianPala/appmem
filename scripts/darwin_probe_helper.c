@@ -3,6 +3,7 @@
 #include <mach/vm_statistics.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,6 +12,70 @@
 #include <sys/mman.h>
 #include <sys/sysctl.h>
 #include <unistd.h>
+#include <sys/wait.h>
+
+static int read_line(int fd, char *line, size_t capacity) {
+    size_t length = 0;
+    while (length + 1 < capacity) {
+        char byte;
+        if (read(fd, &byte, 1) != 1) return -1;
+        if (byte == '\n') {
+            line[length] = '\0';
+            return 0;
+        }
+        line[length++] = byte;
+    }
+    return -1;
+}
+
+static int proxy_child(const char *path) {
+    int input[2], output[2];
+    if (pipe(input)) return 10;
+    if (pipe(output)) {
+        close(input[0]); close(input[1]);
+        return 10;
+    }
+    pid_t child = fork();
+    if (child < 0) {
+        close(input[0]); close(input[1]); close(output[0]); close(output[1]);
+        return 11;
+    }
+    if (child == 0) {
+        if (dup2(input[0], STDIN_FILENO) < 0 || dup2(output[1], STDOUT_FILENO) < 0)
+            _exit(12);
+        close(input[0]); close(input[1]); close(output[0]); close(output[1]);
+        char *const args[] = {(char *)path, "workload", NULL};
+        execv(path, args);
+        _exit(13);
+    }
+    close(input[0]);
+    close(output[1]);
+    setvbuf(stdout, NULL, _IONBF, 0);
+    char line[32];
+    int result = 14;
+    if (read_line(output[0], line, sizeof(line)) || strcmp(line, "ready")) goto done;
+    printf("ready %d\n", child);
+    const char commands[] = {'a', 'f', 'q'};
+    const char *responses[] = {"allocated", "freed"};
+    for (size_t index = 0; index < 3; index++) {
+        char command;
+        if (read(STDIN_FILENO, &command, 1) != 1 || command != commands[index]) goto done;
+        if (write(input[1], &command, 1) != 1) goto done;
+        if (index < 2) {
+            if (read_line(output[0], line, sizeof(line)) || strcmp(line, responses[index]))
+                goto done;
+            puts(line);
+        }
+    }
+    result = 0;
+done:
+    close(input[1]);
+    close(output[0]);
+    if (result) kill(child, SIGKILL);
+    int status;
+    if (waitpid(child, &status, 0) != child) return 15;
+    return result ? result : (!WIFEXITED(status) || WEXITSTATUS(status) ? 16 : 0);
+}
 
 int main(int argc, char **argv) {
     if (argc == 2 && strcmp(argv[1], "abi") == 0) {
@@ -22,6 +87,7 @@ int main(int argc, char **argv) {
                sizeof(struct xsw_usage));
         return 0;
     }
+    if (argc == 3 && strcmp(argv[1], "parent") == 0) return proxy_child(argv[2]);
     if (argc != 2 || strcmp(argv[1], "workload") != 0) return 2;
     const size_t length = 128 * 1024 * 1024;
     unsigned char *bytes = mmap(NULL, length, PROT_READ | PROT_WRITE,
