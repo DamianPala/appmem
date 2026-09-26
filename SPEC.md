@@ -1,4 +1,4 @@
-# appmem: spec v0.18
+# appmem: spec v0.19
 
 A live terminal view of RAM and swap usage **per application**, not per process.
 Think `btm` or `htop`, but rows are apps (Ghostty, Brave, LibreOffice), each summing all of its processes.
@@ -133,6 +133,7 @@ It covers what RAM, CACHE, SWAP, TOTAL, pressure and the header's shared/free/ca
 | click header | sort by that column, click again to reverse |
 | `r` / `s` / `t` / `d` / `z` | sort by RAM / SWAP / TOTAL / ΔSWAP / ZSWAP (repeat to reverse); a key whose column is hidden is absent and does nothing; other columns sort by click |
 | `↑` `↓` `PgUp` `PgDn` | move |
+| `Home` `End` | jump to the first/last row |
 | `Enter` | open the process view for the selected app; in grouped mode, the processes of the selected command |
 | `g` | process view: toggle grouping by command |
 | `Esc` | back to the main view |
@@ -371,16 +372,16 @@ Every failure writes one JSON error object as the last non-empty stderr line, ne
   - `collect` reads `/sys` and `/proc` and returns plain dataclasses, with no UI imports. It takes a root path, so tests run against fixture directory trees.
   - `ui` is the Textual app.
 - Textual notes for the implementer:
-  - `DataTable` provides a `HeaderSelected` event and `sort(key, reverse=)`. Sort state, the `▴`/`▾` marker and flip-on-second-click are ours to write.
+  - `RowTable` (`appmem.ui.table`) posts a `HeaderSelected` event on a header click; `reorder(ordered_keys)` puts rows in that order without rebuilding them. Sort state, the `▴`/`▾` marker and flip-on-second-click are ours to write.
   - Update cells in place with `update_cell`, and add or remove rows only for apps that appeared or vanished. Rebuilding the table every tick causes flicker and loses the cursor.
   - After a sort, `move_cursor` to the selected app's row key.
   - Textual binds `Ctrl+C` to a "no longer quits" notice by default. Rebind it to quit.
   - Exit with `sys.exit(app.return_code or 0)`.
-  - Both screens' tables (`appmem.ui.table.CellTable`) are a `DataTable` subclass whose `update_cell` invalidates only the changed cell instead of Textual's whole render cache (Textual bumps a counter that's part of every cached cell's key, so one changed cell invalidates every cell on screen); it falls back to Textual's own `update_cell` for `update_width=True`, on a Textual minor it was not tested against (8.2 today), and if Textual's internals move.
+  - Both screens' tables (`appmem.ui.table.RowTable`) are a hand-written `ScrollView` (Line API), not a `DataTable` subclass: `DataTable` renders every cell through Rich with an `_update_count`-keyed cache, so one changed cell invalidates the whole render cache and every `render_line` call redoes the cell/row/line lookups regardless. `RowTable` caches one `Strip` per row (built once from each cell's `.plain`/`.justify`/`.style`, never through markup) and keeps it across frames; `update_cell` invalidates only that row's strip and refreshes one screen line, `add_row`/`remove_row`/`reorder` never rebuild an unrelated row's strip. The cursor row is rebuilt on every `render_line` instead of cached, since it is the one row whose look depends on focus. A spike (43 rows, 9 columns, one tick per second) measured this against `CellTable`: at appmem's real median of 6 changed cells/tick, 1.25 % vs 0.27 % of one core; at 30, 2.55 % vs 0.83 %; at 100, 3.15 % vs 1.22 %. The shipped app's numbers are in the performance paragraph below. `RowTable` never depends on `DataTable`'s private attributes, so it can't fall out of sync with a Textual minor the way `CellTable` could.
 
 Performance budget: the collector stays under 1 % of one CPU core at a 1 s interval.
 Measured on the dev machine: 4.5 ms per tick for 146 units, 10 ms for `/proc/PID/status` of all 542 user processes.
-Measured with the UI at `-i 1` on the dev machine: 2026-09-23 (~310 processes, small terminal) main view about 4 %, process views about 5 % of one core; 2026-09-25 (43 apps, 481 processes) 7.8 % at 200x50 in both views and 11.6 % at 120x86, the same before and after the memory fixes of 2026-09-24. The cost is the table repaint, so it grows with the number of visible rows; the README says 4 to 12 %. `-i 2` measured 4.0 % at 200x50 the same day, half of `-i 1`. With `CellTable`'s per-cell cache invalidation, 2026-09-25 (same terminal size, live desktop, so not the exact same app/process count as the 7.8 % run): main view 5.3 %, process view 6.9 % of one core. `appmem snapshot` takes about 0.25 s including interpreter start. With the collector-cost fixes (no `Path` rebuilt per tick, one `os.read` per small file, PROCS every 5th tick instead of every tick): 2026-09-25, private tmux sessions at 200x50 on the live desktop, 60 s each, released `0.1.0` vs the fix branch back to back: main view 4.02 % of one core before, 3.40 % after.
+Measured with the UI at `-i 1` on the dev machine: 2026-09-23 (~310 processes, small terminal) main view about 4 %, process views about 5 % of one core; 2026-09-25 (43 apps, 481 processes) 7.8 % at 200x50 in both views and 11.6 % at 120x86, the same before and after the memory fixes of 2026-09-24. The cost is the table repaint, so it grows with the number of visible rows; the README said 4 to 12 % before `RowTable` (now 3 to 12 %, see below). `-i 2` measured 4.0 % at 200x50 the same day, half of `-i 1`. With `CellTable`'s per-cell cache invalidation, 2026-09-25 (same terminal size, live desktop, so not the exact same app/process count as the 7.8 % run): main view 5.3 %, process view 6.9 % of one core. `appmem snapshot` takes about 0.25 s including interpreter start. With the collector-cost fixes (no `Path` rebuilt per tick, one `os.read` per small file, PROCS every 5th tick instead of every tick): 2026-09-25, private tmux sessions at 200x50 on the live desktop, 60 s each, released `0.1.0` vs the fix branch back to back: main view 4.02 % of one core before, 3.40 % after. With `RowTable` replacing `CellTable`: 2026-09-26, private tmux sessions at 200x50 on the live desktop (real apps and processes, not fixtures), 60 s each after an 8 s warm-up, `CellTable`'s `0.1.0` vs this branch back to back, two runs each: main view 4.3-4.9 % of one core before, 2.7-3.1 % after; process view (drilled into the top app) 6.6-8.6 % before, 5.0-5.3 % after -- consistent with the spike's own numbers above, and with `CellTable`'s own share of the total (5.3 %/6.9 % on 2026-09-25) roughly halved.
 
 ## Tests
 

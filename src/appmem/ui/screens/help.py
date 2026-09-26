@@ -163,6 +163,7 @@ _KEYS: tuple[tuple[str, str], ...] = (
     ("click header", "sort by that column, click again to reverse"),
     ("r / s / t / d", "sort by RAM / SWAP / TOTAL / ΔSWAP (repeat to reverse)"),
     ("up/down PgUp PgDn", "move"),
+    ("Home End", "jump to the first/last row"),
     ("Enter", "open the process view for the selected app; grouped: that command's processes"),
     ("g", "process view: toggle grouping by command"),
     ("Esc", "back to the main view"),

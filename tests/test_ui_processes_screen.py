@@ -22,10 +22,8 @@ from rich.text import Text
 from textual import events
 from textual.containers import VerticalScroll
 from textual.content import Content
-from textual.coordinate import Coordinate
 from textual.pilot import Pilot
-from textual.widgets import DataTable, OptionList, Static
-from textual.widgets.data_table import ColumnKey
+from textual.widgets import OptionList, Static
 from textual.worker import Worker
 
 from appmem.collect import ProcStats, UnitStats
@@ -37,6 +35,7 @@ from appmem.ui.screens import processes as processes_screen
 from appmem.ui.screens.help import HelpScreen
 from appmem.ui.screens.main import MainScreen
 from appmem.ui.screens.processes import ProcessesScreen
+from appmem.ui.table import RowTable
 from appmem.ui.theme_picker import ThemePanel
 from helpers import (
     make_unit,
@@ -54,10 +53,10 @@ NO_AUTO_REFRESH_INTERVAL = 100.0
 SCREEN_SIZE = (120, 35)
 
 
-def _table(pilot: Pilot[None]) -> DataTable[str | Text]:
+def _table(pilot: Pilot[None]) -> RowTable:
     # Scoped to the active (topmost) screen: `pilot.app.query_one` would also
-    # match a DataTable on a screen still mounted underneath it.
-    return cast("DataTable[str | Text]", pilot.app.screen.query_one(DataTable))
+    # match a RowTable on a screen still mounted underneath it.
+    return pilot.app.screen.query_one(RowTable)
 
 
 def _base_tree(tmp_path: Path) -> Path:
@@ -95,12 +94,8 @@ def _app(root: Path, *, include_system: bool = False) -> AppMemApp:
     )
 
 
-def _row_keys(table: DataTable[str | Text]) -> list[str]:
-    keys: list[str] = []
-    for row in table.ordered_rows:
-        assert row.key.value is not None
-        keys.append(row.key.value)
-    return keys
+def _row_keys(table: RowTable) -> list[str]:
+    return list(table.row_keys)
 
 
 def _title_visual(title: Static) -> Content:
@@ -161,11 +156,11 @@ async def test_sort_by_header_click_and_key(tmp_path: Path) -> None:
         assert isinstance(screen, ProcessesScreen)
         table = _table(pilot)
 
-        header_event = DataTable.HeaderSelected(table, ColumnKey("swap"), 1, Text("SWAP"))
-        screen.on_data_table_header_selected(header_event)
+        header_event = RowTable.HeaderSelected(table, "swap")
+        screen.on_row_table_header_selected(header_event)
         assert _row_keys(table) == ["101", "102", "100", KERNEL_KEY, UNATTRIBUTED_KEY]
 
-        screen.on_data_table_header_selected(header_event)  # second click reverses
+        screen.on_row_table_header_selected(header_event)  # second click reverses
         assert _row_keys(table) == ["100", "102", "101", KERNEL_KEY, UNATTRIBUTED_KEY]
 
         await pilot.press("s")  # SWAP desc again
@@ -183,20 +178,20 @@ async def test_g_switches_columns_and_back(tmp_path: Path) -> None:
         await pilot.pause()
         await _open_ghostty_process_view(pilot)
         table = _table(pilot)
-        assert "pid" in table.columns
-        assert "procs" not in table.columns
+        assert "pid" in table.column_keys
+        assert "procs" not in table.column_keys
 
         await pilot.press("g")
-        assert "procs" in table.columns
-        assert "pid" not in table.columns
+        assert "procs" in table.column_keys
+        assert "pid" not in table.column_keys
         assert _row_keys(table) == ["node", KERNEL_KEY, UNATTRIBUTED_KEY]
         node_cell = table.get_cell("node", "procs")
         assert isinstance(node_cell, Text)
         assert node_cell.plain == "2"
 
         await pilot.press("g")
-        assert "pid" in table.columns
-        assert "procs" not in table.columns
+        assert "pid" in table.column_keys
+        assert "procs" not in table.column_keys
         # Sort state (TOTAL desc) carried over: pid 101 (20 KiB) before 100 (10 KiB).
         assert _row_keys(table) == ["101", "100", KERNEL_KEY, UNATTRIBUTED_KEY]
 
@@ -268,8 +263,7 @@ async def test_esc_returns_with_main_cursor_and_sort_intact(tmp_path: Path) -> N
         assert isinstance(pilot.app.screen, MainScreen)
         # Sort by SWAP desc survived the round trip: ghostty (5 MiB) before alpha (1 MiB).
         assert _row_keys(main_table) == [row_key("ghostty", "user"), row_key("alpha", "user")]
-        cursor_key, _column_key = main_table.coordinate_to_cell_key(main_table.cursor_coordinate)
-        assert cursor_key.value == row_key("ghostty", "user")
+        assert main_table.cursor_key == row_key("ghostty", "user")
 
 
 @pytest.mark.asyncio
@@ -454,16 +448,12 @@ async def test_kernel_and_unattributed_rows_stay_pinned_last_under_every_sort(
         table = _table(pilot)
 
         for key in ("pid", "name", "swap", "ram", "total", "age", "unit"):
-            screen.on_data_table_header_selected(
-                DataTable.HeaderSelected(table, ColumnKey(key), 1, Text(key.upper()))
-            )
+            screen.on_row_table_header_selected(RowTable.HeaderSelected(table, key))
             assert _row_keys(table)[-2:] == [KERNEL_KEY, UNATTRIBUTED_KEY]
 
         await pilot.press("g")  # grouped-by-command mode
         for key in ("name", "swap", "ram", "total", "procs"):
-            screen.on_data_table_header_selected(
-                DataTable.HeaderSelected(table, ColumnKey(key), 1, Text(key.upper()))
-            )
+            screen.on_row_table_header_selected(RowTable.HeaderSelected(table, key))
             assert _row_keys(table)[-2:] == [KERNEL_KEY, UNATTRIBUTED_KEY]
 
 
@@ -734,16 +724,16 @@ async def test_a_value_error_from_the_process_view_apply_path_still_propagates(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # `ValueError` is only swallowed when it comes from the collector reads
-    # inside the `try`. `reorder_rows`'s own invariant check
-    # (`src/appmem/ui/table_order.py`) also raises `ValueError`, but from the
-    # apply step outside the `try` -- a broken invariant there is a
-    # programming error and must still surface, not freeze the table.
+    # inside the `try`. `RowTable.reorder`'s own invariant check also raises
+    # `ValueError`, but from the apply step outside the `try` -- a broken
+    # invariant there is a programming error and must still surface, not
+    # freeze the table.
     root = _base_tree(tmp_path)
     _app_unit(root, "app-ghostty.service", ram=1 * 1024**2, swap=0, pids=[100])
     _proc(root, 100, name="ghostty")
     app = _app(root)
 
-    def _broken_reorder_rows(table: object, ordered_keys: object) -> None:
+    def _broken_reorder(self: RowTable, ordered_keys: list[str]) -> None:
         raise ValueError("broken invariant")
 
     async with app.run_test(size=SCREEN_SIZE) as pilot:
@@ -752,7 +742,7 @@ async def test_a_value_error_from_the_process_view_apply_path_still_propagates(
         screen = pilot.app.screen
         assert isinstance(screen, ProcessesScreen)
 
-        monkeypatch.setattr(processes_screen, "reorder_rows", _broken_reorder_rows)
+        monkeypatch.setattr(RowTable, "reorder", _broken_reorder)
         with pytest.raises(ValueError, match="broken invariant"):
             screen.refresh_now()
 
@@ -770,14 +760,14 @@ async def test_flat_and_drilled_column_order_is_pid_name_ram_swap_total(tmp_path
         await pilot.pause()
         await _open_ghostty_process_view(pilot)
         table = _table(pilot)
-        keys = [column.key.value for column in table.ordered_columns]
+        keys = list(table.column_keys)
 
         assert keys == ["pid", "name", "ram", "swap", "total", "age", "unit"]
 
         table.move_cursor(row=table.get_row_index("100"))
         await pilot.press("enter")  # a no-op here (not grouped), stays flat
         await pilot.pause()
-        keys = [column.key.value for column in table.ordered_columns]
+        keys = list(table.column_keys)
         assert keys == ["pid", "name", "ram", "swap", "total", "age", "unit"]
 
 
@@ -793,7 +783,7 @@ async def test_grouped_column_order_is_name_ram_swap_total_procs(tmp_path: Path)
         await pilot.press("g")
         await pilot.pause()
         table = _table(pilot)
-        keys = [column.key.value for column in table.ordered_columns]
+        keys = list(table.column_keys)
 
         assert keys == ["name", "ram", "swap", "total", "procs"]
 
@@ -816,7 +806,7 @@ async def test_drill_down_column_order_is_pid_name_ram_swap_total(tmp_path: Path
         await pilot.pause()
 
         table = _table(pilot)
-        keys = [column.key.value for column in table.ordered_columns]
+        keys = list(table.column_keys)
         assert keys == ["pid", "name", "ram", "swap", "total", "age", "unit"]
 
 
@@ -995,11 +985,11 @@ async def test_every_rendered_footer_key_acts_in_flat_mode(tmp_path: Path) -> No
 
         for key, column in (("r", "ram"), ("s", "swap"), ("t", "total")):
             await pilot.press(key)
-            label = str(table.columns[ColumnKey(column)].label)
+            label = table.get_column_label(column)
             assert "▴" in label or "▾" in label  # sort acted: this column is now marked
 
         await pilot.press("g")  # group: the table's column shape changes
-        assert "procs" in table.columns
+        assert "procs" in table.column_keys
         await pilot.press("g")  # back to flat, for the remaining checks
         await pilot.pause()
 
@@ -1029,7 +1019,7 @@ async def test_every_rendered_footer_key_acts_in_grouped_mode(tmp_path: Path) ->
 
         for key, column in (("r", "ram"), ("s", "swap"), ("t", "total")):
             await pilot.press(key)
-            label = str(table.columns[ColumnKey(column)].label)
+            label = table.get_column_label(column)
             assert "▴" in label or "▾" in label
 
         table.move_cursor(row=table.get_row_index("a"))
@@ -1037,12 +1027,12 @@ async def test_every_rendered_footer_key_acts_in_grouped_mode(tmp_path: Path) ->
         await pilot.pause()
         screen = pilot.app.screen
         assert isinstance(screen, ProcessesScreen)
-        assert "pid" in _table(pilot).columns
+        assert "pid" in _table(pilot).column_keys
 
         await pilot.press("escape")  # back to the grouped list
         await pilot.pause()
         await pilot.press("g")  # group: back to flat, the column shape changes
-        assert "pid" in _table(pilot).columns
+        assert "pid" in _table(pilot).column_keys
 
         await pilot.press("?")
         assert isinstance(pilot.app.screen, HelpScreen)
@@ -1074,7 +1064,7 @@ async def test_every_rendered_footer_key_acts_in_drilled_mode(tmp_path: Path) ->
 
         for key, column in (("r", "ram"), ("s", "swap"), ("t", "total")):
             await pilot.press(key)
-            label = str(table.columns[ColumnKey(column)].label)
+            label = table.get_column_label(column)
             assert "▴" in label or "▾" in label
 
         await pilot.press("g")  # group: exits the drill-down entirely, to flat
@@ -1099,7 +1089,7 @@ async def test_every_rendered_footer_key_acts_in_drilled_mode(tmp_path: Path) ->
 
         await pilot.press("escape")  # groups: back to the grouped list, table shape changes
         await pilot.pause()
-        assert "procs" in _table(pilot).columns
+        assert "procs" in _table(pilot).column_keys
 
 
 @pytest.mark.asyncio
@@ -1434,7 +1424,7 @@ async def test_enter_on_a_command_drills_into_its_members(tmp_path: Path) -> Non
         assert "ghostty › claude" in str(title.content)  # noqa: RUF001
         assert "2 procs" in str(title.content)  # the command's members, not the app's 3
         table = _table(pilot)
-        assert "pid" in table.columns  # flat process columns again
+        assert "pid" in table.column_keys  # flat process columns again
         assert set(_row_keys(table)) == {"100", "101"}  # only claude's members
         assert KERNEL_KEY not in _row_keys(table)
         assert UNATTRIBUTED_KEY not in _row_keys(table)
@@ -1468,10 +1458,9 @@ async def test_esc_from_drill_returns_to_grouped_list_on_the_same_command(
         screen = pilot.app.screen
         assert isinstance(screen, ProcessesScreen)
         table = _table(pilot)
-        assert "procs" in table.columns  # back to grouped columns
+        assert "procs" in table.column_keys  # back to grouped columns
         assert _row_keys(table)[:-2] == ["node", "claude"]
-        cursor_key, _col = table.coordinate_to_cell_key(table.cursor_coordinate)
-        assert cursor_key.value == "claude"
+        assert table.cursor_key == "claude"
 
 
 @pytest.mark.asyncio
@@ -1493,7 +1482,7 @@ async def test_enter_on_synthetic_rows_in_grouped_mode_is_a_noop(tmp_path: Path)
         screen = pilot.app.screen
         assert isinstance(screen, ProcessesScreen)
         table = _table(pilot)
-        assert "procs" in table.columns  # still the grouped table, not drilled
+        assert "procs" in table.column_keys  # still the grouped table, not drilled
 
 
 @pytest.mark.asyncio
@@ -1585,7 +1574,7 @@ async def test_app_reappearing_after_vanishing_while_drilled_shows_grouped_rows_
         screen.refresh_now()  # tick: app back, now in grouped (not drilled) mode
 
         table = _table(pilot)
-        assert set(table.columns) == {"name", "ram", "swap", "total", "procs"}  # grouped shape
+        assert set(table.column_keys) == {"name", "ram", "swap", "total", "procs"}  # grouped shape
         assert _row_keys(table) == ["claude", KERNEL_KEY, UNATTRIBUTED_KEY]
         ram_cell = table.get_cell("claude", "ram")
         assert isinstance(ram_cell, Text)
@@ -1609,8 +1598,8 @@ async def test_age_column_hidden_below_95_columns(tmp_path: Path) -> None:
         await _open_ghostty_process_view(pilot)
         table = _table(pilot)
 
-        assert "age" not in table.columns
-        assert "pid" in table.columns
+        assert "age" not in table.column_keys
+        assert "pid" in table.column_keys
 
 
 @pytest.mark.asyncio
@@ -1624,7 +1613,7 @@ async def test_age_column_shown_at_or_above_95_columns(tmp_path: Path) -> None:
         await _open_ghostty_process_view(pilot)
         table = _table(pilot)
 
-        assert "age" in table.columns
+        assert "age" in table.column_keys
 
 
 @pytest.mark.asyncio
@@ -1637,13 +1626,13 @@ async def test_age_column_recomputes_on_resize(tmp_path: Path) -> None:
         await pilot.pause()
         await _open_ghostty_process_view(pilot)
         table = _table(pilot)
-        assert "age" in table.columns
+        assert "age" in table.column_keys
 
         await pilot.resize_terminal(80, 24)
-        assert "age" not in table.columns
+        assert "age" not in table.column_keys
 
         await pilot.resize_terminal(120, 35)
-        assert "age" in table.columns
+        assert "age" in table.column_keys
 
 
 @pytest.mark.asyncio
@@ -1659,9 +1648,7 @@ async def test_sorting_by_age_hidden_by_width_resorts_by_total_desc(tmp_path: Pa
         await _open_ghostty_process_view(pilot)
         screen = pilot.app.screen
         assert isinstance(screen, ProcessesScreen)
-        screen.on_data_table_header_selected(
-            DataTable.HeaderSelected(_table(pilot), ColumnKey("age"), 5, Text("AGE"))
-        )
+        screen.on_row_table_header_selected(RowTable.HeaderSelected(_table(pilot), "age"))
         assert _row_keys(_table(pilot))[:2] == ["100", "101"]
 
         await pilot.resize_terminal(80, 24)
@@ -1784,8 +1771,7 @@ async def test_proc_40_cjk_name_keeps_total_on_screen_at_80x24(tmp_path: Path) -
         await pilot.pause()
         await _open_ghostty_process_view(pilot)
         table = _table(pilot)
-        idx = table.get_column_index("total")
-        region = table._get_column_region(idx)  # pyright: ignore[reportPrivateUsage]
+        region = table.column_region("total")
         assert region.right <= table.size.width, (region, table.size.width)
 
 
@@ -1861,8 +1847,7 @@ async def test_total_column_fits_on_screen_at_60_columns_with_a_long_name(tmp_pa
         await pilot.pause()
         await _open_ghostty_process_view(pilot)
         table = _table(pilot)
-        idx = table.get_column_index("total")
-        region = table._get_column_region(idx)  # pyright: ignore[reportPrivateUsage]
+        region = table.column_region("total")
         assert region.right <= table.size.width, (region, table.size.width)
 
 
@@ -1876,18 +1861,15 @@ async def test_total_column_fits_after_resizing_from_90_to_60(tmp_path: Path) ->
         await pilot.pause()
         await _open_ghostty_process_view(pilot)
         table = _table(pilot)
-        idx = table.get_column_index("name")
-        cell = str(table.get_cell_at(Coordinate(0, idx)))
+        cell = table.get_cell("100", "name").plain
         assert "…" not in cell, "already cropped at 90 columns"
 
         await pilot.resize_terminal(60, 24)
         await pilot.pause()
 
-        idx = table.get_column_index("total")
-        region = table._get_column_region(idx)  # pyright: ignore[reportPrivateUsage]
+        region = table.column_region("total")
         assert region.right <= table.size.width, (region, table.size.width)
-        idx = table.get_column_index("name")
-        cell = str(table.get_cell_at(Coordinate(0, idx)))
+        cell = table.get_cell("100", "name").plain
         assert "…" in cell, "long name not cropped at 60 columns"
 
 
@@ -1901,18 +1883,15 @@ async def test_name_column_widens_back_after_resizing_from_60_to_90(tmp_path: Pa
         await pilot.pause()
         await _open_ghostty_process_view(pilot)
         table = _table(pilot)
-        idx = table.get_column_index("name")
-        cell = str(table.get_cell_at(Coordinate(0, idx)))
+        cell = table.get_cell("100", "name").plain
         assert "…" in cell, "long name not cropped at 60 columns"
 
         await pilot.resize_terminal(90, 24)
         await pilot.pause()
 
-        idx = table.get_column_index("total")
-        region = table._get_column_region(idx)  # pyright: ignore[reportPrivateUsage]
+        region = table.column_region("total")
         assert region.right <= table.size.width, (region, table.size.width)
-        idx = table.get_column_index("name")
-        cell = str(table.get_cell_at(Coordinate(0, idx)))
+        cell = table.get_cell("100", "name").plain
         assert "…" not in cell, "still cropped back at 90 columns"
 
 
@@ -1937,12 +1916,10 @@ async def test_numeric_columns_fit_on_screen_with_a_32_char_name(
         await pilot.pause()
         await _open_ghostty_process_view(pilot)
         table = _table(pilot)
-        for key in table.columns:
-            assert key.value is not None
-            if key.value in ("name", "unit"):
+        for key in table.column_keys:
+            if key in ("name", "unit"):
                 continue
-            idx = table.get_column_index(key.value)
-            region = table._get_column_region(idx)  # pyright: ignore[reportPrivateUsage]
+            region = table.column_region(key)
             assert region.right <= table.size.width, (key, region, table.size.width)
 
 
@@ -1962,12 +1939,10 @@ async def test_numeric_columns_fit_on_screen_grouped_with_a_32_char_command_name
         await _open_ghostty_process_view(pilot)
         await pilot.press("g")
         table = _table(pilot)
-        for key in table.columns:
-            assert key.value is not None
-            if key.value == "name":
+        for key in table.column_keys:
+            if key == "name":
                 continue
-            idx = table.get_column_index(key.value)
-            region = table._get_column_region(idx)  # pyright: ignore[reportPrivateUsage]
+            region = table.column_region(key)
             assert region.right <= table.size.width, (key, region, table.size.width)
 
 
@@ -1994,8 +1969,7 @@ async def test_numeric_columns_still_fit_when_new_rows_bring_a_scrollbar(tmp_pat
         await pilot.pause()
 
         assert table.scrollbar_size_vertical > 0
-        idx = table.get_column_index("total")
-        region = table._get_column_region(idx)  # pyright: ignore[reportPrivateUsage]
+        region = table.column_region("total")
         assert region.right <= table.scrollable_content_region.width
 
 
@@ -2021,8 +1995,7 @@ async def test_procs_column_still_fits_when_new_groups_bring_a_scrollbar(tmp_pat
         await pilot.pause()
 
         assert table.scrollbar_size_vertical > 0
-        idx = table.get_column_index("procs")
-        region = table._get_column_region(idx)  # pyright: ignore[reportPrivateUsage]
+        region = table.column_region("procs")
         assert region.right <= table.scrollable_content_region.width
 
 
@@ -2197,10 +2170,10 @@ async def test_stale_tick_result_is_discarded_after_toggling_group(
         await pilot.pause()
         screen = pilot.app.screen
         assert isinstance(screen, ProcessesScreen)
-        assert "procs" in _table(pilot).columns  # grouped columns right after the toggle
+        assert "procs" in _table(pilot).column_keys  # grouped columns right after the toggle
 
         await pilot.pause(0.5)  # let the slow, now-stale flat-mode read arrive and try to apply
-        assert "procs" in _table(pilot).columns, "a stale flat-mode result overwrote the table"
+        assert "procs" in _table(pilot).column_keys, "a stale flat-mode result overwrote the table"
 
 
 @pytest.mark.asyncio
@@ -2298,7 +2271,7 @@ async def test_esc_from_drill_during_a_failing_read_keeps_rows_then_switches_on_
         assert isinstance(screen, ProcessesScreen)
         table = _table(pilot)
         assert table.row_count > 0, "drilled rows blanked by a failing Esc"
-        assert "pid" in table.columns, "still showing the drilled (process) columns"
+        assert "pid" in table.column_keys, "still showing the drilled (process) columns"
         assert screen._drill_command == "claude", "mode switched despite the failing read"  # pyright: ignore[reportPrivateUsage]
 
         monkeypatch.setattr(processes_screen, "collect_read_procs", real)
@@ -2306,9 +2279,8 @@ async def test_esc_from_drill_during_a_failing_read_keeps_rows_then_switches_on_
         await pilot.pause()
 
         table = _table(pilot)
-        assert "procs" in table.columns  # now rebuilt to the grouped shape
-        cursor_key, _col = table.coordinate_to_cell_key(table.cursor_coordinate)
-        assert cursor_key.value == "claude"
+        assert "procs" in table.column_keys  # now rebuilt to the grouped shape
+        assert table.cursor_key == "claude"
 
 
 @pytest.mark.asyncio
@@ -2341,7 +2313,7 @@ async def test_enter_drill_during_a_failing_tick_keeps_the_grouped_rows(
         table = _table(pilot)
         assert table.row_count > 0, "grouped list blanked by a failing drill-down read"
         assert set(_row_keys(table)) == before_keys
-        assert "procs" in table.columns  # not switched to the drilled (process) shape yet
+        assert "procs" in table.column_keys  # not switched to the drilled (process) shape yet
 
 
 @pytest.mark.asyncio
@@ -2371,7 +2343,7 @@ async def test_toggle_group_during_a_failing_tick_keeps_the_flat_rows(
         table = _table(pilot)
         assert table.row_count > 0, "flat list blanked by a failing group-toggle read"
         assert set(_row_keys(table)) == before_keys
-        assert "pid" in table.columns  # not switched to the grouped shape yet
+        assert "pid" in table.column_keys  # not switched to the grouped shape yet
 
 
 @pytest.mark.asyncio
@@ -2430,7 +2402,7 @@ async def test_sort_key_still_works_after_a_failing_enter_drill(
 async def test_enter_on_stale_row_after_a_failing_group_toggle_does_not_drill(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Before the fix, `on_data_table_row_selected` trusted `_showing_group_table`
+    # Before the fix, `on_row_table_row_selected` trusted `_showing_group_table`
     # against a table that a failing `g` had left in the old (flat) shape,
     # drilling into a PID string mistaken for a command name.
     root = _base_tree(tmp_path)

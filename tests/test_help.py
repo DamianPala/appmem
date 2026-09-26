@@ -74,6 +74,7 @@ def test_body_ends_with_the_key_list() -> None:
         "click header",
         "r / s / t / d",
         "up/down PgUp PgDn",
+        "Home End",
         "Enter",
         "g",
         "Esc",

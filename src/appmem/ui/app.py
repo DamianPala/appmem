@@ -39,16 +39,16 @@ class AppMemApp(App[None]):
 
     TITLE = "appmem"
     CSS: ClassVar[str] = """
-    DataTable > .datatable--header {
+    RowTable > .rowtable--header {
         color: auto;
     }
-    DataTable:ansi > .datatable--header {
+    RowTable:ansi > .rowtable--header {
         background: ansi_default;
         color: ansi_default;
         text-style: bold underline;
     }
     """
-    """Every `DataTable` in the app (main view, process view, its grouped and
+    """Every `RowTable` in the app (main view, process view, its grouped and
     drill-down modes -- one rule covers all of them, SPEC.md "Main view").
 
     `color: auto` picks black or white against whatever `background: $panel`
