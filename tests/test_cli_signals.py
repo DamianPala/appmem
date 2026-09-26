@@ -26,61 +26,10 @@ from pathlib import Path
 from helpers import user_service_root, write_meminfo, write_memory_stat, write_uptime
 
 _RUNNER = """
-import os
 import sys
-import time
 from pathlib import Path
 from appmem.cli import main
-from appmem.ui.app import AppMemApp
-from textual.drivers.linux_driver import LinuxDriver
-
-_trace_fd = os.open(sys.argv[2], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-_marks = 0
-def mark(stage):
-    global _marks
-    if _marks >= 64:
-        return
-    _marks += 1
-    os.write(_trace_fd, f'{time.monotonic():.6f} {stage}\\n'.encode())
-
-def wrap(cls, name):
-    original = getattr(cls, name)
-    def measured(self, *args, **kwargs):
-        mark(name + '.start')
-        try:
-            return original(self, *args, **kwargs)
-        finally:
-            mark(name + '.end')
-    setattr(cls, name, measured)
-
-wrap(AppMemApp, 'exit')
-wrap(LinuxDriver, 'disable_input')
-wrap(LinuxDriver, 'stop_application_mode')
-wrap(LinuxDriver, 'close')
-
-original_loop = AppMemApp._process_messages_loop
-async def measured_loop(self):
-    mark('message_loop.start')
-    try:
-        return await original_loop(self)
-    finally:
-        mark('message_loop.end')
-AppMemApp._process_messages_loop = measured_loop
-
-original_shutdown = AppMemApp._shutdown
-async def measured_shutdown(self):
-    mark('shutdown.start')
-    try:
-        return await original_shutdown(self)
-    finally:
-        mark('shutdown.end')
-AppMemApp._shutdown = measured_shutdown
-
-mark('main.start')
-code = main(sys.argv[3:], root=Path(sys.argv[1]), uid=1000)
-mark('main.end')
-os.close(_trace_fd)
-sys.exit(code)
+sys.exit(main(sys.argv[2:], root=Path(sys.argv[1]), uid=1000))
 """
 
 
@@ -162,12 +111,11 @@ def test_sigterm_exits_promptly_instead_of_waiting_for_the_next_tick(tmp_path: P
     root = _base_tree(tmp_path)
     runner = tmp_path / "runner.py"
     runner.write_text(_RUNNER)
-    trace = tmp_path / "signal-trace.txt"
 
     master_fd, slave_fd = pty.openpty()
     os.set_blocking(master_fd, False)
     proc = subprocess.Popen(
-        [sys.executable, str(runner), str(root), str(trace), "-i", "5"],
+        [sys.executable, str(runner), str(root), "-i", "5"],
         stdin=slave_fd,
         stdout=slave_fd,
         stderr=slave_fd,
@@ -186,15 +134,13 @@ def test_sigterm_exits_promptly_instead_of_waiting_for_the_next_tick(tmp_path: P
             seen += _read_available(master_fd)
         assert all(marker in seen for marker in markers), f"app never rendered its header: {seen!r}"
 
-        sent_at = time.monotonic()
         os.kill(proc.pid, signal.SIGTERM)
         status, elapsed, remaining, restored_at = _wait_for_exit(proc.pid, master_fd, timeout=2.0)
 
         assert status is not None, "process did not exit within 2s of SIGTERM"
         assert elapsed < 1.0, (
             f"exit took {elapsed:.2f}s (restore at {restored_at}s; "
-            f"drained {len(remaining)} bytes; trace from signal {sent_at}: "
-            f"{trace.read_text()[:4096] if trace.exists() else '<missing>'}; "
+            f"drained {len(remaining)} bytes; "
             "must wake the loop immediately)"
         )
         assert os.WIFEXITED(status)
@@ -206,10 +152,7 @@ def test_sigterm_exits_promptly_instead_of_waiting_for_the_next_tick(tmp_path: P
         output = seen + remaining
         assert b"\x1b[?1049l" in output, "alt screen was not turned off on exit"
         assert b"\x1b[?25h" in output, "cursor was not shown again on exit"
-        print(
-            f"SIGTERM to exit: {elapsed * 1000:.0f} ms; "
-            f"trace from signal {sent_at}: {trace.read_text()[:4096]}"
-        )
+        print(f"SIGTERM to exit: {elapsed * 1000:.0f} ms; drained {len(remaining)} bytes")
     finally:
         os.close(master_fd)
         if proc.poll() is None:
