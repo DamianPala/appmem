@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import pty
+import select
 import signal
 import subprocess
 import sys
@@ -127,8 +128,34 @@ def _wait_for_exit(
             if restored_at is None and b"\x1b[?1049l" in output:
                 restored_at = time.monotonic() - start
             return status, time.monotonic() - start, bytes(output), restored_at
-        time.sleep(0.02)
+        # Textual's writer thread may block on a full PTY. Wake on each new
+        # burst instead of sleeping while it waits for us to make room.
+        select.select([master_fd], [], [], min(0.05, max(0.0, deadline - time.monotonic())))
     return None, timeout, bytes(output), restored_at
+
+
+def test_pty_reader_drains_a_large_burst_without_stalling_writer() -> None:
+    master_fd, slave_fd = pty.openpty()
+    os.set_blocking(master_fd, False)
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'x' * 262144)"],
+        stdout=slave_fd,
+        stderr=slave_fd,
+    )
+    os.close(slave_fd)
+    try:
+        status, elapsed, output, restored_at = _wait_for_exit(proc.pid, master_fd, timeout=2.0)
+        assert status is not None, "writer blocked with a full PTY"
+        proc.returncode = os.waitstatus_to_exitcode(status)
+        assert proc.returncode == 0
+        assert output == b"x" * 262144
+        assert restored_at is None
+        assert elapsed < 2.0
+    finally:
+        os.close(master_fd)
+        if proc.returncode is None:
+            proc.kill()
+            proc.wait(timeout=5)
 
 
 def test_sigterm_exits_promptly_instead_of_waiting_for_the_next_tick(tmp_path: Path) -> None:
@@ -155,8 +182,8 @@ def test_sigterm_exits_promptly_instead_of_waiting_for_the_next_tick(tmp_path: P
         seen = b""
         markers = (b"RAM", b"Pressure", b"GiB")
         while time.monotonic() < deadline and not all(marker in seen for marker in markers):
+            select.select([master_fd], [], [], min(0.05, max(0.0, deadline - time.monotonic())))
             seen += _read_available(master_fd)
-            time.sleep(0.05)
         assert all(marker in seen for marker in markers), f"app never rendered its header: {seen!r}"
 
         sent_at = time.monotonic()
