@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fcntl
+import inspect
 import json
 import os
 import platform
@@ -46,6 +47,7 @@ STAGE_NAMES = (
 class Progress:
     stage: str = "preflight"
     passed: dict[str, bool] = field(default_factory=lambda: dict.fromkeys(STAGE_NAMES, False))
+    installed_python: str | None = None
 
     def start(self, name: str) -> None:
         self.stage = name
@@ -54,9 +56,16 @@ class Progress:
         self.passed[self.stage] = True
 
 
+class CheckError(RuntimeError):
+    def __init__(self, message: str, check_id: str) -> None:
+        super().__init__(message)
+        self.check_id = check_id
+
+
 def require(ok: bool, message: str) -> None:
     if not ok:
-        raise RuntimeError(message)
+        caller = inspect.stack(context=0)[1]
+        raise CheckError(message, f"{caller.function}:{caller.lineno}")
 
 
 def remaining(deadline: float, cap: float = 10.0) -> float:
@@ -81,7 +90,7 @@ def run_command(
     return result
 
 
-def installed_cli(root: Path, python_version: str, deadline: float) -> tuple[Path, str]:
+def installed_cli(root: Path, python_version: str, deadline: float) -> tuple[Path, str, str]:
     dist = root / "dist"
     run_command(["uv", "build", "--wheel", "--out-dir", dist, ROOT], cwd=root, deadline=deadline)
     wheels = list(dist.glob("appmem-*.whl"))
@@ -89,6 +98,12 @@ def installed_cli(root: Path, python_version: str, deadline: float) -> tuple[Pat
     venv = root / "venv"
     run_command(["uv", "venv", "--python", python_version, venv], cwd=root, deadline=deadline)
     python = venv / "bin/python"
+    installed_python = run_command(
+        [python, "-I", "-c", "import platform; print(platform.python_version())"],
+        cwd=root,
+        deadline=deadline,
+    ).stdout.strip()
+    require(bool(installed_python), "installed Python version unavailable")
     run_command(
         ["uv", "pip", "install", "--python", python, wheels[0]], cwd=root, deadline=deadline
     )
@@ -103,7 +118,7 @@ def installed_cli(root: Path, python_version: str, deadline: float) -> tuple[Pat
     require(not version_result.stderr, "installed appmem version emitted stderr")
     version = version_result.stdout.strip()
     require(bool(version) and "\n" not in version, "installed appmem version is unavailable")
-    return cli, version
+    return cli, version, installed_python
 
 
 def compile_helpers(root: Path, deadline: float) -> tuple[Path, Path, Path]:
@@ -350,8 +365,7 @@ def follow_next(
     deadline: float,
 ) -> dict[str, Any]:
     next_value: object = document.get("next")
-    if not isinstance(next_value, list):
-        raise RuntimeError("published next command is invalid")
+    require(isinstance(next_value, list), "published next command is invalid")
     next_argv = cast("list[object]", next_value)
     require(
         len(next_argv) >= 4
@@ -362,6 +376,11 @@ def follow_next(
     continued = cli_json(cli, root, [*cast("list[str]", next_argv[1:]), "--json"], deadline)
     validate(continued, schema)
     return continued
+
+
+def listed_ids(document: dict[str, Any]) -> set[str]:
+    apps = cast("list[dict[str, Any]]", document["apps"])
+    return {str(app["id"]) for app in apps}
 
 
 def pagination(
@@ -376,12 +395,19 @@ def pagination(
     first_page = cli_json(cli, root, ["snapshot", "--limit", "1", "--json"], deadline)
     validate(first_page, snapshot_schema)
     require(first_page["has_more"], "controlled snapshot did not publish next")
-    continued = follow_next(
-        cli, root, first_page, snapshot_schema, command="snapshot", deadline=deadline
-    )
+    page = first_page
+    continued = first_page
+    for _ in range(4):
+        continued = follow_next(
+            cli, root, page, snapshot_schema, command="snapshot", deadline=deadline
+        )
+        if set(app_ids) <= listed_ids(continued):
+            break
+        require(continued["has_more"], "snapshot next omitted a controlled identity")
+        page = continued
     require(
-        set(app_ids) <= {app["id"] for app in continued["apps"]},
-        "snapshot next lost a controlled app identity",
+        set(app_ids) <= listed_ids(continued),
+        "snapshot next did not reach both controlled identities within four pages",
     )
     for app_id in app_ids:
         first_detail = cli_json(cli, root, ["app", app_id, "--limit", "1", "--json"], deadline)
@@ -677,7 +703,7 @@ def collect(
         "first_child": first_values,
         "second_child": second_values,
         "tui_navigation_scope": "observed live app",
-        "tui_exit_ms": tui_ms,
+        "tui_session_ms": tui_ms,
     }
     return facts, (first_id, second_id), owned
 
@@ -691,7 +717,11 @@ def integration(python_version: str, progress: Progress, deadline: float) -> dic
     with tempfile.TemporaryDirectory(prefix="appmem-installed-") as directory:
         root = Path(directory)
         progress.start("wheel_install")
-        cli, version = installed_cli(root, python_version, deadline)
+        cli, version, progress.installed_python = installed_cli(root, python_version, deadline)
+        require(
+            progress.installed_python.startswith(f"{python_version}."),
+            "installed Python does not match requested version",
+        )
         progress.finish()
         progress.start("helper_compile")
         first_binary, second_binary, loose_binary = compile_helpers(root, deadline)
@@ -765,12 +795,17 @@ def main() -> None:
         "platform": platform.platform(),
         "architecture": platform.machine(),
         "python": platform.python_version(),
+        "requested_python": args.python,
     }
     try:
         metadata["source_commit"] = run_command(
             ["git", "rev-parse", "HEAD"], cwd=ROOT, deadline=deadline, cap=5
         ).stdout.strip()
-        result = {**metadata, **integration(args.python, progress, deadline)}
+        result = {
+            **metadata,
+            **integration(args.python, progress, deadline),
+            "installed_python": progress.installed_python,
+        }
     except Exception as error:
         args.output.write_text(
             json.dumps(
@@ -780,6 +815,8 @@ def main() -> None:
                     "stage": progress.stage,
                     "stages": progress.passed,
                     "error_type": type(error).__name__,
+                    "check_id": error.check_id if isinstance(error, CheckError) else None,
+                    "installed_python": progress.installed_python,
                 },
                 indent=2,
             )
