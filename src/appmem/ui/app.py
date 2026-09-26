@@ -12,11 +12,12 @@ choice, and re-rendering the main view's header when it changes (SPEC.md
 from __future__ import annotations
 
 import gc
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import ClassVar
 
 from textual.app import App
 from textual.binding import Binding, BindingType
+from textual.screen import Screen
 
 from appmem.backend import Backend
 from appmem.theme import (
@@ -26,6 +27,7 @@ from appmem.theme import (
     config_path,
     write_config_theme,
 )
+from appmem.ui.screens.darwin import DarwinMainScreen
 from appmem.ui.screens.main import MainScreen
 from appmem.ui.theme_picker import ThemePanel
 
@@ -77,15 +79,17 @@ class AppMemApp(App[None]):
     def __init__(
         self,
         *,
-        backend: Backend,
+        backend: Backend | None = None,
         interval: float,
-        include_system: bool,
+        include_system: bool = False,
+        main_screen_factory: Callable[[], Screen[None]] | None = None,
         theme: str = TEXTUAL_BUILTIN_DEFAULT,
         config_theme: str | None = None,
         theme_warnings: Sequence[str] = (),
     ) -> None:
         super().__init__()
         self._backend = backend
+        self._main_screen_factory = main_screen_factory
         self._interval = interval
         self._include_system = include_system
         self.cgroup_error_message: str | None = None
@@ -171,7 +175,7 @@ class AppMemApp(App[None]):
         # swap fraction); it's always mounted (the default screen), whether
         # or not it's the one currently on top.
         for screen in self.screen_stack:
-            if isinstance(screen, MainScreen):
+            if isinstance(screen, (MainScreen, DarwinMainScreen)):
                 screen.refresh_theme()
 
     def fail_cgroup_unavailable(self, message: str) -> None:
@@ -181,7 +185,10 @@ class AppMemApp(App[None]):
         self.cgroup_error_message = message
         self.exit(return_code=1)
 
-    def get_default_screen(self) -> MainScreen:
+    def get_default_screen(self) -> Screen[None]:
+        if self._main_screen_factory is not None:
+            return self._main_screen_factory()
+        assert self._backend is not None
         return MainScreen(
             backend=self._backend,
             interval=self._interval,

@@ -15,7 +15,6 @@ again, scoped to that command's PIDs.
 
 from __future__ import annotations
 
-import threading
 from dataclasses import dataclass, replace
 from typing import ClassVar, cast
 
@@ -24,8 +23,6 @@ from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.message import Message
-from textual.screen import Screen
-from textual.timer import Timer
 from textual.widgets import DataTable, Static
 from textual.widgets.data_table import ColumnKey, RowKey
 
@@ -62,6 +59,7 @@ from appmem.ui.process_rows import (
     zswap_pool_process_row,
 )
 from appmem.ui.screens.help import HelpScreen
+from appmem.ui.screens.live import LiveScreen
 from appmem.ui.table import CellTable
 from appmem.ui.table_order import reorder_rows
 
@@ -195,7 +193,7 @@ def _tick_worker(backend: Backend, scope: str, name: str, *, generation: int) ->
     return _TickResult(generation=generation, app=app, procs=procs)
 
 
-class ProcessesScreen(Screen[None]):
+class ProcessesScreen(LiveScreen):
     """Per-process table for one app (SPEC.md "Process view")."""
 
     # Same reason as MainScreen: DataTable's `height: auto` would push the
@@ -242,10 +240,7 @@ class ProcessesScreen(Screen[None]):
         self._last_app: AppStats | None = None
         self._last_proc_count = 0
         self._age_shown = True
-        self._timer: Timer | None = None
-        self._tick_in_flight = False
         self._column_widths: tuple[int | None, ...] = ()
-        self._generation = 0
         """Bumped on every context change (`g`, drilling in/out, the app
         going away, the screen covered/resumed). A background result carries
         the generation it was read under; `_apply_tick` discards one that
@@ -291,19 +286,19 @@ class ProcessesScreen(Screen[None]):
         self._set_rich("#footer", self._footer_text())
 
     def on_mount(self) -> None:
+        self.watch(self._table(), "show_vertical_scrollbar", self._on_scrollbar_change, init=False)
         self.refresh_now()
-        self._timer = self.set_interval(self._interval, self._tick)
+        self._start_live_timer(self._interval, self._tick)
+
+    def _on_scrollbar_change(self, previous: bool, current: bool) -> None:
+        if previous != current:
+            self.call_after_refresh(self._sync_columns)
 
     def _tick(self) -> None:
         # Covered by help: skip the work, `on_screen_resume` catches up.
         # A previous tick's read is still in flight: skip, don't stack a
         # second one (SPEC.md "Tech": at most one read in flight per screen).
-        if not self.is_active or self._tick_in_flight:
-            return
-        self._tick_in_flight = True
-        threading.Thread(
-            target=self._tick_read, args=(self._generation,), name="appmem-tick", daemon=True
-        ).start()
+        self._launch_tick(self._tick_read)
 
     def _tick_read(self, generation: int) -> None:
         # Thread side of a tick, a plain thread posting a message rather than
@@ -322,7 +317,7 @@ class ProcessesScreen(Screen[None]):
         self.post_message(TickDone(payload))
 
     def on_tick_done(self, event: TickDone) -> None:
-        self._tick_in_flight = False
+        self._finish_tick()
         if isinstance(event.payload, Exception):
             raise event.payload  # a collector bug: exit loudly, see `MainScreen.on_tick_done`
         self._apply_tick(event.payload)
@@ -333,18 +328,12 @@ class ProcessesScreen(Screen[None]):
             return
         if result.procs is None:  # transient read/parse failure this tick
             return
-        if result.generation != self._generation or not self.is_active:
+        if not self._accept_tick(result.generation):
             # `g`, a drill-down, or the screen being covered/left changed the
             # context while this read was in flight: discard rather than
             # show a stale table (SPEC.md "Tech").
             return
         self._apply_refresh(result.app, result.procs, scroll=False)
-
-    def on_screen_resume(self) -> None:
-        # A read dispatched before the covering screen closed is now stale,
-        # even if nothing we track here actually changed while it was up.
-        self._generation += 1
-        self.refresh_now()  # no stale numbers when a screen pushed on top of us closes
 
     def on_resize(self, event: events.Resize) -> None:
         # Title and footer never wrap -- recompute on every resize, not just
@@ -413,9 +402,7 @@ class ProcessesScreen(Screen[None]):
         rather than shrinking. The table's own vertical scrollbar (when
         shown) narrows its usable width too, so it comes out of the same
         budget as the numeric columns."""
-        total_width = (
-            self.app.size.width - table.scrollbar_size_vertical  # pyright: ignore[reportUnknownMemberType]
-        )
+        total_width = table.scrollable_content_region.width or self.app.size.width  # pyright: ignore[reportUnknownMemberType]
         reserved = sum(
             _CELL_PADDING + (width or 0)
             for key, _label, width in columns

@@ -24,9 +24,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, NoReturn, Protocol
 
-from appmem import __version__, report, schema
+from appmem import __version__, darwin_report, darwin_schema, report, schema
 from appmem.backend import Backend, select_backend
 from appmem.collect import CgroupUnavailableError
+from appmem.darwin_backend import DarwinBackend, DarwinUnavailableError
 from appmem.render import render_app_text, render_snapshot_text
 from appmem.theme import (
     APPMEM_THEME_ENV,
@@ -37,6 +38,7 @@ from appmem.theme import (
     resolve_theme,
 )
 from appmem.ui.app import AppMemApp
+from appmem.ui.screens.darwin import DarwinMainScreen
 
 MIN_INTERVAL = 0.2
 
@@ -46,6 +48,7 @@ ERROR_KINDS: tuple[str, ...] = (
     "cgroup_unavailable",
     "not_found",
     "interrupted",
+    "platform_unavailable",
 )
 """Every `kind` an error object can carry. The single source for both the
 runtime check below and `tests/test_docs.py`, so a kind renamed here without
@@ -161,6 +164,33 @@ flags, format defaults and exit codes). With a command name ("snapshot" or
 writes JSON, with or without --json.
 """
 
+_DARWIN_HELP_TEXT = """\
+appmem: experimental Apple Silicon application footprint view.
+
+Usage:
+  appmem [-i SECONDS] [--theme NAME]
+  appmem snapshot [--limit N] [--json]
+  appmem app NAME [--limit N] [--json]
+  appmem schema [COMMAND]
+
+Footprint is a per-process native physical footprint, not resident RAM or
+reclaimable memory. Denied process reads make app totals partial or unknown.
+Use appmem schema for fields and coverage. macOS 15+ Apple Silicon is required.
+
+Keys: Enter details, g group by command, b reset growth baseline,
+      up/down move, T theme, ? help, q/Ctrl+C quit.
+"""
+_DARWIN_SNAPSHOT_HELP_TEXT = """\
+appmem snapshot: native host memory and user application footprints.
+Usage: appmem snapshot [--limit N] [--json]
+--system is unsupported on macOS. JSON is the default outside a terminal.
+"""
+_DARWIN_APP_HELP_TEXT = """\
+appmem app: one application's captured process and command footprints.
+Usage: appmem app NAME [--limit N] [--json]
+NAME is the stable app id or displayed name. Only user scope is supported.
+"""
+
 
 class _SubparserFactory(Protocol):
     """What `_add_*_parser` needs from `ArgumentParser.add_subparsers()`'s
@@ -256,10 +286,13 @@ def _add_json_flag(parser: argparse.ArgumentParser, *, suppress: bool) -> None:
     )
 
 
-def _build_parser() -> argparse.ArgumentParser:
+def _build_parser(*, darwin: bool = False) -> argparse.ArgumentParser:
     parser = _ArgumentParser(prog="appmem", add_help=False)
     parser.add_argument(
-        "-h", "--help", action=_make_help_action(_HELP_TEXT), help="show this help and exit"
+        "-h",
+        "--help",
+        action=_make_help_action(_DARWIN_HELP_TEXT if darwin else _HELP_TEXT),
+        help="show this help and exit",
     )
     parser.add_argument(
         *_option_strings(schema.ROOT_INTERVAL),
@@ -290,18 +323,18 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-V", "--version", action="version", version=__version__)
 
     subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
-    _add_snapshot_parser(subparsers)
-    _add_app_parser(subparsers)
+    _add_snapshot_parser(subparsers, darwin=darwin)
+    _add_app_parser(subparsers, darwin=darwin)
     _add_schema_parser(subparsers)
     return parser
 
 
-def _add_snapshot_parser(subparsers: _SubparserFactory) -> None:
+def _add_snapshot_parser(subparsers: _SubparserFactory, *, darwin: bool = False) -> None:
     parser = subparsers.add_parser("snapshot", add_help=False)
     parser.add_argument(
         "-h",
         "--help",
-        action=_make_help_action(_SNAPSHOT_HELP_TEXT),
+        action=_make_help_action(_DARWIN_SNAPSHOT_HELP_TEXT if darwin else _SNAPSHOT_HELP_TEXT),
         help="show this help and exit",
     )
     parser.add_argument(
@@ -322,10 +355,13 @@ def _add_snapshot_parser(subparsers: _SubparserFactory) -> None:
     _add_json_flag(parser, suppress=True)
 
 
-def _add_app_parser(subparsers: _SubparserFactory) -> None:
+def _add_app_parser(subparsers: _SubparserFactory, *, darwin: bool = False) -> None:
     parser = subparsers.add_parser("app", add_help=False)
     parser.add_argument(
-        "-h", "--help", action=_make_help_action(_APP_HELP_TEXT), help="show this help and exit"
+        "-h",
+        "--help",
+        action=_make_help_action(_DARWIN_APP_HELP_TEXT if darwin else _APP_HELP_TEXT),
+        help="show this help and exit",
     )
     parser.add_argument("name", metavar="NAME", help=schema.APP_NAME.description)
     parser.add_argument(
@@ -443,14 +479,11 @@ def _run_app(app: AppMemApp) -> int:
     return app.return_code if app.return_code is not None else 0
 
 
-def _run_root(
+def _require_live_terminal(
     args: argparse.Namespace,
-    *,
-    backend: Backend,
     stdin_isatty: Callable[[], bool],
     stdout_isatty: Callable[[], bool],
-) -> int:
-    """Bare `appmem`: the live view, but only in a terminal context."""
+) -> None:
     json_flag = bool(args.json)
     no_input = bool(os.environ.get("NO_INPUT"))
     if not (stdin_isatty() and stdout_isatty()) or json_flag or no_input:
@@ -467,6 +500,17 @@ def _run_root(
             hint="Run appmem snapshot for a one-shot report",
             next_argv=next_argv,
         )
+
+
+def _run_root(
+    args: argparse.Namespace,
+    *,
+    backend: Backend,
+    stdin_isatty: Callable[[], bool],
+    stdout_isatty: Callable[[], bool],
+) -> int:
+    """Bare `appmem`: the live view, but only in a terminal context."""
+    _require_live_terminal(args, stdin_isatty, stdout_isatty)
 
     try:
         backend.check()
@@ -556,12 +600,12 @@ def _run_app_command(
     return 0
 
 
-def _run_schema(args: argparse.Namespace) -> int:
+def _run_schema(args: argparse.Namespace, *, darwin: bool = False) -> int:
     path: list[str] = [] if args.path is None else [args.path]
     if not path:
-        document = schema.index()
+        document = darwin_schema.index() if darwin else schema.index()
     else:
-        found = schema.detail(path)
+        found = darwin_schema.detail(path) if darwin else schema.detail(path)
         if found is None:
             _fail(
                 "invalid_input",
@@ -605,6 +649,81 @@ def _reject_live_view_flags(args: argparse.Namespace) -> None:
         )
 
 
+def _run_darwin(
+    args: argparse.Namespace,
+    uid: int,
+    stdin_isatty: Callable[[], bool],
+    stdout_isatty: Callable[[], bool],
+) -> int:
+    if args.system or (args.command == "app" and args.scope == "system"):
+        _fail(
+            "invalid_input",
+            "system scope is unavailable on macOS",
+            2,
+            action="agent",
+            hint="Use the user-scoped snapshot or app command without --system",
+        )
+    try:
+        backend = DarwinBackend(uid)
+        if args.command == "snapshot":
+            document, _ = darwin_report.snapshot_document(
+                backend, limit=args.limit, now=datetime.now().astimezone()
+            )
+            output = (
+                json.dumps(document)
+                if args.json or not stdout_isatty()
+                else darwin_report.render_snapshot_text(document)
+            )
+            _write_result(output)
+            return 0
+        if args.command == "app":
+            found = darwin_report.app_document(
+                backend, args.name, limit=args.limit, now=datetime.now().astimezone()
+            )
+            if found is None:
+                _fail(
+                    "not_found",
+                    f"no app named {args.name!r}",
+                    1,
+                    action="agent",
+                    hint="Use an id or name from appmem snapshot",
+                )
+            document, _, _ = found
+            output = (
+                json.dumps(document)
+                if args.json or not stdout_isatty()
+                else darwin_report.render_app_text(document)
+            )
+            _write_result(output)
+            return 0
+        _require_live_terminal(args, stdin_isatty, stdout_isatty)
+        backend.check()
+        theme = resolve_theme(
+            cli_theme=args.theme,
+            env_theme=os.environ.get(APPMEM_THEME_ENV) or None,
+            config_path=config_path(),
+            textual_theme=os.environ.get(TEXTUAL_THEME_ENV) or None,
+        )
+        app = AppMemApp(
+            interval=args.interval if args.interval is not None else 1.0,
+            main_screen_factory=lambda: DarwinMainScreen(
+                backend, args.interval if args.interval is not None else 1.0
+            ),
+            theme=theme.effective,
+            config_theme=theme.config_theme,
+            theme_warnings=theme.warnings,
+        )
+        return _run_app(app)
+    except DarwinUnavailableError as exc:
+        _fail(
+            "platform_unavailable",
+            str(exc),
+            1,
+            action="user",
+            hint="Run on macOS 15 or newer on Apple Silicon",
+        )
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -619,14 +738,26 @@ def main(
     `--help`/`--version`/usage errors, which raise `SystemExit` from
     argparse) stay easy to drive directly.
     """
-    args = _build_parser().parse_args(argv)
+    darwin = root is None and sys.platform == "darwin"
+    args = _build_parser(darwin=darwin).parse_args(argv)
+    if root is None and sys.platform not in ("linux", "darwin"):
+        _fail(
+            "platform_unavailable",
+            f"unsupported operating system {sys.platform!r}",
+            1,
+            action="user",
+            hint="Run on Linux or macOS 15+ Apple Silicon",
+        )
     resolved_root = Path("/") if root is None else root
     resolved_uid = os.getuid() if uid is None else uid
 
     _reject_live_view_flags(args)
 
     if args.command == "schema":
-        return _run_schema(args)
+        return _run_schema(args, darwin=darwin)
+
+    if darwin:
+        return _run_darwin(args, resolved_uid, stdin_isatty, stdout_isatty)
 
     backend = select_backend(resolved_root, resolved_uid)
 

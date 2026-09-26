@@ -1,19 +1,20 @@
 [project]
 name = "appmem"
 version = "0.1.0"
-description = "Live terminal view of RAM and swap usage per application, not per process"
+description = "Terminal view of application RAM and swap on Linux or footprints on Apple Silicon"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
 authors = [{ name = "Damian Pala" }]
-keywords = ["ram", "swap", "memory", "cgroup", "systemd", "tui", "monitoring", "linux"]
+keywords = ["ram", "swap", "memory", "cgroup", "systemd", "tui", "monitoring", "linux", "macos", "apple-silicon"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "Intended Audience :: System Administrators",
     "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",

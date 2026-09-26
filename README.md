@@ -1,6 +1,6 @@
 # appmem
 
-Find out which apps are eating your RAM and swap. Live, in the terminal, one row per app.
+Find out which apps are eating your RAM and swap on Linux, or compare application footprints on Apple Silicon. Live, in the terminal, one row per app.
 
 The laptop starts swapping, the fan spins up, and `htop` shows forty processes called `chrome`, thirty called `node` and something called `Isolated Web Co`.
 appmem shows the same memory as the apps you actually opened: Chrome, Firefox, VS Code, your terminal, each with its RAM, its swap and how much it grew since you started looking.
@@ -37,11 +37,21 @@ appmem
 No root, no config file.
 From a checkout, `uv run appmem`.
 
-You need Linux with systemd and a desktop that starts apps as systemd units (KDE Plasma and GNOME do), on cgroup v2, which current distributions use by default.
+The published 0.1.0 package supports Linux. You need Linux with systemd and a desktop that starts apps as systemd units (KDE Plasma and GNOME do), on cgroup v2, which current distributions use by default.
 Python 3.12 or newer; uv fetches it for you.
 Kernel 5.10 or newer; the zswap figures need 5.19 and the Pressure line needs pressure tracking (PSI) switched on in the kernel, without them those parts stay off and the rest works.
 
-## Using it
+### Experimental macOS support in the development branch
+
+The `feat/platform-backends` development branch adds experimental support for macOS 15 or newer on Apple Silicon. It has not been released to PyPI; `uv tool install appmem` still installs the Linux-only 0.1.0 package. From a checkout of that branch, run `uv tool install .` to install this build.
+
+The Mac view ranks apps by **physical footprint**, with `APP`, `FOOTPRINT`, `ΔFOOT` and `PROCS` columns. This is the native footprint reported for captured processes, not resident RAM, memory you will necessarily reclaim by closing an app, or an exact Activity Monitor total. `*` marks an app whose known total is partial because some process footprints are unreadable; `?` means none were readable. Growth stays unknown until that app has a complete sample, which establishes a zero baseline. A partial current sample shows unknown; when coverage recovers, growth compares with the retained complete baseline. Vanished or reopened apps start a new baseline. Bundles are grouped by their outermost `.app` path, and bundleless processes follow the nearest app ancestor or a separate session root; missing ancestry can leave grouping partial. Same-named copies at different paths remain separate.
+
+The Mac header shows physical and free memory, wired pages, the compressor's physical storage and logical represented bytes, dynamically allocated global swap, and native kernel pressure (`normal`, `warning`, `critical`, or unavailable). Free memory is not an available-memory estimate. Zero swap means none is currently allocated. Appmem cannot attribute per-app swap, cache or compression on macOS. The Mac view has process and command drill-down (`Enter`, then `g` to group); `f`/`d` sort footprint or growth, `b` resets growth. `--system` and `--scope system` return an input error on Mac.
+
+Agents can use `appmem schema`, `appmem snapshot --json`, and `appmem app ID --json` from this development build. The Mac JSON contract has `platform: "darwin"` and nullable `footprint_bytes` with readable/unreadable coverage counts. Linux JSON and schema remain unchanged. `platform_unavailable` means this Mac build is running on an unsupported OS or processor, or a required native read failed.
+
+## Using it on Linux
 
 The main view sorts by TOTAL (RAM + swap).
 Press the first letter of a column (`r`, `s`, `t`) or click a header to sort by something else.

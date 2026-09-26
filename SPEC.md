@@ -25,7 +25,17 @@ Which app holds the memory and swap? Is memory actually the problem right now? W
 - Themes: Textual's built-in themes, with `terminal-dark`/`terminal-light` for the terminal's own colours. `T` opens a side panel with a live preview, and the choice is remembered in a config file.
 - Non-interactive commands for scripts and agents: `appmem snapshot`, `appmem app NAME`, `appmem schema`, plus an agent skill in `skills/appmem/SKILL.md`.
 
-**Not in v1:** recording/history, charts over time, a streaming `watch` command, CPU or I/O stats, killing processes, settings other than the theme, custom themes (the terminal themes cover a tuned terminal palette), login-session scopes, running as root, macOS/Windows, cgroup v1.
+**Not in v1:** recording/history, charts over time, a streaming `watch` command, CPU or I/O stats, killing processes, settings other than the theme, custom themes (the terminal themes cover a tuned terminal palette), login-session scopes, running as root, Windows, cgroup v1. The development branch has experimental macOS 15+ Apple Silicon support, described below; the published 0.1.0 package remains Linux-only.
+
+## Experimental macOS backend (development branch)
+
+On macOS 15+ Apple Silicon, `appmem` groups readable current-user processes by the outermost `.app` executable path. Bundleless processes inherit the nearest app ancestor; otherwise each highest same-user session root below launchd or an ownership boundary is independent. Same-named bundles at different paths have distinct stable IDs and display suffixes. Missing ancestry and denied process memory reads are explicit partial coverage. Captured members are immutable for one sample, and PID plus native start time is used when available to reject reuse.
+
+The Mac app, process and command value is **physical footprint**, never a Linux RAM/swap/cache counter or resident RSS. All-unreadable groups remain visible with unknown footprint; partially readable groups show the sum of known footprints marked partial. Growth stays unknown until an app's first complete sample establishes a zero baseline. A partial current sample shows unknown; recovery compares with the retained complete baseline. A vanished group loses its baseline, and a reopened bundle with no shared PID/start members establishes a new one. Footprint sums do not yield host memory used, available, elsewhere, or memory guaranteed to be freed.
+
+The Mac TUI displays `APP`, `FOOTPRINT`, `ΔFOOT`, `PROCS`, process and command drill-down, and raw host physical/free/wired, compressor physical/logical, global allocated swap and native pressure state. Free is not an available-memory estimate. Native pressure is not Linux PSI. Zero global swap means no swap currently allocated. Per-app swap/cache/compression/kernel memory and GPU use are unavailable. There are no systemctl suggestions or system scope actions; `--system` and `--scope system` fail with `invalid_input`.
+
+The Darwin `snapshot`/`app` documents and `schema` output use a separate platform-specific contract with nullable `footprint_bytes`, coverage counts and `platform: "darwin"`. The Linux documents and schema remain byte-for-byte unchanged. macOS support stays experimental until installed-CLI integration and interactive desktop acceptance are completed; current native CI has validated the low-level reads.
 
 ## Screens
 

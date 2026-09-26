@@ -1,6 +1,6 @@
 ---
 name: appmem
-description: Diagnose what is using RAM and swap on a Linux machine, per application, with the appmem CLI. Use when the user asks what is eating memory or swap, why the machine is slow and whether memory is the cause, or which app or process to close. Linux with systemd and cgroup v2 only; not for CPU, disk or network questions.
+description: Diagnose per-application memory on Linux or experimental Apple Silicon macOS with the appmem CLI. Use when the user asks what is eating memory or swap, why the machine is slow and whether memory is the cause, or which app or process to close. Linux uses systemd/cgroup v2 RAM and swap; macOS uses process physical footprints. Not for CPU, disk or network questions.
 ---
 
 # appmem: RAM and swap diagnosis for agents
@@ -8,12 +8,14 @@ description: Diagnose what is using RAM and swap on a Linux machine, per applica
 appmem sums the memory and swap counters the kernel keeps for every systemd app cgroup and reports them per application, with a drill-down to processes and commands.
 Use its non-interactive commands; the live TUI (bare `appmem`) is for the human.
 
-- Get it: `uv tool install appmem`.
+- Linux published package: `uv tool install appmem`. Experimental Mac support is only in the `feat/platform-backends` development branch; from that branch's checkout use `uv tool install .`.
 - Always pass `--json`; some agent shells look like a terminal and would get text.
 - `appmem schema` and `appmem schema COMMAND` are the catalog: every command, flag, output field with its meaning, and exit code. Read a field's `description` there before interpreting it.
 - No root needed.
 
 ## Workflow
+
+On macOS 15+ Apple Silicon, use the [Mac workflow](#mac-workflow) below. The Linux fields in this section do not exist in the Mac document.
 
 1. `appmem snapshot --json`.
    Read `pressure`, `system.ram_available_bytes`, `system.swap_used_bytes`, then the top `apps.items` by `total_bytes` and by `swap_bytes`.
@@ -24,6 +26,14 @@ Use its non-interactive commands; the live TUI (bare `appmem`) is for the human.
    Read `commands.items` first (processes summed by command name), then `processes.items` for PIDs and units; when `has_more` is true, rerun with `--limit` at least the app's `procs`.
 4. Growth needs two samples: run `snapshot` again a few minutes later and compare the same apps.
 5. Answer with numbers: which app, how much RAM and swap, which processes or commands inside it, whether memory stalls are happening now, and one concrete action.
+
+## Mac workflow
+
+1. Run `appmem schema snapshot` and `appmem snapshot --json`. Check `platform: "darwin"`, native `pressure.level`, raw `system.physical_bytes`, `free_bytes`, `wired_bytes`, `compressor_physical_bytes`, `compressor_logical_bytes`, and global `swap_used_bytes`.
+2. Rank `apps` by `footprint_bytes`; keep apps with null footprint visible as unknown. Check `coverage.readable_processes`, `unreadable_processes`, `partial`, and `grouping_partial` before comparing totals. Footprint is native physical footprint, not resident RAM, an exact Activity Monitor total or a promise of reclaimable memory. Never derive host memory used or an "elsewhere" remainder by subtracting app footprints.
+3. Drill down with `appmem app ID --json`, using the stable `id` from the snapshot. `commands` sums known process footprints by short executable name; `processes` shows PID, start identity, footprint or an unavailable reason. Unknown members make totals partial. Do not infer per-app RAM, swap, cache, compression or GPU use; this backend does not measure them.
+4. For growth, take two samples of the same app and compare only when both have complete footprint coverage and grouping. Bundleless processes may be grouped under an app ancestor or a session root, and missing ancestry makes attribution uncertain. Same-named independent roots have separate IDs. Native pressure is a kernel state, not Linux PSI or a task-stall percentage. Free memory is free physical pages, not an available-memory estimate. Zero global swap means none is currently allocated.
+5. `--system` and `--scope system` are unsupported on Mac. Do not suggest `systemctl`, Linux unit actions, or per-app swap claims. State the limits and suggest closing an identified app only when the evidence supports it.
 
 ## Judging the numbers
 
@@ -51,3 +61,4 @@ Use its non-interactive commands; the live TUI (bare `appmem`) is for the human.
 A failure writes `{"error": {...}}` as the last non-empty line on stderr, with `kind`, `message`, `action` (`agent`: fix the call yourself; `user`: only the human can) and, when present, `hint` and `next` (the argv to run instead). Follow `hint` and `next`.
 `cgroup_unavailable` means this machine has no cgroup v2, no systemd user manager for this user (for example as root) or the memory controller off: say so and stop, appmem can't help here.
 `interrupted` (a signal stopped the command): run it again.
+`platform_unavailable` means the experimental Mac backend requires macOS 15+ on Apple Silicon or a required native read failed; report the platform or read error instead of substituting Linux counters.

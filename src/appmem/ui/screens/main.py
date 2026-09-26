@@ -15,7 +15,6 @@ never rebuilds the table (SPEC.md "Tech" notes).
 from __future__ import annotations
 
 import os
-import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -28,9 +27,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.color import Color
 from textual.message import Message
-from textual.screen import Screen
 from textual.theme import Theme
-from textual.timer import Timer
 from textual.widgets import DataTable, Static
 from textual.widgets.data_table import ColumnKey, RowKey
 
@@ -55,6 +52,7 @@ from appmem.ui.rows import (
     update_baseline,
 )
 from appmem.ui.screens.help import HelpScreen
+from appmem.ui.screens.live import LiveScreen
 from appmem.ui.screens.processes import ProcessesScreen
 from appmem.ui.table import CellTable
 from appmem.ui.table_order import reorder_rows
@@ -293,7 +291,7 @@ def _tick_worker(
     return _TickResult(generation=generation, stats=stats, apps=apps, procs_by_unit=procs_by_unit)
 
 
-class MainScreen(Screen[None]):
+class MainScreen(LiveScreen):
     """The per-app table: header lines, the DataTable, and the footer (SPEC.md)."""
 
     # DataTable defaults to `height: auto; max-height: 100%`, which with many rows
@@ -345,7 +343,6 @@ class MainScreen(Screen[None]):
         self._baseline_time = datetime.now()
         self._rows: dict[str, Row] = {}
         self._last_apps: list[AppStats] = []
-        self._timer: Timer | None = None
         self._delta_columns_shown = True
         self._zswap_column_shown = False
         """Whether ZSWAP is actually on screen right now: `_show_zswap` (the
@@ -357,7 +354,6 @@ class MainScreen(Screen[None]):
         self._young_baseline = True
         self._delta_restyle_pending = False
         self._last_stats: SystemStats | None = None
-        self._tick_in_flight = False
         self._column_widths: tuple[int | None, ...] = ()
         self._ascii_bars = _detect_ascii_bars()
         self._tick_count = 0
@@ -368,7 +364,6 @@ class MainScreen(Screen[None]):
         """Last known procs count per unit path (`str(path)`), carried
         forward on a tick that skips the recursive `cgroup.procs` walk
         (SPEC.md "Main view")."""
-        self._generation = 0
         """Bumped on every context change (`x` toggled, screen covered or
         resumed). A background result carries the generation it was read
         under; `_apply_tick` discards one that no longer matches."""
@@ -417,23 +412,25 @@ class MainScreen(Screen[None]):
         return build_footer(self._footer_items(), width=width, drop_order=_FOOTER_DROP_ORDER)
 
     def on_mount(self) -> None:
+        self.watch(self._table(), "show_vertical_scrollbar", self._on_scrollbar_change, init=False)
         self.refresh_now()
-        self._timer = self.set_interval(self._interval, self._tick)
+        self._start_live_timer(self._interval, self._tick)
+
+    def _on_scrollbar_change(self, previous: bool, current: bool) -> None:
+        if previous != current:
+            self.call_after_refresh(self._sync_columns)
 
     def _tick(self) -> None:
         # Covered by the process view or help: skip the work, `on_screen_resume` catches up.
         # A previous tick's read is still in flight: skip, don't stack a second one
         # (SPEC.md "Tech": at most one read in flight per screen).
-        if not self.is_active or self._tick_in_flight:
+        if not self._can_launch_tick():
             return
-        self._tick_in_flight = True
         count_procs = self._next_count_procs()
-        threading.Thread(
-            target=self._tick_read,
-            args=(self._generation, count_procs, dict(self._procs_by_unit)),
-            name="appmem-tick",
-            daemon=True,
-        ).start()
+        previous_procs = dict(self._procs_by_unit)
+        self._launch_tick(
+            lambda generation: self._tick_read(generation, count_procs, previous_procs)
+        )
 
     def _next_count_procs(self) -> bool:
         """Advance the PROCS cadence counter and say whether this collection
@@ -470,7 +467,7 @@ class MainScreen(Screen[None]):
         self.post_message(TickDone(payload))
 
     def on_tick_done(self, event: TickDone) -> None:
-        self._tick_in_flight = False
+        self._finish_tick()
         if isinstance(event.payload, Exception):
             # A bug in the collector (transient read errors never get here,
             # `_tick_worker` turns them into an empty result): crash loudly,
@@ -485,19 +482,13 @@ class MainScreen(Screen[None]):
             return
         if result.stats is None:  # transient read/parse failure this tick: keep the last frame
             return
-        if result.generation != self._generation or not self.is_active:
+        if not self._accept_tick(result.generation):
             # `x` toggled (or the screen was covered/left) while this read was
             # in flight: its result no longer matches the current context,
             # discard it rather than show a stale table (SPEC.md "Tech").
             return
         self._procs_by_unit = result.procs_by_unit or {}
         self._apply_refresh(result.stats, result.apps or [], scroll=False)
-
-    def on_screen_resume(self) -> None:
-        # A read dispatched before the covering screen closed is now stale,
-        # even if nothing we track here actually changed while it was up.
-        self._generation += 1
-        self.refresh_now()  # no stale numbers after Esc from the process view
 
     def on_resize(self, event: events.Resize) -> None:
         # Header, columns and footer never wrap -- recompute on every resize,
@@ -733,9 +724,7 @@ class MainScreen(Screen[None]):
         width that wide would render. The table's own vertical scrollbar
         (when shown) narrows the usable width too, so it comes out of the
         same budget as the numeric columns."""
-        total_width = (
-            self.app.size.width - table.scrollbar_size_vertical  # pyright: ignore[reportUnknownMemberType]
-        )
+        total_width = table.scrollable_content_region.width or self.app.size.width  # pyright: ignore[reportUnknownMemberType]
         other = sum(_CELL_PADDING + (width or 0) for key, _label, width in specs if key != "app")
         budget = total_width - other - _CELL_PADDING
         if budget >= _APP_MAX_WIDTH:
