@@ -3,9 +3,9 @@ name: appmem
 description: Diagnose per-application memory on Linux or experimental Apple Silicon macOS with the appmem CLI. Use when the user asks what is eating memory or swap, why the machine is slow and whether memory is the cause, or which app or process to close. Linux uses systemd/cgroup v2 RAM and swap; macOS uses process physical footprints. Not for CPU, disk or network questions.
 ---
 
-# appmem: RAM and swap diagnosis for agents
+# appmem: per-application memory diagnosis for agents
 
-appmem sums the memory and swap counters the kernel keeps for every systemd app cgroup and reports them per application, with a drill-down to processes and commands.
+On Linux, appmem sums the RAM and swap counters for systemd app cgroups and reports them per application, with a drill-down to processes and commands. On macOS, it reports native physical footprints for processes and groups them by application.
 Use its non-interactive commands; the live TUI (bare `appmem`) is for the human.
 
 - Linux published 0.2.0 package: `uv tool install appmem`. Experimental Mac support is only in the `feat/platform-backends` development branch; from that branch's checkout use `uv tool install .`.
@@ -35,7 +35,7 @@ On macOS 15+ Apple Silicon, use the [Mac workflow](#mac-workflow) below. The Lin
 4. For growth, take two samples of the same app and compare only when both have complete footprint coverage and grouping. Bundleless processes may be grouped under an app ancestor or a session root, and missing ancestry makes attribution uncertain. Same-named independent roots have separate IDs. Shared XPC/WebKit services started by launchd can appear as separate roots; a Safari or other app row may omit related service footprints. Do not infer that closing the app reclaims those separate rows. Native pressure is a kernel state, not Linux PSI or a task-stall percentage. Free memory is free physical pages, not an available-memory estimate. Zero global swap means none is currently allocated.
 5. `--system` and `--scope system` are unsupported on Mac. Do not suggest `systemctl`, Linux unit actions, or per-app swap claims. State the limits and suggest closing an identified app only when the evidence supports it.
 
-## Judging the numbers
+## Linux: judging RAM and swap numbers
 
 - `pressure.level` is the last 10 s. `none` with a lot of swap used means idle pages were paged out earlier; memory is probably not why the machine feels slow now (look at CPU, I/O, GPU). `some` or `high` means tasks are waiting for memory now; appmem shows how much, not which app causes it.
 - Act when `ram_available_bytes` drops under ~10 % of `ram_total_bytes` together with `some` or `high`.
@@ -47,7 +47,7 @@ On macOS 15+ Apple Silicon, use the [Mac workflow](#mac-workflow) below. The Lin
 - Compare within appmem, not against htop: per-process values here leave out file-backed pages.
 - `kernel_bytes` and `unattributed_*` explain why processes don't add up to the app; neither is a leak by itself.
 
-## What to recommend
+## Linux: what to recommend
 
 - The smallest action that frees the most: close or restart one app or one command inside it ("N `node` processes inside the terminal hold X GiB; close the ones you are done with"). Give the numbers and let the user choose.
 - Never kill or stop anything without the user's explicit ok. appmem itself never does.

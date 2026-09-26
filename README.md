@@ -1,26 +1,26 @@
 # appmem
 
-Find out which apps are eating your RAM and swap on Linux, or compare application footprints on Apple Silicon. Live, in the terminal, one row per app.
+On Linux, find out which apps are eating your RAM and swap. On Apple Silicon, compare application footprints. Live, in the terminal, one row per app.
 
-The laptop starts swapping, the fan spins up, and `htop` shows forty processes called `chrome`, thirty called `node` and something called `Isolated Web Co`.
+On Linux, the laptop starts swapping, the fan spins up, and `htop` shows forty processes called `chrome`, thirty called `node` and something called `Isolated Web Co`.
 appmem shows the same memory as the apps you actually opened: Chrome, Firefox, VS Code, your terminal, each with its RAM, its swap and how much it grew since you started looking.
 The header tells you whether the swapping is a problem at all, and one key opens the processes behind any row.
 
 ![appmem's main view: one row per app, sorted by TOTAL](https://raw.githubusercontent.com/DamianPala/appmem/main/docs/screenshots/main.svg)
 
-You can also skip the reading and hand the job to an AI agent.
+On Linux, you can also skip the reading and hand the job to an AI agent.
 Paste this into Claude Code, Codex or any agent that runs shell commands:
 
 ```
-Install appmem (uv tool install appmem), read
+On Linux, install appmem (uv tool install appmem), read
 https://raw.githubusercontent.com/DamianPala/appmem/main/skills/appmem/SKILL.md
 and tell me what is eating my memory and what to close.
 ```
 
-It installs appmem, reads the numbers the way the skill file describes and tells you what to close.
+The agent installs the published Linux build, reads the numbers the way the skill file describes and tells you what to close.
 What the agent gets is in [For agents](#for-agents).
 
-Reach for it when:
+For Linux, reach for it when:
 
 - the machine got slow and you want the culprit, not a process list;
 - swap is full and you want to know whether that matters right now;
@@ -28,6 +28,8 @@ Reach for it when:
 - you want to watch one app grow while you use it.
 
 ## Install
+
+For the published Linux release:
 
 ```
 uv tool install appmem
@@ -76,7 +78,7 @@ The theme you keep is saved to `~/.config/appmem/config.toml`; `appmem --theme N
 
 `?` inside the app explains every number and lists the keys; `appmem --help` has the same list plus the options.
 
-## How to read the numbers
+## How to read the Linux numbers
 
 RAM is what the app is using right now.
 SWAP is what the system moved out of RAM to make room: onto the disk or, with zswap, into a compressed corner of RAM.
@@ -88,8 +90,7 @@ The rows don't add up to the header, because system services, virtual machines, 
 
 ## For agents
 
-appmem is made to be driven by an AI agent as much as by you; the prompt at the top is all it needs.
-The agent gets the same data as the TUI as JSON, and [skills/appmem/SKILL.md](https://github.com/DamianPala/appmem/blob/main/skills/appmem/SKILL.md) tells it how to read it: pressure against swap, what hides inside a terminal, what to recommend.
+On Linux, the prompt at the top is all an agent needs. The agent gets the same data as the TUI as JSON, and [skills/appmem/SKILL.md](skills/appmem/SKILL.md) tells it how to read it: pressure against swap, what hides inside a terminal, what to recommend. The skill also describes the Mac workflow for the development build.
 
 ```
 appmem snapshot [--system] [--limit N] [--json]
@@ -103,11 +104,12 @@ Both print text on a terminal and JSON when piped; `--json` forces JSON.
 Every error is one JSON object on the last line of stderr with a stable `kind` such as `not_found`; exit code 1 is a runtime failure, 2 an invalid call.
 Bare `appmem` without a terminal exits 1 and points to `appmem snapshot`.
 
-## Cost
+## Cost on Linux
 
-Reading the counters once a second takes about 1 % of one CPU core.
-The live view takes 3 to 12 % of one core on a busy desktop, more with a tall terminal and many apps.
+Reading the counters once a second takes about 1 % of one CPU core on Linux.
+The Linux live view takes 3 to 12 % of one core on a busy desktop, more with a tall terminal and many apps.
 Refreshing every two seconds instead of every second (`appmem -i 2`) cuts that in half.
+Mac sustained CPU cost has not been measured.
 
 ## Development
 
