@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, feat/platform-backends]
   pull_request:
     branches: [main]
 
@@ -11,13 +11,25 @@ permissions:
 
 jobs:
   check:
-    name: Check (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    name: Check (${{ matrix.runner_label }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.12", "3.13", "3.14"]
+        include:
+          - os: ubuntu-latest
+            runner_label: Ubuntu
+            python-version: "3.12"
+          - os: ubuntu-latest
+            runner_label: Ubuntu
+            python-version: "3.13"
+          - os: ubuntu-latest
+            runner_label: Ubuntu
+            python-version: "3.14"
+          - os: macos-15
+            runner_label: macOS 15 ARM64
+            python-version: "3.14"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
