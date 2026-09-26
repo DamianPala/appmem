@@ -58,19 +58,26 @@ def _read_available(fd: int) -> bytes:
     return b"".join(chunks)
 
 
-def _wait_for_exit(pid: int, master_fd: int, timeout: float) -> tuple[int | None, float, bytes]:
+def _wait_for_exit(
+    pid: int, master_fd: int, timeout: float
+) -> tuple[int | None, float, bytes, float | None]:
     """Drain the PTY while polling for exit, so its output cannot block shutdown."""
     start = time.monotonic()
     deadline = start + timeout
     output = bytearray()
+    restored_at: float | None = None
     while time.monotonic() < deadline:
         output.extend(_read_available(master_fd))
+        if restored_at is None and b"\x1b[?1049l" in output:
+            restored_at = time.monotonic() - start
         done_pid, status = os.waitpid(pid, os.WNOHANG)
         if done_pid == pid:
             output.extend(_read_available(master_fd))
-            return status, time.monotonic() - start, bytes(output)
+            if restored_at is None and b"\x1b[?1049l" in output:
+                restored_at = time.monotonic() - start
+            return status, time.monotonic() - start, bytes(output), restored_at
         time.sleep(0.02)
-    return None, timeout, bytes(output)
+    return None, timeout, bytes(output), restored_at
 
 
 def test_sigterm_exits_promptly_instead_of_waiting_for_the_next_tick(tmp_path: Path) -> None:
@@ -90,21 +97,24 @@ def test_sigterm_exits_promptly_instead_of_waiting_for_the_next_tick(tmp_path: P
     )
     os.close(slave_fd)
     try:
-        # Give it time to start Textual, enter the alt screen and take its
-        # first sample (well under one tick at -i 5): reading until the
-        # screen's own output settles is more robust than a fixed sleep.
+        # Wait for the sampled host header, not only the first "RAM" text,
+        # which can arrive before the whole first frame has been written.
         deadline = time.monotonic() + 5.0
         seen = b""
-        while time.monotonic() < deadline and b"RAM" not in seen:
+        markers = (b"RAM", b"Pressure", b"GiB")
+        while time.monotonic() < deadline and not all(marker in seen for marker in markers):
             seen += _read_available(master_fd)
             time.sleep(0.05)
-        assert b"RAM" in seen, f"app never rendered its header: {seen!r}"
+        assert all(marker in seen for marker in markers), f"app never rendered its header: {seen!r}"
 
         os.kill(proc.pid, signal.SIGTERM)
-        status, elapsed, remaining = _wait_for_exit(proc.pid, master_fd, timeout=2.0)
+        status, elapsed, remaining, restored_at = _wait_for_exit(proc.pid, master_fd, timeout=2.0)
 
         assert status is not None, "process did not exit within 2s of SIGTERM"
-        assert elapsed < 1.0, f"exit took {elapsed:.2f}s (must wake the loop immediately)"
+        assert elapsed < 1.0, (
+            f"exit took {elapsed:.2f}s (restore at {restored_at}s; "
+            f"drained {len(remaining)} bytes; must wake the loop immediately)"
+        )
         assert os.WIFEXITED(status)
         assert os.WEXITSTATUS(status) == 143
 

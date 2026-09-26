@@ -428,9 +428,26 @@ async def test_numeric_columns_still_fit_when_new_rows_bring_a_scrollbar(tmp_pat
         screen.refresh_now()
         await pilot.pause()
 
+        region = table._get_column_region(  # pyright: ignore[reportPrivateUsage]
+            table.get_column_index("procs")
+        )
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            if (
+                table.scrollbar_size_vertical > 0
+                and region.right <= table.scrollable_content_region.width
+            ):
+                break
+            await pilot.pause(0.01)  # width sync runs after the row change's next refresh
+            region = table._get_column_region(  # pyright: ignore[reportPrivateUsage]
+                table.get_column_index("procs")
+            )
         assert table.scrollbar_size_vertical > 0
-        region = table._get_column_region(table.get_column_index("procs"))  # pyright: ignore[reportPrivateUsage]
-        assert region.right <= table.scrollable_content_region.width
+        assert region.right <= table.scrollable_content_region.width, (
+            region,
+            table.scrollable_content_region,
+            screen._column_widths,  # pyright: ignore[reportPrivateUsage]
+        )
 
 
 @pytest.mark.asyncio
