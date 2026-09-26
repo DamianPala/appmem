@@ -49,11 +49,6 @@ jobs:
       - name: Type check
         run: uv run pyright
 
-      - name: Test
-        run: uv run pytest -q
-        env:
-          TERM: xterm
-
       - name: Signal shutdown diagnostic (five runs)
         if: matrix.os == 'macos-15'
         run: |
@@ -62,6 +57,11 @@ jobs:
             printf 'SIGTERM attempt %s\n' "$attempt"
             uv run pytest -q -s tests/test_cli_signals.py
           done
+        env:
+          TERM: xterm
+
+      - name: Test
+        run: uv run pytest -q
         env:
           TERM: xterm
 
