@@ -58,17 +58,19 @@ def _read_available(fd: int) -> bytes:
     return b"".join(chunks)
 
 
-def _wait_for_exit(pid: int, timeout: float) -> tuple[int | None, float]:
-    """Poll (non-blocking) for the child to exit, up to `timeout` seconds.
-    Returns its exit status (None if it never exited) and the elapsed time."""
+def _wait_for_exit(pid: int, master_fd: int, timeout: float) -> tuple[int | None, float, bytes]:
+    """Drain the PTY while polling for exit, so its output cannot block shutdown."""
     start = time.monotonic()
     deadline = start + timeout
+    output = bytearray()
     while time.monotonic() < deadline:
+        output.extend(_read_available(master_fd))
         done_pid, status = os.waitpid(pid, os.WNOHANG)
         if done_pid == pid:
-            return status, time.monotonic() - start
+            output.extend(_read_available(master_fd))
+            return status, time.monotonic() - start, bytes(output)
         time.sleep(0.02)
-    return None, timeout
+    return None, timeout, bytes(output)
 
 
 def test_sigterm_exits_promptly_instead_of_waiting_for_the_next_tick(tmp_path: Path) -> None:
@@ -99,7 +101,7 @@ def test_sigterm_exits_promptly_instead_of_waiting_for_the_next_tick(tmp_path: P
         assert b"RAM" in seen, f"app never rendered its header: {seen!r}"
 
         os.kill(proc.pid, signal.SIGTERM)
-        status, elapsed = _wait_for_exit(proc.pid, timeout=2.0)
+        status, elapsed, remaining = _wait_for_exit(proc.pid, master_fd, timeout=2.0)
 
         assert status is not None, "process did not exit within 2s of SIGTERM"
         assert elapsed < 1.0, f"exit took {elapsed:.2f}s (must wake the loop immediately)"
@@ -109,7 +111,7 @@ def test_sigterm_exits_promptly_instead_of_waiting_for_the_next_tick(tmp_path: P
         # Terminal-restore sequences (Textual's `LinuxDriver`, SPEC.md
         # "Errors"): the alt screen and mouse tracking are turned back off,
         # not left engaged in the caller's terminal.
-        output = seen + _read_available(master_fd)
+        output = seen + remaining
         assert b"\x1b[?1049l" in output, "alt screen was not turned off on exit"
         assert b"\x1b[?25h" in output, "cursor was not shown again on exit"
         print(f"SIGTERM to exit: {elapsed * 1000:.0f} ms")
