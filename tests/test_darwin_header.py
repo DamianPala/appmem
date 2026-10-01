@@ -1,0 +1,193 @@
+"""Synthetic Darwin host values; no native API or live process reads."""
+
+from __future__ import annotations
+
+from dataclasses import replace
+
+import pytest
+from rich.text import Text
+from textual.theme import BUILTIN_THEMES
+from textual.widgets import Static
+
+from appmem.darwin_backend import DarwinApp, DarwinBackend
+from appmem.darwin_native import HostMemory, Unavailable
+from appmem.theme import TERMINAL_THEMES
+from appmem.ui.app import AppMemApp
+from appmem.ui.darwin_header import render_host_header
+from appmem.ui.header import ThemeColors
+from appmem.ui.screens.darwin import DarwinMainScreen
+from appmem.ui.screens.main import (
+    _bar_fill_colour,  # pyright: ignore[reportPrivateUsage] - existing palette rules
+    _rich_color,  # pyright: ignore[reportPrivateUsage] - existing ANSI conversion
+)
+
+GIB = 1024**3
+MIB = 1024**2
+HOST = HostMemory(
+    physical_bytes=8 * GIB,
+    page_size=16_384,
+    vm_count=40,
+    free_bytes=GIB,
+    wired_bytes=2 * GIB,
+    active_bytes=2 * GIB,
+    inactive_bytes=GIB,
+    compressor_physical_bytes=GIB,
+    compressor_logical_bytes=3 * GIB,
+    swapped_logical_bytes=None,
+    swap_used_bytes=512 * MIB,
+    swap_total_bytes=GIB,
+    pressure_level=1,
+    pressure_unavailable=None,
+    pressure_error_code=None,
+)
+THEMES = {theme.name: theme for theme in (*BUILTIN_THEMES.values(), *TERMINAL_THEMES)}
+COLORS = ThemeColors(success="green", warning="yellow", error="red", primary="blue")
+
+
+@pytest.mark.parametrize("width", [40, 65, 80, 120, 200])
+def test_header_preserves_native_meanings_at_responsive_widths(width: int) -> None:
+    physical, swap, status = render_host_header(HOST, width, colors=COLORS)
+    assert all(line.cell_len <= width and line.no_wrap for line in (physical, swap, status))
+    assert "Physical" in physical.plain and "Free" in physical.plain
+    assert "Swap" in swap.plain and "0.5/1.0 GiB" in swap.plain
+    assert "allocated" in swap.plain
+    assert "Pressure" in status.plain and "normal" in status.plain
+    assert "3.0" in status.plain and "1.0" in status.plain and "RAM" in status.plain
+    if width >= 65:
+        assert "Wired" in physical.plain
+        assert "used / currently allocated" in swap.plain
+        assert "data → 1.0 GiB RAM" in status.plain
+        assert "█" in swap.plain and "░" in swap.plain
+    assert not any(
+        word in line.plain.lower()
+        for line in (physical, swap, status)
+        for word in ("available", "psi", "disabled", "capacity")
+    )
+
+
+def test_swap_ratio_tracks_current_allocation_instead_of_fixed_capacity() -> None:
+    half = render_host_header(HOST, 80, colors=COLORS)[1]
+    grown = render_host_header(replace(HOST, swap_total_bytes=2 * GIB), 80, colors=COLORS)[1]
+    assert "0.5/1.0 GiB" in half.plain
+    assert "0.5/2.0 GiB" in grown.plain
+    assert half.plain.count("█") > grown.plain.count("█")
+    assert all(span.style in ("blue", "dim") for span in grown.spans)
+
+
+@pytest.mark.parametrize("width", [40, 65, 80, 120])
+def test_zero_swap_is_not_allocated_and_has_no_fraction_or_gauge(width: int) -> None:
+    swap = render_host_header(
+        replace(HOST, swap_used_bytes=0, swap_total_bytes=0), width, colors=COLORS
+    )[1]
+    assert "0 B used; not allocated" in swap.plain
+    assert all(glyph not in swap.plain for glyph in ("/", "█", "░", "off", "disabled"))
+
+
+@pytest.mark.parametrize(("used", "total"), [(-1, 100), (1, 0), (101, 100), (0, -1)])
+def test_invalid_swap_does_not_render_a_valid_gauge(used: int, total: int) -> None:
+    swap = render_host_header(
+        replace(HOST, swap_used_bytes=used, swap_total_bytes=total), 120, colors=COLORS
+    )[1]
+    assert "unavailable" in swap.plain
+    assert "█" not in swap.plain and "used" not in swap.plain
+
+
+@pytest.mark.parametrize(("logical", "physical"), [(0, 0), (0, MIB), (MIB, 0)])
+def test_zero_compression_has_values_without_division_ratio(logical: int, physical: int) -> None:
+    status = render_host_header(
+        replace(HOST, compressor_logical_bytes=logical, compressor_physical_bytes=physical),
+        120,
+        colors=COLORS,
+    )[2]
+    assert "Compress" in status.plain and "data →" in status.plain and "RAM" in status.plain
+    assert ":1" not in status.plain
+
+
+@pytest.mark.parametrize(("logical", "physical"), [(-1, MIB), (MIB, -1)])
+def test_invalid_compression_is_unavailable(logical: int, physical: int) -> None:
+    status = render_host_header(
+        replace(HOST, compressor_logical_bytes=logical, compressor_physical_bytes=physical),
+        120,
+        colors=COLORS,
+    )[2]
+    assert "Compress unavailable" in status.plain
+    assert ":1" not in status.plain
+
+
+@pytest.mark.parametrize(
+    ("level", "word", "color"),
+    [
+        (1, "normal", "green"),
+        (2, "warning", "yellow"),
+        (4, "critical", "red"),
+        (None, "unavailable", "dim"),
+        (8, "unavailable", "dim"),
+    ],
+)
+def test_pressure_is_colored_native_state_without_numeric_percentage(
+    level: int | None,
+    word: str,
+    color: str,
+) -> None:
+    status = render_host_header(replace(HOST, pressure_level=level), 120, colors=COLORS)[2]
+    assert f"Pressure  {word}" in status.plain
+    assert "%" not in status.plain
+    styles = [str(span.style) for span in status.spans]
+    assert any(color in style for style in styles)
+
+
+def test_pressure_failure_overrides_stale_level() -> None:
+    status = render_host_header(
+        replace(HOST, pressure_unavailable=Unavailable.ERROR), 120, colors=COLORS
+    )[2]
+    assert "Pressure  unavailable" in status.plain
+    assert "normal" not in status.plain
+
+
+@pytest.mark.parametrize("ascii_bars", [False, True])
+@pytest.mark.parametrize("theme_name", list(THEMES))
+def test_all_themes_render_gauges_and_pressure_with_existing_palette(
+    theme_name: str,
+    ascii_bars: bool,
+) -> None:
+    theme = THEMES[theme_name]
+    colors = ThemeColors(
+        success=_rich_color(theme.success or "green"),
+        warning=_rich_color(theme.warning or "yellow"),
+        error=_rich_color(theme.error or "red"),
+        primary=_bar_fill_colour(theme),
+    )
+    _, swap, status = render_host_header(HOST, 120, colors=colors, ascii_bars=ascii_bars)
+    assert any(span.style == colors.primary for span in swap.spans)
+    assert any(span.style == f"bold {colors.success}" for span in status.spans)
+    if ascii_bars:
+        assert "#" in swap.plain and "." in swap.plain and ">" in status.plain
+        assert all(ord(char) < 128 for line in (swap, status) for char in line.plain)
+    else:
+        assert "█" in swap.plain and "░" in swap.plain and "→" in status.plain
+
+
+@pytest.mark.asyncio
+async def test_live_screen_updates_header_on_resize_theme_and_ascii_locale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LC_ALL", "C")
+    backend = object.__new__(DarwinBackend)
+    monkeypatch.setattr(backend, "read_system", lambda: HOST)
+    empty_apps: list[DarwinApp] = []
+    monkeypatch.setattr(backend, "collect_apps", lambda: empty_apps)
+    app = AppMemApp(interval=60, main_screen_factory=lambda: DarwinMainScreen(backend, 60))
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        swap = app.screen.query_one("#header2", Static).content
+        assert isinstance(swap, Text) and "#" in swap.plain
+        before = swap.spans
+        app.theme = "dracula"
+        await pilot.pause()
+        swap = app.screen.query_one("#header2", Static).content
+        assert isinstance(swap, Text) and swap.spans != before
+        await pilot.resize_terminal(40, 24)
+        await pilot.pause()
+        swap = app.screen.query_one("#header2", Static).content
+        assert isinstance(swap, Text) and swap.cell_len <= 40 and "allocated now" in swap.plain
+        assert "Swap" in swap.plain

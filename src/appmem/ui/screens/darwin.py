@@ -17,9 +17,18 @@ from appmem.darwin_backend import DarwinApp, DarwinBackend, DarwinProcess, Darwi
 from appmem.darwin_native import HostMemory
 from appmem.fmt import format_delta, size, truncate_name
 from appmem.render import escape_control_chars
+from appmem.ui.darwin_header import render_host_header
 from appmem.ui.darwin_rows import DarwinRow, build_rows, sort_rows, update_baseline
+from appmem.ui.header import ThemeColors
 from appmem.ui.layout import build_footer
 from appmem.ui.screens.live import LiveScreen
+
+# Share existing palette contrast, ANSI conversion and locale detection with Linux.
+from appmem.ui.screens.main import (
+    _bar_fill_colour,  # pyright: ignore[reportPrivateUsage]
+    _detect_ascii_bars,  # pyright: ignore[reportPrivateUsage]
+    _rich_color,  # pyright: ignore[reportPrivateUsage]
+)
 from appmem.ui.table import RowTable
 
 
@@ -32,28 +41,6 @@ def _read_error(had_data: bool) -> str:
         "Read unavailable; showing stale values; retrying"
         if had_data
         else "Read unavailable; retrying"
-    )
-
-
-def _host_lines(host: HostMemory, width: int) -> tuple[str, str, str]:
-    pressure = {1: "normal", 2: "warning", 4: "critical"}.get(host.pressure_level or 0)
-    return (
-        truncate_name(
-            f"Physical {size(host.physical_bytes)}  Free {size(host.free_bytes)}  "
-            f"Wired {size(host.wired_bytes)}",
-            width,
-        ),
-        truncate_name(
-            f"Compressor physical {size(host.compressor_physical_bytes)}  "
-            f"logical {size(host.compressor_logical_bytes)}  "
-            f"Swap {size(host.swap_used_bytes)} allocated",
-            width,
-        ),
-        truncate_name(
-            f"Native pressure {pressure or 'unavailable'}  "
-            "growth: per-app baseline  macOS experimental",
-            width,
-        ),
     )
 
 
@@ -98,6 +85,7 @@ class DarwinMainScreen(LiveScreen):
         self._column_widths: tuple[int | None, ...] = ()
         self._resume_scrolls = False
         self._read_failed = False
+        self._ascii_bars = _detect_ascii_bars()
 
     def compose(self) -> ComposeResult:
         yield Static(id="header1")
@@ -179,7 +167,17 @@ class DarwinMainScreen(LiveScreen):
             return
         if self._host is None:
             return
-        for index, line in enumerate(_host_lines(self._host, self.size.width), 1):
+        theme = self.app.current_theme  # pyright: ignore[reportUnknownMemberType]
+        colors = ThemeColors(
+            success=_rich_color(theme.success or "green"),
+            warning=_rich_color(theme.warning or "yellow"),
+            error=_rich_color(theme.error or "red"),
+            primary=_bar_fill_colour(theme),
+        )
+        lines = render_host_header(
+            self._host, self.size.width, colors=colors, ascii_bars=self._ascii_bars
+        )
+        for index, line in enumerate(lines, 1):
             self.query_one(f"#header{index}", Static).update(line)
 
     def refresh_theme(self) -> None:
@@ -725,9 +723,10 @@ class DarwinHelpScreen(Screen[None]):
             "Missing ancestry can make grouping partial. Shared XPC/WebKit services "
             "started by launchd can remain separate rows (for example Safari and "
             "WebContent), so an app row may omit related service footprints.\n"
-            "Host Free is free physical pages, not available memory. Compressor physical "
-            "and logical sizes differ. Native pressure is a kernel state, not PSI. "
-            "Zero global swap means none allocated. Per-app swap is unavailable.\n\n"
+            "Host Free is free physical pages, not available memory. Compression shows "
+            "logical data -> physical RAM. Native pressure is a kernel state, not PSI. "
+            "The Swap gauge compares used with currently allocated space, which grows "
+            "dynamically; zero total means none allocated. Per-app swap is unavailable.\n\n"
             "Click a header to sort; click a row to select it, double click to open it. "
             "Main: f/d sort footprint/growth, b reset growth, Enter details. "
             "Details: f/n/p/u sort footprint/command/PID or count/unreadable, "
