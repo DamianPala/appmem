@@ -151,7 +151,7 @@ class SwapUsage(c.Structure):
 
 
 def validate_sdk_abi(actual: dict[str, int]) -> None:
-    """Check the stable prefix while allowing either known SDK VM revision."""
+    """Check the stable prefix for known 152/160-byte and SDK 27 416-byte revisions."""
     vm_prefix_size = VMStatistics64.total_uncompressed_pages_in_compressor.offset + 8
     expected = {
         "bsdshort_size": c.sizeof(BSDShortInfo),
@@ -162,7 +162,8 @@ def validate_sdk_abi(actual: dict[str, int]) -> None:
     }
     if {key: actual.get(key) for key in expected} != expected:
         raise RuntimeError(f"SDK/ctypes required ABI mismatch: {actual} != {expected}")
-    if actual.get("vm_sdk_size") not in (vm_prefix_size, c.sizeof(VMStatistics64)):
+    # SDK 27 appends revisions 3-5 while preserving the consumed revisions 1-2 prefix.
+    if actual.get("vm_sdk_size") not in (vm_prefix_size, c.sizeof(VMStatistics64), 416):
         raise RuntimeError(f"unsupported SDK vm_statistics64 size: {actual.get('vm_sdk_size')}")
 
 

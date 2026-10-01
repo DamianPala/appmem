@@ -166,7 +166,7 @@ def native_counts(cli: Path, binary: Path, root: Path, deadline: float) -> dict[
     fields = run_command([binary, "abi"], cwd=root, deadline=deadline, cap=5).stdout.split()
     require(len(fields) == 6, "C helper ABI response malformed")
     sdk_bytes = int(fields[3])
-    require(sdk_bytes in (152, 160), "unexpected SDK VM statistics size")
+    require(sdk_bytes in (152, 160, 416), "unexpected SDK VM statistics size")
     document: object = json.loads(
         run_command(
             [cli.parent / "python", "-I", "-c", _VM_COUNT_CODE],

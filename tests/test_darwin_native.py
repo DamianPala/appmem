@@ -92,7 +92,7 @@ def test_short_vm_host_read_returns_error_and_releases_port(
     assert released == [(42, 7)]
 
 
-@pytest.mark.parametrize("vm_sdk_size", [152, 160])
+@pytest.mark.parametrize("vm_sdk_size", [152, 160, 416])
 def test_probe_accepts_only_supported_sdk_vm_layouts(vm_sdk_size: int) -> None:
     layout = {
         "bsdshort_size": ctypes.sizeof(BSDShortInfo),
@@ -103,10 +103,24 @@ def test_probe_accepts_only_supported_sdk_vm_layouts(vm_sdk_size: int) -> None:
         "swap_size": ctypes.sizeof(SwapUsage),
     }
     validate_sdk_abi(layout)
-    with pytest.raises(RuntimeError, match="required ABI mismatch"):
-        validate_sdk_abi({**layout, "footprint_offset": 0})
+    for offset in ("footprint_offset", "vm_logical_offset"):
+        with pytest.raises(RuntimeError, match="required ABI mismatch"):
+            validate_sdk_abi({**layout, offset: 0})
+
+
+@pytest.mark.parametrize("vm_sdk_size", [144, 168, 408, 424])
+def test_probe_rejects_unknown_sdk_vm_layouts(vm_sdk_size: int) -> None:
+    # The physical SDK 27 probe measured these consumed sizes and offsets.
+    layout = {
+        "bsdshort_size": 64,
+        "rusage_size": 296,
+        "footprint_offset": 72,
+        "vm_sdk_size": vm_sdk_size,
+        "vm_logical_offset": 144,
+        "swap_size": 32,
+    }
     with pytest.raises(RuntimeError, match="unsupported SDK"):
-        validate_sdk_abi({**layout, "vm_sdk_size": 144})
+        validate_sdk_abi(layout)
 
 
 def test_vm_response_accepts_older_revision_without_swapped_count() -> None:
