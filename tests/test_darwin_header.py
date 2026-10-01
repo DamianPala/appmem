@@ -39,6 +39,9 @@ HOST = HostMemory(
     pressure_level=1,
     pressure_unavailable=None,
     pressure_error_code=None,
+    speculative_bytes=128 * MIB,
+    file_backed_bytes=2 * GIB,
+    purgeable_bytes=128 * MIB,
 )
 THEMES = {theme.name: theme for theme in (*BUILTIN_THEMES.values(), *TERMINAL_THEMES)}
 COLORS = ThemeColors(success="green", warning="yellow", error="red", primary="blue")
@@ -46,28 +49,32 @@ COLORS = ThemeColors(success="green", warning="yellow", error="red", primary="bl
 
 @pytest.mark.parametrize("width", [40, 65, 80, 120, 200])
 def test_header_preserves_native_meanings_at_responsive_widths(width: int) -> None:
-    physical, swap, status = render_host_header(HOST, width, colors=COLORS)
-    assert all(line.cell_len <= width and line.no_wrap for line in (physical, swap, status))
-    assert "Physical" in physical.plain and "Free" in physical.plain
+    ram, compression, swap, status = render_host_header(HOST, width, colors=COLORS)
+    assert all(line.cell_len <= width and line.no_wrap for line in (ram, compression, swap, status))
+    assert "RAM" in ram.plain and "used" in ram.plain and "GiB" in ram.plain
     assert "Swap" in swap.plain and "0.5/1.0 GiB" in swap.plain
     assert "allocated" in swap.plain
     assert "Pressure" in status.plain and "normal" in status.plain
-    assert "3.0" in status.plain and "1.0" in status.plain and "RAM" in status.plain
+    assert "current user" in status.plain
+    assert "3.0" in compression.plain and "1.0" in compression.plain
+    assert "RAM" in compression.plain
     if width >= 65:
-        assert "Wired" in physical.plain
-        assert "used / currently allocated" in swap.plain
-        assert "data → 1.0 GiB RAM" in status.plain
+        assert "File-backed" in ram.plain and "Free" in ram.plain
+        assert "data → 1.0 GiB RAM" in compression.plain
         assert "█" in swap.plain and "░" in swap.plain
+    if width >= 120:
+        assert "Wired" in compression.plain
+        assert "█" in ram.plain
     assert not any(
         word in line.plain.lower()
-        for line in (physical, swap, status)
+        for line in (ram, compression, swap, status)
         for word in ("available", "psi", "disabled", "capacity")
     )
 
 
 def test_swap_ratio_tracks_current_allocation_instead_of_fixed_capacity() -> None:
-    half = render_host_header(HOST, 80, colors=COLORS)[1]
-    grown = render_host_header(replace(HOST, swap_total_bytes=2 * GIB), 80, colors=COLORS)[1]
+    half = render_host_header(HOST, 80, colors=COLORS)[2]
+    grown = render_host_header(replace(HOST, swap_total_bytes=2 * GIB), 80, colors=COLORS)[2]
     assert "0.5/1.0 GiB" in half.plain
     assert "0.5/2.0 GiB" in grown.plain
     assert half.plain.count("█") > grown.plain.count("█")
@@ -75,10 +82,10 @@ def test_swap_ratio_tracks_current_allocation_instead_of_fixed_capacity() -> Non
 
 
 @pytest.mark.parametrize("width", [40, 65, 80, 120])
-def test_zero_swap_is_not_allocated_and_has_no_fraction_or_gauge(width: int) -> None:
+def test_zero_swap_is_not_allocated_with_neutral_placeholder(width: int) -> None:
     swap = render_host_header(
         replace(HOST, swap_used_bytes=0, swap_total_bytes=0), width, colors=COLORS
-    )[1]
+    )[2]
     assert "0 B used; not allocated" in swap.plain
     assert all(glyph not in swap.plain for glyph in ("/", "█", "░", "off", "disabled"))
 
@@ -87,7 +94,7 @@ def test_zero_swap_is_not_allocated_and_has_no_fraction_or_gauge(width: int) -> 
 def test_invalid_swap_does_not_render_a_valid_gauge(used: int, total: int) -> None:
     swap = render_host_header(
         replace(HOST, swap_used_bytes=used, swap_total_bytes=total), 120, colors=COLORS
-    )[1]
+    )[2]
     assert "unavailable" in swap.plain
     assert "█" not in swap.plain and "used" not in swap.plain
 
@@ -98,7 +105,7 @@ def test_zero_compression_has_values_without_division_ratio(logical: int, physic
         replace(HOST, compressor_logical_bytes=logical, compressor_physical_bytes=physical),
         120,
         colors=COLORS,
-    )[2]
+    )[1]
     assert "Compress" in status.plain and "data →" in status.plain and "RAM" in status.plain
     assert ":1" not in status.plain
 
@@ -109,7 +116,7 @@ def test_invalid_compression_is_unavailable(logical: int, physical: int) -> None
         replace(HOST, compressor_logical_bytes=logical, compressor_physical_bytes=physical),
         120,
         colors=COLORS,
-    )[2]
+    )[1]
     assert "Compress unavailable" in status.plain
     assert ":1" not in status.plain
 
@@ -129,7 +136,7 @@ def test_pressure_is_colored_native_state_without_numeric_percentage(
     word: str,
     color: str,
 ) -> None:
-    status = render_host_header(replace(HOST, pressure_level=level), 120, colors=COLORS)[2]
+    status = render_host_header(replace(HOST, pressure_level=level), 120, colors=COLORS)[3]
     assert f"Pressure  {word}" in status.plain
     assert "%" not in status.plain
     styles = [str(span.style) for span in status.spans]
@@ -139,7 +146,7 @@ def test_pressure_is_colored_native_state_without_numeric_percentage(
 def test_pressure_failure_overrides_stale_level() -> None:
     status = render_host_header(
         replace(HOST, pressure_unavailable=Unavailable.ERROR), 120, colors=COLORS
-    )[2]
+    )[3]
     assert "Pressure  unavailable" in status.plain
     assert "normal" not in status.plain
 
@@ -157,14 +164,16 @@ def test_all_themes_render_gauges_and_pressure_with_existing_palette(
         error=_rich_color(theme.error or "red"),
         primary=_bar_fill_colour(theme),
     )
-    _, swap, status = render_host_header(HOST, 120, colors=colors, ascii_bars=ascii_bars)
+    _, compression, swap, status = render_host_header(
+        HOST, 120, colors=colors, ascii_bars=ascii_bars
+    )
     assert any(span.style == colors.primary for span in swap.spans)
     assert any(span.style == f"bold {colors.success}" for span in status.spans)
     if ascii_bars:
-        assert "#" in swap.plain and "." in swap.plain and ">" in status.plain
+        assert "#" in swap.plain and "." in swap.plain and ">" in compression.plain
         assert all(ord(char) < 128 for line in (swap, status) for char in line.plain)
     else:
-        assert "█" in swap.plain and "░" in swap.plain and "→" in status.plain
+        assert "█" in swap.plain and "░" in swap.plain and "→" in compression.plain
 
 
 @pytest.mark.asyncio
@@ -179,15 +188,75 @@ async def test_live_screen_updates_header_on_resize_theme_and_ascii_locale(
     app = AppMemApp(interval=60, main_screen_factory=lambda: DarwinMainScreen(backend, 60))
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        swap = app.screen.query_one("#header2", Static).content
+        swap = app.screen.query_one("#header3", Static).content
         assert isinstance(swap, Text) and "#" in swap.plain
         before = swap.spans
         app.theme = "dracula"
         await pilot.pause()
-        swap = app.screen.query_one("#header2", Static).content
+        swap = app.screen.query_one("#header3", Static).content
         assert isinstance(swap, Text) and swap.spans != before
         await pilot.resize_terminal(40, 24)
         await pilot.pause()
-        swap = app.screen.query_one("#header2", Static).content
+        swap = app.screen.query_one("#header3", Static).content
         assert isinstance(swap, Text) and swap.cell_len <= 40 and "allocated now" in swap.plain
         assert "Swap" in swap.plain
+
+
+def test_partition_counts_speculative_once_and_keeps_reserved_used() -> None:
+    partition = HOST.ram_partition
+    assert partition is not None
+    assert partition == (5 * GIB + 128 * MIB, 2 * GIB, GIB - 128 * MIB)
+    assert sum(partition) == HOST.physical_bytes
+    # Purgeable overlaps used and must not change the partition.
+    assert replace(HOST, purgeable_bytes=0).ram_partition == HOST.ram_partition
+    assert replace(HOST, active_bytes=0, inactive_bytes=0).ram_partition == HOST.ram_partition
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"speculative_bytes": None},
+        {"file_backed_bytes": None},
+        {"speculative_bytes": -1},
+        {"file_backed_bytes": -1},
+        {"speculative_bytes": GIB + 1},
+        {"file_backed_bytes": 64 * MIB},
+        {"file_backed_bytes": 9 * GIB},
+        {"free_bytes": 9 * GIB},
+        {"physical_bytes": 0},
+        {"physical_bytes": True},
+        {"wired_bytes": 6 * GIB},
+        {"compressor_physical_bytes": -1},
+        {"file_backed_bytes": 8 * GIB},
+    ],
+)
+def test_contradictory_partition_has_explicit_unavailable(changes: dict[str, int | None]) -> None:
+    host = replace(HOST, **changes)
+    assert host.ram_partition is None
+    for width in (40, 80, 120):
+        ram = render_host_header(host, width, colors=COLORS)[0]
+        assert "used unavailable" in ram.plain
+        assert "█" not in ram.plain
+        assert ram.cell_len <= width
+
+
+@pytest.mark.parametrize("width", [65, 80, 120])
+def test_zero_swap_placeholder_occupies_the_allocated_gauge_slot(width: int) -> None:
+    allocated = render_host_header(HOST, width, colors=COLORS)[2]
+    unallocated = render_host_header(
+        replace(HOST, swap_used_bytes=0, swap_total_bytes=0), width, colors=COLORS
+    )[2]
+    # A neutral dash track cannot imply used/available capacity when no denominator exists.
+    assert unallocated.plain.count("-") == sum(
+        0x2580 <= ord(char) <= 0x259F for char in allocated.plain
+    )
+    assert all(span.style == "dim" for span in unallocated.spans)
+
+
+def test_pressure_baseline_and_scope_fit_and_remain_ascii() -> None:
+    status = render_host_header(
+        HOST, 120, colors=COLORS, ascii_bars=True, baseline_time="12:34:56", baseline_elapsed=42
+    )[3]
+    assert "current user" in status.plain
+    assert "growth baseline 12:34:56 (42s ago)" in status.plain
+    assert all(ord(char) < 128 for char in status.plain)

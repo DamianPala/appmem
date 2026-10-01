@@ -15,6 +15,8 @@ class DarwinRow:
     delta_bytes: int | None
     procs: int
     partial: bool
+    resident_bytes: int | None = None
+    resident_partial: bool = False
 
 
 def _members(app: DarwinApp) -> set[tuple[int, int]]:
@@ -67,6 +69,8 @@ def build_rows(apps: list[DarwinApp], baseline: dict[str, DarwinApp]) -> list[Da
                 delta_bytes=delta,
                 procs=app.procs,
                 partial=app.partial or app.grouping_partial,
+                resident_bytes=app.resident_bytes,
+                resident_partial=app.resident_partial or app.grouping_partial,
             )
         )
     return rows
@@ -75,7 +79,12 @@ def build_rows(apps: list[DarwinApp], baseline: dict[str, DarwinApp]) -> list[Da
 def sort_rows(rows: list[DarwinRow], key: str, reverse: bool) -> list[DarwinRow]:
     if key == "app":
         return sorted(rows, key=lambda row: (row.name.casefold(), row.key), reverse=reverse)
-    attribute = {"footprint": "footprint_bytes", "delta": "delta_bytes", "procs": "procs"}[key]
+    attribute = {
+        "footprint": "footprint_bytes",
+        "delta": "delta_bytes",
+        "resident": "resident_bytes",
+        "procs": "procs",
+    }[key]
     known = [row for row in rows if getattr(row, attribute) is not None]
     unknown = [row for row in rows if getattr(row, attribute) is None]
     known.sort(key=lambda row: (getattr(row, attribute), row.name.casefold()), reverse=reverse)

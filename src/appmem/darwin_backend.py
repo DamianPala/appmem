@@ -43,6 +43,7 @@ class DarwinProcess:
     footprint_bytes: int | None
     unavailable: str | None
     path: str | None
+    resident_bytes: int | None = None
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,19 @@ class DarwinApp:
     unreadable_processes: int
     members: tuple[DarwinProcess, ...]
     grouping_partial: bool
+
+    @property
+    def resident_bytes(self) -> int | None:
+        known = [p.resident_bytes for p in self.members if p.resident_bytes is not None]
+        return sum(known) if known else None
+
+    @property
+    def resident_readable_processes(self) -> int:
+        return sum(p.resident_bytes is not None for p in self.members)
+
+    @property
+    def resident_partial(self) -> bool:
+        return self.resident_readable_processes < self.procs
 
     @property
     def procs(self) -> int:
@@ -154,6 +168,7 @@ class DarwinBackend:
             footprint_bytes=memory.footprint_bytes if memory is not None else None,
             unavailable=unavailable,
             path=path,
+            resident_bytes=memory.resident_bytes if memory is not None else None,
         )
 
     def _ancestry(

@@ -487,6 +487,17 @@ def check_detail(document: dict[str, Any], controlled: set[int]) -> None:
         app["footprint_bytes"] == sum(proc["footprint_bytes"] for proc in processes),
         "app footprint does not sum member footprints",
     )
+    require(
+        coverage["resident_readable_processes"] == app["procs"]
+        and coverage["resident_unreadable_processes"] == 0
+        and not coverage["resident_partial"],
+        "controlled resident coverage incomplete",
+    )
+    require(
+        all(proc["resident_bytes"] is not None for proc in processes)
+        and app["resident_bytes"] == sum(proc["resident_bytes"] for proc in processes),
+        "app resident does not sum readable member resident",
+    )
     for proc in processes:
         require(
             proc["start_abstime"] is not None and proc["unavailable"] is None,
@@ -504,6 +515,10 @@ def check_detail(document: dict[str, Any], controlled: set[int]) -> None:
     require(
         all(item["readable_processes"] == item["procs"] for item in commands),
         "controlled command coverage incomplete",
+    )
+    require(
+        sum(item["resident_bytes"] for item in commands) == app["resident_bytes"],
+        "command resident values do not sum app resident",
     )
 
 
@@ -555,7 +570,7 @@ def tui(cli: Path, root: Path, deadline: float) -> int:
     os.close(slave)
     start = time.monotonic()
     try:
-        transcript = bytearray(wait_pty(master, (b"APP", b"FOOTPRINT", b"PROCS"), deadline))
+        transcript = bytearray(wait_pty(master, (b"APP", b"MEMORY", b"PROCS"), deadline))
         # Enter acts on the live table's highlighted row. Its order can change
         # between the CLI sample and this TUI sample, so do not infer its ID.
         os.write(master, b"\r")
@@ -563,7 +578,7 @@ def tui(cli: Path, root: Path, deadline: float) -> int:
         os.write(master, b"g")
         transcript.extend(wait_pty(master, (b"UNREADABLE",), deadline))
         os.write(master, b"\x1b")
-        transcript.extend(wait_pty(master, (b"Physical", b"APP", b"PROCS"), deadline))
+        transcript.extend(wait_pty(master, (b"RAM", b"APP", b"PROCS"), deadline))
         os.write(master, b"q")
         exit_deadline = min(deadline, time.monotonic() + 5)
         while process.poll() is None:

@@ -11,9 +11,24 @@ def _field(type_name: str | list[str], description: str) -> dict[str, object]:
 
 _COVERAGE = {
     "type": "object",
-    "description": "Footprint and grouping coverage for captured member processes",
-    "required": ["readable_processes", "unreadable_processes", "partial", "grouping_partial"],
+    "description": (
+        "Independent footprint/resident and grouping coverage for captured member processes"
+    ),
+    "required": [
+        "readable_processes",
+        "unreadable_processes",
+        "resident_readable_processes",
+        "resident_unreadable_processes",
+        "partial",
+        "grouping_partial",
+        "resident_partial",
+    ],
     "properties": {
+        "resident_partial": _field("boolean", "Some member resident values are unavailable"),
+        "resident_readable_processes": _field("integer", "Members with readable resident bytes"),
+        "resident_unreadable_processes": _field(
+            "integer", "Members with unavailable resident bytes"
+        ),
         "readable_processes": _field("integer", "Processes with a readable footprint"),
         "unreadable_processes": _field("integer", "Processes whose footprint is unavailable"),
         "partial": _field("boolean", "Some process footprints are unavailable"),
@@ -23,8 +38,13 @@ _COVERAGE = {
 _APP = {
     "type": "object",
     "description": "One application group and its known footprint",
-    "required": ["id", "name", "footprint_bytes", "procs", "coverage"],
+    "required": ["id", "name", "footprint_bytes", "resident_bytes", "procs", "coverage"],
     "properties": {
+        "resident_bytes": _field(
+            ["integer", "null"],
+            "Resident bytes of readable members; shared/file-backed pages may double count; "
+            "not additive with footprint and their difference is not swap",
+        ),
         "id": _field("string", "Stable identity of the bundle path or session root"),
         "name": _field("string", "Display name; same-named independent roots are disambiguated"),
         "footprint_bytes": _field(
@@ -38,8 +58,20 @@ _APP = {
 _PROCESS = {
     "type": "object",
     "description": "One captured process, identified by PID and native start time where available",
-    "required": ["pid", "start_abstime", "command", "footprint_bytes", "unavailable"],
+    "required": [
+        "pid",
+        "start_abstime",
+        "command",
+        "footprint_bytes",
+        "resident_bytes",
+        "unavailable",
+    ],
     "properties": {
+        "resident_bytes": _field(
+            ["integer", "null"],
+            "Resident bytes of readable members; shared/file-backed pages may double count; "
+            "not additive with footprint and their difference is not swap",
+        ),
         "pid": _field("integer", "Process ID"),
         "start_abstime": _field(["integer", "null"], "Native process start identity, if readable"),
         "command": _field("string", "Short BSD executable name, never arguments"),
@@ -53,11 +85,23 @@ _COMMAND = {
     "required": [
         "command",
         "footprint_bytes",
+        "resident_bytes",
         "procs",
         "readable_processes",
         "unreadable_processes",
+        "resident_readable_processes",
+        "resident_unreadable_processes",
     ],
     "properties": {
+        "resident_readable_processes": _field("integer", "Members with readable resident bytes"),
+        "resident_unreadable_processes": _field(
+            "integer", "Members with unavailable resident bytes"
+        ),
+        "resident_bytes": _field(
+            ["integer", "null"],
+            "Resident bytes of readable members; shared/file-backed pages may double count; "
+            "not additive with footprint and their difference is not swap",
+        ),
         "command": _field("string", "Short BSD executable name"),
         "footprint_bytes": _field(["integer", "null"], "Sum of readable member footprints"),
         "procs": _field("integer", "Captured process count"),
@@ -92,10 +136,18 @@ def _snapshot_output() -> dict[str, object]:
             },
             "system": {
                 "type": "object",
-                "description": "Raw native host memory categories, not a sum of app footprints",
+                "description": (
+                    "Native host counters and validated derived partition, "
+                    "not a sum of app footprints"
+                ),
                 "required": [
                     "physical_bytes",
                     "free_bytes",
+                    "speculative_bytes",
+                    "file_backed_bytes",
+                    "purgeable_bytes",
+                    "used_excluding_file_backed_bytes",
+                    "free_excluding_speculative_bytes",
                     "wired_bytes",
                     "compressor_physical_bytes",
                     "compressor_logical_bytes",
@@ -106,14 +158,35 @@ def _snapshot_output() -> dict[str, object]:
                     name: _field("integer", description)
                     for name, description in {
                         "physical_bytes": "Installed physical memory",
-                        "free_bytes": "Free physical pages; not an available-memory estimate",
+                        "free_bytes": (
+                            "Native free pages including speculative; not available memory"
+                        ),
                         "wired_bytes": "Wired physical pages",
                         "compressor_physical_bytes": "Physical memory occupied by the compressor",
                         "compressor_logical_bytes": "Logical bytes represented by compressed pages",
-                        "swap_used_bytes": (
-                            "Currently allocated global swap; zero means none allocated"
+                        "swap_used_bytes": ("Global swap bytes used within the current allocation"),
+                        "swap_total_bytes": (
+                            "Currently allocated swap space, grows dynamically; zero means "
+                            "unallocated"
                         ),
-                        "swap_total_bytes": "Current global swap capacity",
+                    }.items()
+                }
+                | {
+                    name: _field(["integer", "null"], description)
+                    for name, description in {
+                        "speculative_bytes": (
+                            "Native speculative pages, included in free and file-backed"
+                        ),
+                        "file_backed_bytes": "Native external pages; not all immediately available",
+                        "purgeable_bytes": "Purgeable pages overlapping used, not an extra bucket",
+                        "used_excluding_file_backed_bytes": (
+                            "Physical minus true free minus file-backed; includes "
+                            "reserved/unaccounted; null if inconsistent"
+                        ),
+                        "free_excluding_speculative_bytes": (
+                            "Native free minus speculative; null if partition counters are "
+                            "inconsistent"
+                        ),
                     }.items()
                 },
             },
@@ -252,7 +325,8 @@ def detail(path: list[str]) -> dict[str, object] | None:
             "interactive": False,
             "output": _snapshot_output(),
             "output_description": (
-                "Physical footprint sums may be partial; host values are raw native categories"
+                "Physical footprint sums may be partial; host values include native counters "
+                "and a validated derived RAM partition"
             ),
         }
     if path == ["app"]:

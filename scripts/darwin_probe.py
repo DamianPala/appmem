@@ -220,6 +220,18 @@ def run() -> dict[str, object]:
         ),
         "required VM page counters are all zero",
     )
+    require(
+        all(
+            value is not None and value >= 0
+            for value in (
+                host_value.speculative_bytes,
+                host_value.file_backed_bytes,
+                host_value.purgeable_bytes,
+            )
+        ),
+        "legacy backing counters unavailable",
+    )
+    require(host_value.ram_partition is not None, "host partition counters are inconsistent")
     require(host_value.swap_used_bytes <= host_value.swap_total_bytes, "swap used exceeds total")
     require(
         host_value.pressure_level is None or host_value.pressure_level in (1, 2, 4),
@@ -268,6 +280,9 @@ def run() -> dict[str, object]:
         "host": {
             "physical_bytes": host_value.physical_bytes,
             "vm_count": host_value.vm_count,
+            "speculative_bytes": host_value.speculative_bytes,
+            "file_backed_bytes": host_value.file_backed_bytes,
+            "purgeable_bytes": host_value.purgeable_bytes,
             "compressor_physical_bytes": host_value.compressor_physical_bytes,
             "compressor_logical_bytes": host_value.compressor_logical_bytes,
             "swapped_logical_bytes": host_value.swapped_logical_bytes,

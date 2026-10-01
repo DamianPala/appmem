@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
+from time import monotonic
 from typing import ClassVar
 
 from rich.text import Text
@@ -66,7 +68,8 @@ class DarwinMainScreen(LiveScreen):
     DarwinMainScreen Static { text-wrap: nowrap; text-overflow: ellipsis; }
     """
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("f", "sort('footprint')", "sort footprint", show=False),
+        Binding("f", "sort('footprint')", "sort memory", show=False),
+        Binding("r", "sort('resident')", "sort resident", show=False),
         Binding("d", "sort('delta')", "sort growth", show=False),
         Binding("b", "reset_delta", "reset growth", show=False),
         Binding("?", "help", "help", show=False),
@@ -86,11 +89,14 @@ class DarwinMainScreen(LiveScreen):
         self._resume_scrolls = False
         self._read_failed = False
         self._ascii_bars = _detect_ascii_bars()
+        self._baseline_time: str | None = None
+        self._baseline_started = 0.0
 
     def compose(self) -> ComposeResult:
         yield Static(id="header1")
         yield Static(id="header2")
         yield Static(id="header3")
+        yield Static(id="header4")
         table: RowTable = RowTable(id="table")
         self._rebuild_columns(table)
         yield table
@@ -152,6 +158,8 @@ class DarwinMainScreen(LiveScreen):
         self, host: HostMemory, apps: list[DarwinApp], *, scroll: bool = False
     ) -> None:
         self._host = host
+        if self._baseline_time is None:
+            self._reset_baseline_clock()
         self._read_failed = False
         self._apps = apps
         self._baseline = update_baseline(apps, self._baseline)
@@ -175,7 +183,12 @@ class DarwinMainScreen(LiveScreen):
             primary=_bar_fill_colour(theme),
         )
         lines = render_host_header(
-            self._host, self.size.width, colors=colors, ascii_bars=self._ascii_bars
+            self._host,
+            self.size.width,
+            colors=colors,
+            ascii_bars=self._ascii_bars,
+            baseline_time=self._baseline_time,
+            baseline_elapsed=max(0, int(monotonic() - self._baseline_started)),
         )
         for index, line in enumerate(lines, 1):
             self.query_one(f"#header{index}", Static).update(line)
@@ -185,7 +198,14 @@ class DarwinMainScreen(LiveScreen):
 
     def _render_footer(self) -> None:
         items = [
-            (("f", "d") if self.size.width >= 65 else ("f",), "sort"),
+            (
+                ("f", "d", "r")
+                if self.size.width >= 100
+                else ("f", "d")
+                if self.size.width >= 65
+                else ("f",),
+                "sort",
+            ),
             (("enter",), "procs"),
             (("b",), "reset growth"),
             (("T",), "theme"),
@@ -203,10 +223,12 @@ class DarwinMainScreen(LiveScreen):
     def _specs(self, table: RowTable) -> list[tuple[str, str, int | None]]:
         specs: list[tuple[str, str, int | None]] = [
             ("app", "APP", None),
-            ("footprint", "FOOTPRINT", 12),
+            ("footprint", "MEMORY", 12),
         ]
         if self.size.width >= 65:
-            specs.append(("delta", "ΔFOOT", 11))
+            specs.append(("delta", "ΔMEM", 11))
+        if self.size.width >= 100:
+            specs.append(("resident", "RESIDENT", 12))
         specs.append(("procs", "PROCS", 7))
         usable = table.scrollable_content_region.width or self.size.width
         other = sum(2 + (column_width or 0) for key, _, column_width in specs if key != "app")
@@ -230,6 +252,8 @@ class DarwinMainScreen(LiveScreen):
             "footprint": _amount(row.footprint_bytes)
             + ("*" if row.partial and row.footprint_bytes is not None else ""),
             "delta": "?" if row.delta_bytes is None else format_delta(row.delta_bytes),
+            "resident": _amount(row.resident_bytes)
+            + ("*" if row.resident_partial and row.resident_bytes is not None else ""),
             "procs": str(row.procs),
         }
         return [
@@ -293,7 +317,9 @@ class DarwinMainScreen(LiveScreen):
             table.scroll_to(y=previous_scroll_y, animate=False)
 
     def on_resize(self, event: events.Resize) -> None:
-        if self._sort_key == "delta" and self.size.width < 65:
+        if (self._sort_key == "delta" and self.size.width < 65) or (
+            self._sort_key == "resident" and self.size.width < 100
+        ):
             self._sort_key, self._reverse = "footprint", True
         self._render_header()
         self._sync_columns(force=True, preserve_scroll=False)
@@ -302,7 +328,7 @@ class DarwinMainScreen(LiveScreen):
         self._render_footer()
 
     def action_sort(self, key: str) -> None:
-        if key == "delta" and self.size.width < 65:
+        if key not in {column for column, _, _ in self._specs(self._table())}:
             return
         self._reverse = not self._reverse if self._sort_key == key else key != "app"
         self._sort_key = key
@@ -315,8 +341,15 @@ class DarwinMainScreen(LiveScreen):
     def on_row_table_header_selected(self, event: RowTable.HeaderSelected) -> None:
         self.action_sort(event.column_key)
 
+    def _reset_baseline_clock(self) -> None:
+        self._baseline_time = datetime.now().strftime("%H:%M:%S")
+        self._baseline_started = monotonic()
+
     def action_reset_delta(self) -> None:
         self.refresh_now(scroll=True)
+        if self._read_failed:
+            return
+        self._reset_baseline_clock()
         self._baseline = {app.id: app for app in self._apps}
         self._apply_rows(build_rows(self._apps, self._baseline), scroll=True)
         self._render_header()
@@ -357,6 +390,8 @@ class _DetailRow:
     procs: int
     unreadable: int
     status: str
+    resident_bytes: int | None = None
+    resident_unreadable: int = 0
 
 
 class DarwinProcessesScreen(LiveScreen):
@@ -365,7 +400,8 @@ class DarwinProcessesScreen(LiveScreen):
     DarwinProcessesScreen Static { text-wrap: nowrap; text-overflow: ellipsis; }
     """
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("f", "sort('footprint')", "sort footprint", show=False),
+        Binding("f", "sort('footprint')", "sort memory", show=False),
+        Binding("r", "sort('resident')", "sort resident", show=False),
         Binding("n", "sort('name')", "sort command", show=False),
         Binding("p", "sort('count')", "sort PID or count", show=False),
         Binding("u", "sort('unreadable')", "sort unreadable", show=False),
@@ -462,6 +498,7 @@ class DarwinProcessesScreen(LiveScreen):
             for command, members in grouped.items():
                 known = [p.footprint_bytes for p in members if p.footprint_bytes is not None]
                 unreadable = len(members) - len(known)
+                residents = [p.resident_bytes for p in members if p.resident_bytes is not None]
                 rows.append(
                     _DetailRow(
                         command,
@@ -470,7 +507,10 @@ class DarwinProcessesScreen(LiveScreen):
                         sum(known) if known else None,
                         len(members),
                         unreadable,
-                        f"{len(known)} readable, {unreadable} unreadable processes",
+                        f"{len(known)} memory readable, {unreadable} unreadable processes; "
+                        f"resident {len(residents)}/{len(members)} readable",
+                        sum(residents) if residents else None,
+                        len(members) - len(residents),
                     )
                 )
             return rows
@@ -483,6 +523,8 @@ class DarwinProcessesScreen(LiveScreen):
                 1,
                 int(p.footprint_bytes is None),
                 p.unavailable or escape_control_chars(p.path or "path unavailable"),
+                p.resident_bytes,
+                int(p.resident_bytes is None),
             )
             for p in self._visible_processes()
         ]
@@ -503,9 +545,10 @@ class DarwinProcessesScreen(LiveScreen):
             )
         if self._sort_key == "unreadable":
             return sorted(rows, key=lambda row: (row.unreadable, row.name), reverse=self._reverse)
-        known = [row for row in rows if row.footprint_bytes is not None]
-        unknown = [row for row in rows if row.footprint_bytes is None]
-        known.sort(key=lambda row: (row.footprint_bytes or 0, row.name), reverse=self._reverse)
+        attribute = "resident_bytes" if self._sort_key == "resident" else "footprint_bytes"
+        known = [row for row in rows if getattr(row, attribute) is not None]
+        unknown = [row for row in rows if getattr(row, attribute) is None]
+        known.sort(key=lambda row: (getattr(row, attribute), row.name), reverse=self._reverse)
         return known + sorted(unknown, key=lambda row: row.name)
 
     def _specs(self, table: RowTable) -> list[tuple[str, str, int | None]]:
@@ -513,7 +556,9 @@ class DarwinProcessesScreen(LiveScreen):
         specs: list[tuple[str, str, int | None]] = []
         if not grouped:
             specs.append(("pid", "PID", 7))
-        specs.extend((("name", "COMMAND", None), ("footprint", "FOOTPRINT", 12)))
+        specs.extend((("name", "COMMAND", None), ("footprint", "MEMORY", 12)))
+        if self.size.width >= 100:
+            specs.append(("resident", "RESIDENT", 12))
         if grouped:
             specs.append(("count", "PROCS", 7))
             if self.size.width >= 75:
@@ -543,6 +588,8 @@ class DarwinProcessesScreen(LiveScreen):
             "name": truncate_name(escape_control_chars(row.name), name_width),
             "footprint": _amount(row.footprint_bytes)
             + ("*" if row.unreadable and row.footprint_bytes is not None else ""),
+            "resident": _amount(row.resident_bytes)
+            + ("*" if row.resident_unreadable and row.resident_bytes is not None else ""),
             "count": str(row.procs),
             "unreadable": str(row.unreadable),
             "state": "unreadable" if row.unreadable else "readable",
@@ -613,7 +660,7 @@ class DarwinProcessesScreen(LiveScreen):
         if self._command is not None and not self._visible_processes():
             self._command = None
             force_columns = True
-        if self._sort_key == "unreadable" and "unreadable" not in {
+        if self._sort_key in ("unreadable", "resident") and self._sort_key not in {
             key for key, _, _ in self._specs(self._table())
         }:
             self._sort_key, self._reverse = "footprint", True
@@ -621,12 +668,14 @@ class DarwinProcessesScreen(LiveScreen):
         title = (
             "Application vanished"
             if app is None
-            else f"{escape_control_chars(app.name)}  footprint {_amount(app.footprint_bytes)}"
+            else f"{escape_control_chars(app.name)}  memory {_amount(app.footprint_bytes)}"
         )
         self.query_one("#title", Static).update(truncate_name(title, self.size.width))
         self._apply_rows(self._build_rows(), force_columns=force_columns, scroll=scroll)
         self._render_status()
         sort_keys = ("f", "n", "p", "u") if "unreadable" in self._column_keys else ("f", "n", "p")
+        if "resident" in self._column_keys:
+            sort_keys += ("r",)
         footer: list[tuple[tuple[str, ...], str]] = [
             (sort_keys, "sort"),
             (("g",), "ungroup" if self._grouped else "group"),
@@ -645,7 +694,7 @@ class DarwinProcessesScreen(LiveScreen):
                 truncate_name(_read_error(self._app is not None), self.size.width)
             )
             return
-        status = "Captured process footprints; ? means unreadable"
+        status = "Captured process memory; ? means unreadable"
         if self._command is not None:
             status = f"Command {escape_control_chars(self._command)}"
         elif table.row_count:
@@ -664,9 +713,9 @@ class DarwinProcessesScreen(LiveScreen):
             self._render_detail(force_columns=True, scroll=True)
 
     def action_sort(self, key: str) -> None:
-        if key not in ("footprint", "name", "count", "unreadable"):
+        if key not in ("footprint", "resident", "name", "count", "unreadable"):
             return
-        if key == "unreadable" and "unreadable" not in self._column_keys:
+        if key in ("unreadable", "resident") and key not in self._column_keys:
             return
         self._reverse = not self._reverse if self._sort_key == key else key != "name"
         self._sort_key = key
@@ -713,9 +762,12 @@ class DarwinHelpScreen(Screen[None]):
     def compose(self) -> ComposeResult:
         yield Static(
             "macOS 15+ Apple Silicon (experimental)\n\n"
-            "FOOTPRINT is native process physical footprint. It is not resident RAM, "
+            "MEMORY is native process physical footprint. RESIDENT includes shared/file-backed "
+            "pages and may double count between processes. These metrics are not additive, "
+            "and their difference is not swap. MEMORY is not resident RAM, "
             "reclaimable memory, or an Activity Monitor total.\n"
-            "* marks a partial app total; ? means all member footprints are unreadable. "
+            "* marks a partial known sum; ? means no members are readable for that metric. "
+            "MEMORY and RESIDENT track independent read coverage. "
             "Growth stays unknown until a complete sample sets that app's baseline. "
             "The first complete sample shows zero. A partial current sample shows unknown; "
             "recovery compares with the retained complete baseline.\n"
@@ -723,13 +775,19 @@ class DarwinHelpScreen(Screen[None]):
             "Missing ancestry can make grouping partial. Shared XPC/WebKit services "
             "started by launchd can remain separate rows (for example Safari and "
             "WebContent), so an app row may omit related service footprints.\n"
-            "Host Free is free physical pages, not available memory. Compression shows "
+            "RAM used = physical - (native free - speculative) - file-backed. "
+            "Reserved/unaccounted memory remains used; purgeable overlaps used. "
+            "File-backed is not all immediately available. Host Free excludes speculative, "
+            "not an available-memory estimate. Compression shows "
             "logical data -> physical RAM. Native pressure is a kernel state, not PSI. "
             "The Swap gauge compares used with currently allocated space, which grows "
             "dynamically; zero total means none allocated. Per-app swap is unavailable.\n\n"
             "Click a header to sort; click a row to select it, double click to open it. "
-            "Main: f/d sort footprint/growth, b reset growth, Enter details. "
-            "Details: f/n/p/u sort footprint/command/PID or count/unreadable, "
+            "Main: f/d/r sort memory/growth/resident (when visible), "
+            "b reset growth, Enter details. "
+            "Growth baseline time is the session/reset epoch; individual app baselines "
+            "may start later after identity or coverage changes. "
+            "Details: f/r/n/p/u sort memory/resident/command/PID or count/unreadable, "
             "g group commands, Enter group members. Esc goes back; T opens themes. "
             "?/q close this help; q quits from a live view."
         )

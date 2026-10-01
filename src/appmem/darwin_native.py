@@ -201,6 +201,39 @@ class HostMemory:
     pressure_level: int | None
     pressure_unavailable: Unavailable | None
     pressure_error_code: int | None
+    speculative_bytes: int | None = None
+    file_backed_bytes: int | None = None
+    purgeable_bytes: int | None = None
+
+    @property
+    def ram_partition(self) -> tuple[int, int, int] | None:
+        """Used excluding file-backed, file-backed, and free excluding speculative.
+
+        Native counters can be sampled inconsistently. Do not clamp them into a
+        fabricated partition; reserved/unaccounted memory stays inside used.
+        """
+        values = (
+            self.physical_bytes,
+            self.free_bytes,
+            self.speculative_bytes,
+            self.file_backed_bytes,
+            self.wired_bytes,
+            self.compressor_physical_bytes,
+        )
+        if any(type(value) is not int or value < 0 for value in values):
+            return None
+        speculative, backed = self.speculative_bytes, self.file_backed_bytes
+        if speculative is None or backed is None or self.physical_bytes <= 0:
+            return None
+        if self.free_bytes > self.physical_bytes or backed > self.physical_bytes:
+            return None
+        if speculative > self.free_bytes or speculative > backed:
+            return None
+        free = self.free_bytes - speculative
+        used = self.physical_bytes - free - backed
+        if used < self.wired_bytes + self.compressor_physical_bytes:
+            return None
+        return used, backed, free
 
 
 def decode_vm(vm: VMStatistics64, count: int, page_size: int) -> dict[str, int | None]:
@@ -211,6 +244,9 @@ def decode_vm(vm: VMStatistics64, count: int, page_size: int) -> dict[str, int |
     swapped = vm.swapped_count * page_size if count * 4 >= c.sizeof(vm) else None
     return {
         "free": vm.free_count * page_size,
+        "speculative": vm.speculative_count * page_size,
+        "file_backed": vm.external_page_count * page_size,
+        "purgeable": vm.purgeable_count * page_size,
         "wired": vm.wire_count * page_size,
         "active": vm.active_count * page_size,
         "inactive": vm.inactive_count * page_size,
@@ -299,6 +335,9 @@ class DarwinNative:
                 page_size=page.value,
                 vm_count=count.value,
                 free_bytes=cast(int, values["free"]),
+                speculative_bytes=values["speculative"],
+                file_backed_bytes=values["file_backed"],
+                purgeable_bytes=values["purgeable"],
                 wired_bytes=cast(int, values["wired"]),
                 active_bytes=cast(int, values["active"]),
                 inactive_bytes=cast(int, values["inactive"]),

@@ -191,3 +191,18 @@ def test_short_successful_process_read_is_an_error(monkeypatch: pytest.MonkeyPat
     assert result.value is None
     assert result.unavailable == Unavailable.ERROR
     assert result.error_code is None
+
+
+@pytest.mark.parametrize("count", [38, 40])
+def test_legacy_vm_prefix_decodes_speculative_file_backed_and_purgeable(count: int) -> None:
+    vm = VMStatistics64()
+    vm.free_count, vm.speculative_count = 100, 20
+    vm.external_page_count, vm.purgeable_count = 80, 30
+    values = decode_vm(vm, count, 16_384)
+    assert values["free"] == 100 * 16_384
+    assert values["speculative"] == 20 * 16_384
+    assert values["file_backed"] == 80 * 16_384
+    assert values["purgeable"] == 30 * 16_384
+    assert VMStatistics64.external_page_count.offset + 4 <= 38 * 4
+    assert VMStatistics64.purgeable_count.offset + 4 <= 38 * 4
+    assert VMStatistics64.speculative_count.offset + 4 <= 38 * 4

@@ -529,7 +529,7 @@ async def test_darwin_live_view_uses_footprint_columns_and_drill_down() -> None:
             "delta",
             "procs",
         ]
-        assert "Physical" in str(pilot.app.screen.query_one("#header1", Static).content)
+        assert "RAM" in str(pilot.app.screen.query_one("#header1", Static).content)
         table.focus()
         await pilot.press("enter")
         assert isinstance(pilot.app.screen, DarwinProcessesScreen)
@@ -813,7 +813,7 @@ async def test_darwin_main_read_failure_is_visible_and_recovers(
         screen.refresh_now()
         assert table.row_count == 1
         selected = table.cursor_key
-        assert "Physical" in str(header.content)
+        assert "RAM" in str(header.content)
 
         failed = True
         screen._read_tick(screen._generation)  # pyright: ignore[reportPrivateUsage]
@@ -823,7 +823,7 @@ async def test_darwin_main_read_failure_is_visible_and_recovers(
         failed = False
         screen._read_tick(screen._generation)  # pyright: ignore[reportPrivateUsage]
         await pilot.pause()
-        assert "Physical" in str(header.content)
+        assert "RAM" in str(header.content)
 
 
 @pytest.mark.asyncio
@@ -909,3 +909,123 @@ def test_darwin_worker_posts_unexpected_error_and_clears_inflight(
         else:
             screen.on_darwin_detail_tick(cast("DarwinDetailTick", events[0]))
     assert not screen._tick_in_flight  # pyright: ignore[reportPrivateUsage]
+
+
+def test_resident_preserves_unknown_and_independent_aggregate_coverage() -> None:
+    reader = Reader()
+    reader.add(10, 1, "App", "/Applications/App.app/Contents/MacOS/App", 100)
+    reader.add(11, 10, "worker", "/usr/bin/worker", 20)
+    reader.add(12, 10, "worker", "/usr/bin/worker", None)
+    reader.memories[10] = ProcessMemory(100, 800, 100)
+    reader.memories[11] = ProcessMemory(20, 10, 110)
+    backend = DarwinBackend(501, reader)
+    app = backend.collect_apps()[0]
+    assert app.resident_bytes == 810 and app.footprint_bytes == 120
+    assert app.resident_partial and app.resident_readable_processes == 2
+    assert app.members[2].resident_bytes is None
+    # A fixture can have distinct metric coverage: never reuse footprint totals for resident.
+    isolated = replace(app, members=(replace(app.members[0], resident_bytes=None),))
+    assert isolated.resident_bytes is None
+    assert isolated.resident_readable_processes == 0
+    raw = darwin_report.app_document(backend, app.id, limit=10, now=datetime.now(UTC))
+    assert raw is not None
+    doc = cast("dict[str, Any]", raw[0])
+    assert doc["app"]["resident_bytes"] == 810
+    assert doc["app"]["coverage"]["resident_unreadable_processes"] == 1
+    assert doc["commands"][1]["resident_bytes"] == 10
+    assert doc["commands"][1]["resident_readable_processes"] == 1
+    assert doc["commands"][1]["resident_unreadable_processes"] == 1
+
+
+@pytest.mark.asyncio
+async def test_resident_main_detail_group_member_sort_and_resize() -> None:
+    reader = Reader()
+    reader.add(10, 1, "App", "/Applications/App.app/Contents/MacOS/App", 100)
+    reader.add(11, 10, "worker", "/usr/bin/worker", 20)
+    reader.add(12, 10, "worker", "/usr/bin/worker", None)
+    reader.add(20, 1, "Other", "/Applications/Other.app/Contents/MacOS/Other", 200)
+    reader.memories[10] = ProcessMemory(100, 800, 100)
+    reader.memories[11] = ProcessMemory(20, 10, 110)
+    reader.memories[20] = ProcessMemory(200, 30, 200)
+    backend = DarwinBackend(501, reader)
+    app = AppMemApp(interval=60, main_screen_factory=lambda: DarwinMainScreen(backend, 60))
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        main = app.screen
+        assert isinstance(main, DarwinMainScreen)
+        table = main.query_one("#table", RowTable)
+        assert "resident" in table.column_keys
+        app_id = next(item.id for item in backend.collect_apps() if item.name == "App")
+        table.move_cursor(row=table.get_row_index(app_id))
+        await pilot.press("r")
+        assert table.get_row_index(app_id) == 0
+        assert table.cursor_key == app_id
+        assert table.get_cell(app_id, "resident").plain.endswith("*")
+        await pilot.press("enter")
+        detail = app.screen
+        assert isinstance(detail, DarwinProcessesScreen)
+        table = detail.query_one("#table", RowTable)
+        assert "resident" in table.column_keys
+        await pilot.press("r")
+        assert table.get_cell(table.row_keys[0], "pid").plain == "10"
+        assert table.get_cell(table.row_keys[2], "resident").plain == "?"
+        await pilot.press("g")
+        assert "resident" in table.column_keys
+        worker_index = next(
+            i
+            for i in range(table.row_count)
+            if table.get_cell(table.row_keys[i], "name").plain == "worker"
+        )
+        table.move_cursor(row=worker_index)
+        assert table.get_cell(table.row_keys[worker_index], "resident").plain.endswith("*")
+        await pilot.press("enter")
+        assert table.row_count == 2 and "resident" in table.column_keys
+        selected = table.cursor_key
+        detail.refresh_now()
+        assert table.cursor_key == selected
+        await pilot.resize_terminal(80, 24)
+        await pilot.pause()
+        assert "resident" not in table.column_keys
+        assert detail._sort_key == "footprint"  # pyright: ignore[reportPrivateUsage]
+        await pilot.press("escape", "escape", "escape")
+        assert isinstance(app.screen, DarwinMainScreen)
+        assert main._sort_key == "footprint"  # pyright: ignore[reportPrivateUsage]
+        assert "resident" not in main.query_one("#table", RowTable).column_keys
+
+
+@pytest.mark.asyncio
+async def test_baseline_reset_updates_header_time_and_elapsed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from appmem.ui.screens import darwin as screens
+
+    clock = [100.0]
+    monkeypatch.setattr(screens, "monotonic", lambda: clock[0])
+
+    class Clock:
+        @staticmethod
+        def now() -> datetime:
+            return datetime(2026, 10, 1, 12, 0, int(clock[0]) % 60)
+
+    monkeypatch.setattr(screens, "datetime", Clock)
+    reader = Reader()
+    reader.add(10, 1, "App", "/Applications/App.app/Contents/MacOS/App", 100)
+    backend = DarwinBackend(501, reader)
+    app = AppMemApp(interval=60, main_screen_factory=lambda: DarwinMainScreen(backend, 60))
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        main = app.screen
+        assert isinstance(main, DarwinMainScreen)
+        before_time = main._baseline_time  # pyright: ignore[reportPrivateUsage]
+        clock[0] = 142.0
+        main.refresh_now()
+        header = main.query_one("#header4", Static)
+        assert "42s ago" in str(header.content)
+        reader.memories[10] = ProcessMemory(150, 150, 100)
+        await pilot.press("b")
+        assert "0s ago" in str(header.content)
+        assert main._baseline_started == 142.0  # pyright: ignore[reportPrivateUsage]
+        assert all(row.delta_bytes == 0 for row in main._rows.values())  # pyright: ignore[reportPrivateUsage]
+        baseline_time = main._baseline_time  # pyright: ignore[reportPrivateUsage]
+        assert baseline_time is not None and baseline_time in str(header.content)
+        assert baseline_time != before_time

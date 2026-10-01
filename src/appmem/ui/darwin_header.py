@@ -1,4 +1,4 @@
-"""Three host lines with native Darwin meanings and shared gauge styling."""
+"""Four host rows with native Darwin meanings and shared gauge styling."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ from appmem.darwin_native import HostMemory
 from appmem.fmt import format_pair, size, size_in_unit, unit_of
 from appmem.ui.header import (
     ThemeColors,
-    _bar_text,  # pyright: ignore[reportPrivateUsage] - reuse Linux's gauge glyphs and styles
-    _bar_width,  # pyright: ignore[reportPrivateUsage] - keep the existing width buckets
+    _bar_text,  # pyright: ignore[reportPrivateUsage] - reuse Linux gauge styling
+    _bar_width,  # pyright: ignore[reportPrivateUsage] - retain shared width buckets
 )
 from appmem.ui.layout import fit_line
 
@@ -22,17 +22,32 @@ def _amount(value: int) -> str:
     return size(value) if _nonnegative(value) else "unavailable"
 
 
-def _physical(host: HostMemory, width: int) -> Text:
-    physical = _amount(host.physical_bytes) if host.physical_bytes > 0 else "unavailable"
+def _ram(host: HostMemory, width: int, colors: ThemeColors, *, ascii_bars: bool) -> Text:
+    partition = host.ram_partition
+    label = Text("RAM".ljust(10 if width >= 60 else 6))
+    if partition is None:
+        return fit_line(
+            (
+                ("ram", label + Text("used unavailable")),
+                ("total", Text(f"total {_amount(host.physical_bytes)}")),
+            ),
+            ("total",),
+            width,
+            separator="; ",
+        )
+    used, backed, free = partition
+    value = Text(format_pair(used, host.physical_bytes) + " used")
+    details = Text(f"File-backed {size(backed)}  Free {size(free)}")
+    bar_width = _bar_width(width)
+    if label.cell_len + bar_width + value.cell_len + details.cell_len + 4 > width:
+        bar_width = 0
+    bar = (
+        _bar_text(used, host.physical_bytes, bar_width, colors, ascii_bars=ascii_bars) + Text("  ")
+        if bar_width
+        else Text()
+    )
     return fit_line(
-        (
-            ("physical", Text(f"Physical  {physical}")),
-            ("free", Text(f"Free {_amount(host.free_bytes)}")),
-            ("wired", Text(f"Wired {_amount(host.wired_bytes)}")),
-        ),
-        ("wired", "free"),
-        width,
-        separator="  ",
+        (("ram", label + bar + value), ("details", details)), ("details",), width, separator="  "
     )
 
 
@@ -41,32 +56,56 @@ def _swap(host: HostMemory, width: int, colors: ThemeColors, *, ascii_bars: bool
     label = Text("Swap".ljust(10 if width >= 60 else 6))
     if not (_nonnegative(used) and _nonnegative(total) and used <= total):
         return label + Text("unavailable")
-    if total == 0:
-        return label + Text("0 B used; not allocated")
-    pair = Text(format_pair(used, total))
-    explanation = " used / currently allocated" if width >= 60 else " used/allocated now"
-    value = pair + Text(explanation)
+    value = (
+        Text("0 B used; not allocated")
+        if total == 0
+        else Text(format_pair(used, total) + " used/allocated now")
+    )
+    dynamic = Text("(dynamic allocation)") if width >= 100 else None
     bar_width = _bar_width(width)
     if label.cell_len + bar_width + 2 + value.cell_len > width:
         bar_width = 0
-    bar = (
-        _bar_text(used, total, bar_width, colors, ascii_bars=ascii_bars) + Text("  ")
-        if bar_width
-        else Text()
+    bar = Text()
+    if bar_width:
+        bar = (
+            Text("-" * bar_width, style="dim")
+            if total == 0
+            else _bar_text(used, total, bar_width, colors, ascii_bars=ascii_bars)
+        ) + Text("  ")
+    return fit_line(
+        (("swap", label + bar + value), ("dynamic", dynamic)), ("dynamic",), width, separator="  "
     )
-    return label + bar + value
 
 
-def _compression(host: HostMemory, *, compact: bool, ascii_bars: bool) -> Text:
+def _compression(host: HostMemory, width: int, *, ascii_bars: bool) -> Text:
     logical, physical = host.compressor_logical_bytes, host.compressor_physical_bytes
     if not (_nonnegative(logical) and _nonnegative(physical)):
         return Text("Compress unavailable")
     arrow = ">" if ascii_bars else "→"
-    if compact:
+    if width < 60:
         unit = unit_of(max(logical, physical))
         left, right = size_in_unit(logical, unit), size_in_unit(physical, unit)
-        return Text(f"Comp {left}{arrow}{right} {unit} RAM")
-    return Text(f"Compress {size(logical)} data {arrow} {size(physical)} RAM")
+        compression = Text(f"Comp {left}{arrow}{right} {unit} RAM")
+    else:
+        compression = Text(f"Compress  {size(logical)} data {arrow} {size(physical)} RAM")
+    ratio = Text(f"({logical / physical:.1f}:1)") if logical > 0 and physical > 0 else None
+    wired = Text(f"Wired {_amount(host.wired_bytes)}")
+    purgeable = (
+        Text(f"Purgeable (in used) {size(host.purgeable_bytes)}")
+        if host.purgeable_bytes is not None and 0 <= host.purgeable_bytes <= host.physical_bytes
+        else None
+    )
+    return fit_line(
+        (
+            ("compression", compression),
+            ("ratio", ratio),
+            ("wired", wired),
+            ("purgeable", purgeable),
+        ),
+        ("purgeable", "wired", "ratio"),
+        width,
+        separator="  ",
+    )
 
 
 def _pressure(host: HostMemory, colors: ThemeColors) -> Text:
@@ -78,38 +117,43 @@ def _pressure(host: HostMemory, colors: ThemeColors) -> Text:
     return Text(word or "unavailable", style=f"bold {color[word]}" if word else "dim")
 
 
-def _status(host: HostMemory, width: int, colors: ThemeColors, *, ascii_bars: bool) -> Text:
-    pressure = Text("Pressure".ljust(10 if width >= 60 else 9)) + _pressure(host, colors)
-    compression = _compression(host, compact=width < 60, ascii_bars=ascii_bars)
-    ratio = None
-    if (
-        _nonnegative(host.compressor_logical_bytes)
-        and _nonnegative(host.compressor_physical_bytes)
-        and host.compressor_logical_bytes > 0
-        and host.compressor_physical_bytes > 0
-    ):
-        ratio = Text(f"({host.compressor_logical_bytes / host.compressor_physical_bytes:.1f}:1)")
-    return fit_line(
-        (("pressure", pressure), ("compression", compression), ("ratio", ratio)),
-        ("ratio", "compression"),
-        width,
-        separator="  ",
-    )
-
-
 def render_host_header(
-    host: HostMemory, width: int, *, colors: ThemeColors, ascii_bars: bool = False
-) -> tuple[Text, Text, Text]:
-    """Swap's denominator is allocated space now, not maximum disk capacity.
+    host: HostMemory,
+    width: int,
+    *,
+    colors: ThemeColors,
+    ascii_bars: bool = False,
+    baseline_time: str | None = None,
+    baseline_elapsed: int = 0,
+) -> tuple[Text, Text, Text, Text]:
+    """RAM excludes file-backed; compression is logical data -> physical RAM.
 
-    Compression reads logical data -> physical RAM; pressure is a native state.
-    Narrow layouts drop the compression ratio, then compression, and wired/free
-    figures as needed. Physical memory, swap and pressure retain their labels.
+    Swap uses dynamically allocated space now. Pressure is native, never a RAM
+    percentage. Growth timing identifies the session/reset epoch; app baselines
+    can be newer when identity or coverage changes.
     """
+    pressure = Text("Pressure".ljust(10 if width >= 60 else 9)) + _pressure(host, colors)
+    scope = Text("current user")
+    baseline = (
+        Text(f"growth baseline {baseline_time} ({baseline_elapsed}s ago)")
+        if baseline_time is not None
+        else None
+    )
+    if baseline_time is not None:
+        if width < 60:
+            baseline = Text(f"{baseline_time[:5]} {baseline_elapsed}s")
+        elif width < 80:
+            baseline = Text(f"growth {baseline_time} ({baseline_elapsed}s)")
     lines = (
-        _physical(host, width),
+        _ram(host, width, colors, ascii_bars=ascii_bars),
+        _compression(host, width, ascii_bars=ascii_bars),
         _swap(host, width, colors, ascii_bars=ascii_bars),
-        _status(host, width, colors, ascii_bars=ascii_bars),
+        fit_line(
+            (("pressure", pressure), ("scope", scope), ("baseline", baseline)),
+            ("baseline",),
+            width,
+            separator="  ",
+        ),
     )
     for line in lines:
         line.no_wrap = True
