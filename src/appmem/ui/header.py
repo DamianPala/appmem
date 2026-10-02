@@ -78,16 +78,26 @@ def _swap_style(used: int, total: int, colors: ThemeColors) -> str | None:
 
 
 def swap_activity(
-    incoming: int | None, outgoing: int | None, written: int | None, *, ascii_bars: bool
+    incoming: int | None,
+    outgoing: int | None,
+    session_written: int | None,
+    boot_written: int | None,
+    *,
+    ascii_bars: bool,
 ) -> tuple[tuple[int, Text], ...]:
-    """Keep rates first; the boot total qualifies only the outgoing traffic."""
+    """Keep rates, session total and boot total as ordered, whole fields."""
     unknown = "?" if ascii_bars else "—"
     read = unknown if incoming is None else format_rate(incoming)
     write = unknown if outgoing is None else format_rate(outgoing)
     separator = " · " if not ascii_bars else " / "
     rates = Text(f"in {read}{separator}out {write}")
-    total = Text(f"({total_amount(written)} since boot)")
-    return ((rates.cell_len, rates), (total.cell_len, total))
+    session_total = Text(f"({total_amount(session_written)} this run)")
+    boot_total = Text(f"({total_amount(boot_written)} since boot)")
+    return (
+        (rates.cell_len, rates),
+        (session_total.cell_len, session_total),
+        (boot_total.cell_len, boot_total),
+    )
 
 
 def _pressure_word_text(stats: SystemStats, colors: ThemeColors) -> Text:
@@ -125,6 +135,7 @@ def render_header(  # noqa: PLR0913 - independent keyword-only render inputs
     writeback_rate: int | None = None,
     swap_in_rate: int | None = None,
     swap_out_rate: int | None = None,
+    swap_out_session_total: int | None = None,
     ascii_bars: bool = False,
 ) -> list[Text]:
     """Fixed host grid, with two rows on short terminals and explicit omission markers."""
@@ -160,7 +171,13 @@ def render_header(  # noqa: PLR0913 - independent keyword-only render inputs
             style=_swap_style(swap_used, stats.swap_total, colors) or "",
         ),
         gauge(swap_used, stats.swap_total) if stats.swap_total else Text("off"),
-        swap_activity(swap_in_rate, swap_out_rate, stats.swap_out_bytes, ascii_bars=ascii_bars),
+        swap_activity(
+            swap_in_rate,
+            swap_out_rate,
+            swap_out_session_total,
+            stats.swap_out_bytes,
+            ascii_bars=ascii_bars,
+        ),
     )
     pressure = row(
         "Pressure",

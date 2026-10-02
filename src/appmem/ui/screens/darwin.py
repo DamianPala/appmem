@@ -214,6 +214,7 @@ class DarwinMainScreen(LiveScreen):
             baseline_time=self._baseline_time,
             swap_in_rate=self._swap_in_rate,
             swap_out_rate=self._swap_out_rate,
+            swap_out_session_total=self._swap_out_session.total,
             baseline_elapsed=max(0, int(monotonic() - self._baseline_started)),
         )
         for index, line in enumerate(lines, 1):
@@ -848,7 +849,9 @@ class DarwinHelpScreen(Screen[None]):
                 "files, including housekeeping, not logical app bytes or SSD throughput. "
                 "Unknown means insufficient/unavailable samples; 0 B/s is measured zero. "
                 "Clock discontinuities reset rates; b resets growth only. "
-                "Headers from 105 columns show out with written bytes since boot; "
+                "From 105 columns, headers show out with rates then the exact total written "
+                "this run; the since-boot total follows when space permits. Rates have priority "
+                "over both totals, and the session total has priority over the boot total. "
                 "h shows Read/Written rates, "
                 "boot totals and exact totals since AppMem started. Session totals survive "
                 "navigation and rate resets. Missing initial counters or any decrease leave "

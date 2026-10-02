@@ -23,6 +23,7 @@ from test_darwin_header import COLORS, GIB, HOST
 from test_swap_activity import STATS
 
 BOOT = int(41.6 * GIB)
+SESSION = 12 * 1024**2
 LINUX = replace(STATS, swap_out_bytes=BOOT, swap_free=int(12.6 * GIB))
 MAC = replace(HOST, swap_out_bytes=BOOT)
 
@@ -33,6 +34,8 @@ def headers(
     incoming: int | None = 1023,
     outgoing: int | None = 243 * 1024,
     ascii_bars: bool = False,
+    *,
+    session: int | None = SESSION,
 ) -> list[Text]:
     if platform == "mac":
         return list(
@@ -42,6 +45,7 @@ def headers(
                 colors=COLORS,
                 swap_in_rate=incoming,
                 swap_out_rate=outgoing,
+                swap_out_session_total=session,
                 ascii_bars=ascii_bars,
             )
         )
@@ -54,6 +58,7 @@ def headers(
         now=datetime(2026, 1, 1),
         swap_in_rate=incoming,
         swap_out_rate=outgoing,
+        swap_out_session_total=session,
         ascii_bars=ascii_bars,
     )
 
@@ -61,15 +66,17 @@ def headers(
 @pytest.mark.parametrize("platform", ["linux", "mac"])
 @pytest.mark.parametrize("width", [104, 105, 106, 109, 110, 120, 160])
 @pytest.mark.parametrize("incoming", [1023, 1024])
-def test_105_keeps_rates_boot_total_and_native_primary(
+def test_105_keeps_rates_session_total_and_native_primary(
     platform: str, width: int, incoming: int
 ) -> None:
     lines = headers(platform, width, incoming)
     swap = lines[2].plain
-    assert "out 243 KiB/s (41.6 GiB since boot)" in swap
+    assert "out 243 KiB/s" in swap
     assert ("in 1023 B/s" if incoming == 1023 else "in 1 KiB/s") in swap
+    assert ("(12 MiB this run)" in swap) is (width >= 104)
+    assert ("(41.6 GiB since boot)" in swap) is (width == 160)
     assert "used/alloc" in swap if platform == "mac" else "19.4/32.0 GiB used" in swap
-    assert not swap.endswith("…")
+    assert swap.endswith("…") is (width < 160)
     assert all(line.cell_len <= width for line in lines)
     if width >= 105:
         assert sum(c in "█░▏▎▍▌▋▊▉" for c in swap) == 20
@@ -91,12 +98,52 @@ def test_extreme_rates_do_not_detach_total_or_overflow(
     lines = headers(platform, width, *rates)
     assert all(line.cell_len <= width for line in lines)
     swap = lines[2].plain
-    if "since boot" in swap:
+    if "this run" in swap or "since boot" in swap:
         assert "out " in swap and "in " in swap
+    if "this run" in swap:
+        assert "(12 MiB this run)" in swap
+    if "since boot" in swap:
+        assert "(41.6 GiB since boot)" in swap and "this run" in swap
     if rates == (None, None) and "in " in swap:
         assert "in —" in swap
     if rates == (0, 0) and "in " in swap:
         assert "in 0 B/s" in swap
+
+
+@pytest.mark.parametrize("platform", ["linux", "mac"])
+@pytest.mark.parametrize("ascii_bars", [False, True])
+@pytest.mark.parametrize("width", [80, 105, 110, 160])
+@pytest.mark.parametrize("session", [None, 0, 2**64 - 1])
+def test_session_total_is_whole_and_precedes_boot(
+    platform: str, ascii_bars: bool, width: int, session: int | None
+) -> None:
+    from appmem.total import total_amount
+
+    swap = headers(platform, width, ascii_bars=ascii_bars, session=session)[2]
+    session_text = f"({total_amount(session)} this run)"
+    assert swap.cell_len <= width
+    if "this run" in swap.plain:
+        assert session_text in swap.plain
+        assert "in " in swap.plain and "out " in swap.plain
+    if "since boot" in swap.plain:
+        assert "this run" in swap.plain and "(41.6 GiB since boot)" in swap.plain
+    assert swap.plain.count("(") == swap.plain.count(")")
+
+
+@pytest.mark.parametrize("platform", ["linux", "mac"])
+@pytest.mark.parametrize("ascii_bars", [False, True])
+def test_hidden_rates_hide_both_whole_totals(platform: str, ascii_bars: bool) -> None:
+    swap = headers(
+        platform,
+        160,
+        incoming=10**100,
+        outgoing=10**100,
+        ascii_bars=ascii_bars,
+        session=12 * 1024**2,
+    )[2]
+    assert swap.cell_len <= 160
+    assert "in " not in swap.plain and "out " not in swap.plain
+    assert "this run" not in swap.plain and "since boot" not in swap.plain
 
 
 def test_marker_beside_content_and_absent_without_omissions() -> None:
@@ -227,4 +274,6 @@ async def test_mac_multidigit_allocation_remains_whole_in_rendered_cells(
                 assert sum(c in glyphs for c in swap.text[:30]) == 20
                 assert "in 1023 B/s" in swap.text and "out 243 KiB/s" in swap.text
             if width == 160:
-                assert "out 243 KiB/s (41.6 GiB since boot)" in swap.text
+                assert "out 243 KiB/s" in swap.text
+                assert "(0 B this run)" in swap.text
+                assert "(41.6 GiB since boot)" in swap.text

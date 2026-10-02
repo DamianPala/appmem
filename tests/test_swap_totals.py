@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+from textual.widgets import Static
 
 from appmem.collect import LinuxBackend, read_system
 from appmem.darwin_backend import DarwinApp, DarwinBackend
@@ -145,7 +146,7 @@ def test_missing_empty_or_malformed_topology_cannot_assert_disk(
 @pytest.mark.parametrize("platform", ["linux", "darwin"])
 @pytest.mark.parametrize("width", [40, 60, 80, 120, 160, 200])
 @pytest.mark.parametrize("ascii_bars", [False, True])
-def test_header_total_is_secondary_and_no_loss_or_overflow(
+def test_session_and_boot_totals_are_secondary_and_no_loss_or_overflow(
     platform: str, width: int, ascii_bars: bool
 ) -> None:
     if platform == "linux":
@@ -180,7 +181,8 @@ def test_header_total_is_secondary_and_no_loss_or_overflow(
     swap = next(line for line in lines if line.plain.startswith("Swap"))
     assert all(line.cell_len <= width for line in lines)
     assert len(lines) == 4
-    assert ("(41.6 GiB since boot)" in swap.plain) is (width >= 105)
+    assert ("(unavailable this run)" in swap.plain) is (width >= 105)
+    assert ("(41.6 GiB since boot)" in swap.plain) is (width >= 160)
     if width == 80:
         assert swap.plain.endswith(">" if ascii_bars else "…")
         assert "in 0 B/s" in swap.plain
@@ -190,6 +192,7 @@ def test_header_total_is_secondary_and_no_loss_or_overflow(
             assert "used/alloc" in swap.plain
     if width >= 160:
         assert "in 0 B/s" in swap.plain and "out 1 KiB/s" in swap.plain
+        assert "(unavailable this run)" in swap.plain
 
 
 @pytest.mark.parametrize("platform", ["linux", "darwin"])
@@ -280,12 +283,24 @@ async def test_session_survives_baseline_navigation_pause_clock_shift_and_indepe
         await pilot.pause()
         assert owner._swap_in_session.total == 0  # pyright: ignore[reportPrivateUsage]
         assert owner._swap_out_session.total == 0  # pyright: ignore[reportPrivateUsage]
+        first_header = owner.query_one("#header3", Static).content
+        assert "(0 B this run)" in str(first_header)
         readings[0] = replace(initial, swap_in_bytes=12345, swap_out_bytes=123456)
-        await pilot.press("b", "?", "escape", "T", "escape", "h", "escape")
+        await pilot.press("b", "?", "escape", "T", "escape")
         await pilot.resize_terminal(80, 24)
         owner.refresh_now()
         assert owner._swap_in_session.total == 12345  # pyright: ignore[reportPrivateUsage]
         assert owner._swap_out_session.total == 122456  # pyright: ignore[reportPrivateUsage]
+        await pilot.resize_terminal(160, 24)
+        await pilot.pause()
+        header = str(owner.query_one("#header3", Static).content)
+        assert "(120 KiB this run)" in header
+        content = owner._host_content()  # pyright: ignore[reportPrivateUsage]
+        assert "Since AppMem started" in content and "120 KiB" in content
+        await pilot.press("h")
+        panel = str(app.screen.query_one("#host-text", Static).content)
+        assert "Since AppMem started" in panel and "120 KiB" in panel
+        await pilot.press("escape")
         # Reset the rate window as a long pause or clock discontinuity would.
         owner._swap_in_history = ()  # pyright: ignore[reportPrivateUsage]
         owner._swap_out_history = ()  # pyright: ignore[reportPrivateUsage]

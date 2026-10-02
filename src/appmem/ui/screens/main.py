@@ -724,6 +724,7 @@ class MainScreen(LiveScreen):
             writeback_rate=self._writeback_rate,
             swap_in_rate=self._swap_in_rate,
             swap_out_rate=self._swap_out_rate,
+            swap_out_session_total=self._swap_out_session.total,
             ascii_bars=self._ascii_bars,
         )
         for widget_id, content in zip(self._HEADER_IDS, lines, strict=False):

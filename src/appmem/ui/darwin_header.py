@@ -31,7 +31,7 @@ def _pressure(host: HostMemory, colors: ThemeColors) -> Text:
     return Text(word or "unavailable", style=f"bold {color[word]}" if word else "dim")
 
 
-def render_host_header(
+def render_host_header(  # noqa: PLR0913 - independent keyword-only render inputs
     host: HostMemory,
     width: int,
     *,
@@ -41,6 +41,7 @@ def render_host_header(
     baseline_elapsed: int = 0,
     swap_in_rate: int | None = None,
     swap_out_rate: int | None = None,
+    swap_out_session_total: int | None = None,
 ) -> tuple[Text, Text, Text, Text]:
     """RAM excludes file-backed; compression is logical data -> physical RAM.
 
@@ -119,7 +120,13 @@ def render_host_header(
         "Swap",
         Text(swap_value),
         swap_bar if valid_swap else None,
-        swap_activity(swap_in_rate, swap_out_rate, host.swap_out_bytes, ascii_bars=ascii_bars),
+        swap_activity(
+            swap_in_rate,
+            swap_out_rate,
+            swap_out_session_total,
+            host.swap_out_bytes,
+            ascii_bars=ascii_bars,
+        ),
     )
     baseline = (
         f"{'delta' if ascii_bars else 'Δ'} since {baseline_time[:5]} "
