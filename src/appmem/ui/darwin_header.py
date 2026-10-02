@@ -10,6 +10,7 @@ from appmem.ui.header import (  # pyright: ignore[reportPrivateUsage]
     ThemeColors,
     _bar_text,  # pyright: ignore[reportPrivateUsage] - shared gauge style
     activity_token,
+    written_token,
 )
 from appmem.ui.host_grid import geometry, grid_row
 
@@ -106,6 +107,7 @@ def render_host_header(
             (15, activity_token("in", swap_in_rate, ascii_bars=ascii_bars)),
             (16, activity_token("out", swap_out_rate, ascii_bars=ascii_bars)),
             (9, Text("(dynamic)")),
+            (35, written_token(host.swap_out_bytes)),
         ),
     )
     baseline = (

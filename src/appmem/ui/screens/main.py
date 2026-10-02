@@ -36,6 +36,7 @@ from appmem.fmt import format_delta, format_elapsed, size, truncate_name
 from appmem.model import AppStats, SystemStats
 from appmem.rate import Sample, update_rate
 from appmem.render import escape_control_chars
+from appmem.total import SessionCounter
 from appmem.ui.header import ThemeColors, render_header
 from appmem.ui.host_panel import HostPanel, linux_details
 from appmem.ui.layout import build_footer
@@ -342,6 +343,8 @@ class MainScreen(LiveScreen):
         self._swap_out_history: tuple[Sample, ...] = ()
         self._swap_in_rate: int | None = None
         self._swap_out_rate: int | None = None
+        self._swap_in_session = SessionCounter()
+        self._swap_out_session = SessionCounter()
         self._sort_key: SortKey = DEFAULT_SORT_KEY
         self._sort_reverse = DEFAULT_SORT_REVERSE
         self._baseline: dict[tuple[str, str], AppStats] = {}
@@ -628,7 +631,11 @@ class MainScreen(LiveScreen):
         )
         content = (
             stale
-            + linux_details(self._last_stats, (self._swap_in_rate, self._swap_out_rate))
+            + linux_details(
+                self._last_stats,
+                (self._swap_in_rate, self._swap_out_rate),
+                (self._swap_in_session.total, self._swap_out_session.total),
+            )
             + "\n"
             + changes
         )
@@ -654,6 +661,8 @@ class MainScreen(LiveScreen):
 
     def _update_header(self, stats: SystemStats) -> None:
         self._last_stats = stats
+        self._swap_in_session.update(stats.swap_in_bytes)
+        self._swap_out_session.update(stats.swap_out_bytes)
         now, wall = time.monotonic(), time.time()
         self._writeback_history, self._writeback_rate = update_rate(
             self._writeback_history,

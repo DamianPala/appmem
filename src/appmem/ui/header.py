@@ -17,6 +17,7 @@ from appmem.fmt import (
     unit_of,
 )
 from appmem.model import SystemStats
+from appmem.total import total_amount
 from appmem.ui.host_grid import geometry, grid_row
 
 _ELSEWHERE_THRESHOLD = 1024 * 1024
@@ -74,6 +75,10 @@ def _swap_style(used: int, total: int, colors: ThemeColors) -> str | None:
     if total > 0 and used / total > 0.9:
         return colors.error
     return None
+
+
+def written_token(value: int | None) -> Text:
+    return Text(f"written {total_amount(value)} since boot")
 
 
 def activity_token(direction: str, rate: int | None, *, ascii_bars: bool) -> Text:
@@ -155,6 +160,7 @@ def render_header(  # noqa: PLR0913 - independent keyword-only render inputs
         (
             (15, activity_token("in", swap_in_rate, ascii_bars=ascii_bars)),
             (16, activity_token("out", swap_out_rate, ascii_bars=ascii_bars)),
+            (35, written_token(stats.swap_out_bytes)),
         ),
     )
     pressure = row(

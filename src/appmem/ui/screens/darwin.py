@@ -22,6 +22,7 @@ from appmem.darwin_native import HostMemory
 from appmem.fmt import format_delta, format_elapsed, size, truncate_name
 from appmem.rate import Sample, update_rate
 from appmem.render import escape_control_chars
+from appmem.total import SessionCounter
 from appmem.ui.darwin_header import render_host_header
 from appmem.ui.darwin_rows import DarwinRow, build_rows, sort_rows, update_baseline
 from appmem.ui.header import ThemeColors
@@ -100,6 +101,8 @@ class DarwinMainScreen(LiveScreen):
         self._swap_out_history: tuple[Sample, ...] = ()
         self._swap_in_rate: int | None = None
         self._swap_out_rate: int | None = None
+        self._swap_in_session = SessionCounter()
+        self._swap_out_session = SessionCounter()
 
     def compose(self) -> ComposeResult:
         yield Static(id="header1")
@@ -169,6 +172,8 @@ class DarwinMainScreen(LiveScreen):
         self, host: HostMemory, apps: list[DarwinApp], *, scroll: bool = False
     ) -> None:
         now, wall = monotonic(), time()
+        self._swap_in_session.update(host.swap_in_bytes)
+        self._swap_out_session.update(host.swap_out_bytes)
         self._swap_in_history, self._swap_in_rate = update_rate(
             self._swap_in_history, now, host.swap_in_bytes, wall=wall, interval=self._interval
         )
@@ -253,7 +258,11 @@ class DarwinMainScreen(LiveScreen):
         )
         content = (
             stale
-            + darwin_details(self._host, (self._swap_in_rate, self._swap_out_rate))
+            + darwin_details(
+                self._host,
+                (self._swap_in_rate, self._swap_out_rate),
+                (self._swap_in_session.total, self._swap_out_session.total),
+            )
             + "\n"
             + changes
         )
@@ -838,7 +847,11 @@ class DarwinHelpScreen(Screen[None]):
                 "Native counters count page-rounded compressed segments transferred to/from swap "
                 "files, including housekeeping, not logical app bytes or SSD throughput. "
                 "Unknown means insufficient/unavailable samples; 0 B/s is measured zero. "
-                "Clock discontinuities reset rates; b resets growth only.",
+                "Clock discontinuities reset rates; b resets growth only. "
+                "Wide headers show written bytes since boot; h shows Read/Written rates, "
+                "boot totals and exact totals since AppMem started. Session totals survive "
+                "navigation and rate resets. Missing initial counters or any decrease leave "
+                "that direction unavailable; temporary missing readings retain its baseline.",
             ),
             (
                 "MEMORY",

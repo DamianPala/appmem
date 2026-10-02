@@ -16,6 +16,7 @@ from textual.widgets import Static
 from appmem.darwin_native import HostMemory
 from appmem.fmt import format_pair, format_rate, pressure_word, size
 from appmem.model import SystemStats
+from appmem.total import total_amount
 
 
 def _rate(value: int | None) -> str:
@@ -26,7 +27,28 @@ def _percent(value: float | None) -> str:
     return "unavailable" if value is None else f"{value:.1f}%"
 
 
-def linux_details(stats: SystemStats, rates: tuple[int | None, int | None]) -> str:
+def _activity(
+    rates: tuple[int | None, int | None],
+    boot: tuple[int | None, int | None],
+    session: tuple[int | None, int | None],
+) -> str:
+    rows = (
+        ("Current rate", _rate(rates[0]), _rate(rates[1])),
+        ("Since boot", total_amount(boot[0]), total_amount(boot[1])),
+        ("Since AppMem started", total_amount(session[0]), total_amount(session[1])),
+    )
+    return (
+        "Activity  "
+        + f"{'':24}{'Read':16}Written\n"
+        + "\n".join(f"          {label:<24}{read:<16}{written}" for label, read, written in rows)
+    )
+
+
+def linux_details(
+    stats: SystemStats,
+    rates: tuple[int | None, int | None],
+    session: tuple[int | None, int | None] = (None, None),
+) -> str:
     blocks = [
         f"RAM       {format_pair(stats.mem_total - stats.mem_available, stats.mem_total)} used · "
         f"available {size(stats.mem_available)}\n"
@@ -50,14 +72,25 @@ def linux_details(stats: SystemStats, rates: tuple[int | None, int | None]) -> s
         blocks.append(
             f"Zswap     {size(logical)} of data compressed into {size(pool)} of RAM{ratio}.\n"
             f"          RAM used includes the compressed size: {size(pool)}.\n"
-            f"          Swap used includes these {size(logical)}, even without writing them "
+            "          Swap used includes the data held in zswap, even without writing them "
             "to disk.\n"
             f"          RAM limit: {limit}; this RAM is not reserved in advance."
         )
     blocks.append(
-        f"Swap      {format_pair(stats.swap_total - stats.swap_free, stats.swap_total)} used · "
-        f"in {_rate(rates[0])} · out {_rate(rates[1])}"
+        f"Swap      {format_pair(stats.swap_total - stats.swap_free, stats.swap_total)} used"
     )
+    blocks.append(_activity(rates, (stats.swap_in_bytes, stats.swap_out_bytes), session))
+    if stats.swap_disk_only:
+        writes = (
+            "Writes count only data sent to disk, directly or from zswap."
+            if stats.zswap_enabled
+            else "Writes count data sent to disk for swap."
+        )
+    else:
+        writes = "Writes count data sent to swap devices."
+        if stats.zswap_enabled:
+            writes += " Data kept only in zswap is not counted."
+    blocks.append(writes)
     psi = (stats.pressure_some_avg10, stats.pressure_some_avg60, stats.pressure_full_avg10)
     word = "unavailable" if any(v is None for v in psi) else pressure_word(*psi)  # type: ignore[arg-type]
     pressure = f"Pressure  {word}"
@@ -81,7 +114,11 @@ def _amount(value: int | None) -> str:
     return size(value) if type(value) is int and value >= 0 else "unavailable"
 
 
-def darwin_details(host: HostMemory, rates: tuple[int | None, int | None]) -> str:
+def darwin_details(
+    host: HostMemory,
+    rates: tuple[int | None, int | None],
+    session: tuple[int | None, int | None] = (None, None),
+) -> str:
     partition = host.ram_partition
     ram = (
         f"{format_pair(partition[0], host.physical_bytes)} used\n"
@@ -113,10 +150,41 @@ def darwin_details(host: HostMemory, rates: tuple[int | None, int | None]) -> st
         "          File-backed is not an available-memory estimate.\n\n"
         f"Compress  {compression}\n"
         f"          RAM used includes the physical compressed size: {_amount(physical)}.\n\n"
-        f"Swap      {swap} · in {_rate(rates[0])} · out {_rate(rates[1])}\n"
+        f"Swap      {swap}\n"
         "          macOS allocates swap space dynamically; this is not a fixed capacity.\n\n"
+        f"{_activity(rates, (host.swap_in_bytes, host.swap_out_bytes), session)}\n\n"
+        "Activity measures compressed data transferred to and from swap.\n\n"
         f"Pressure  {pressure} · native macOS memory pressure\nApps      this user"
     )
+
+
+def wrap_details(content: str, width: int) -> str:
+    """Keep table cells aligned where they fit; label each direction when narrow."""
+    lines: list[str] = []
+    for line in content.splitlines():
+        if width < 64 and line.startswith("Activity  "):
+            line = "Activity (Read / Written)"
+        elif width < 64 and line.startswith("          "):
+            cells = [cell for cell in line.strip().split("  ") if cell]
+            if len(cells) == 3 and cells[0] in (
+                "Current rate",
+                "Since boot",
+                "Since AppMem started",
+            ):
+                line = f"{cells[0]}: Read {cells[1]}; Written {cells[2]}"
+        if len(line) <= width:
+            lines.append(line)
+        else:
+            indent = "          " if width > 24 else ""
+            lines.append(
+                textwrap.fill(
+                    line.strip(),
+                    width=width,
+                    initial_indent=indent if line.startswith("          ") else "",
+                    subsequent_indent=indent,
+                )
+            )
+    return "\n".join(lines)
 
 
 class HostPanel(Screen[None]):
@@ -156,17 +224,7 @@ class HostPanel(Screen[None]):
     def update_sample(self) -> None:
         scroll = self.query_one("#host-scroll", VerticalScroll)
         width = max(10, scroll.size.width - scroll.scrollbar_size_vertical)
-        body = "\n".join(
-            textwrap.fill(
-                line.strip(),
-                width=width,
-                initial_indent="          " if line.startswith("          ") and width > 24 else "",
-                subsequent_indent="          " if width > 24 else "",
-            )
-            if line
-            else ""
-            for line in self._content().splitlines()
-        )
+        body = wrap_details(self._content(), width)
         self.query_one("#host-text", Static).update(body)
 
     def action_help(self) -> None:

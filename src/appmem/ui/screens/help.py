@@ -69,7 +69,11 @@ _SWAP_ACTIVITY_NOTE = (
     "are excluded; zero-page bypass depends on kernel version. Rates average about 10 seconds "
     "in this session. Unknown means insufficient or unavailable samples, while 0 B/s is "
     "measured zero. Clock discontinuities reset measurement; b resets growth only. These "
-    "rates are not SSD throughput."
+    "rates are not SSD throughput. Wide headers show written bytes since boot; h shows "
+    "Read/Written rates, boot totals and exact totals since AppMem started. Session totals "
+    "survive b, navigation and rate/clock resets. Missing initial counters or any decrease "
+    "leave that direction unavailable; temporary missing readings retain its baseline. "
+    "Disk wording uses recognizable current swap targets only; historical targets may differ."
 )
 
 _BAR_NOTE = (

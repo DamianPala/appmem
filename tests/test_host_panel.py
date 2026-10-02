@@ -32,10 +32,10 @@ def test_enabled_zswap_remains_visible_below_eighty_columns() -> None:
 def test_panel_linux_accounting_and_unknowns_are_current_sample() -> None:
     text = linux_details(STATS, (1023, 243 * 1024))
     assert "4.0 GiB of data compressed into 1.0 GiB of RAM (4.0:1)" in text
-    assert "Swap used includes these 4.0 GiB" in text
+    assert "Swap used includes the data held in zswap" in text
     assert "RAM used includes the compressed size: 1.0 GiB" in text
     assert "RAM limit: ~6.0 GiB (20%)" in text
-    assert "in 1023 B/s · out 243 KiB/s" in text
+    assert "Current rate            1023 B/s        243 KiB/s" in text
     assert "18.8" not in text and "19.4" not in text
     assert "unavailable" in linux_details(replace(STATS, zswap_pool_bytes=None), (None, None))
     assert "disabled or unavailable" in linux_details(replace(STATS, zswap_enabled=False), (0, 0))
@@ -51,7 +51,7 @@ def test_panel_mac_accounting_remains_native() -> None:
     assert not any(
         word in text for word in ("Zswap", "Elsewhere", "RAM limit", "Swap used includes")
     )
-    assert "in 0 B/s · out unavailable" in text
+    assert "Current rate            0 B/s           unavailable" in text
 
 
 def test_panel_pressure_keeps_available_fields_with_partial_readings() -> None:

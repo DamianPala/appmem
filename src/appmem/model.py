@@ -42,6 +42,9 @@ class SystemStats:
     """Lifetime pswpin pages times kernel page size, or None when unavailable."""
     swap_out_bytes: int | None = None
     """Lifetime pswpout pages times kernel page size, including zswap writeback."""
+    swap_disk_only: bool = False
+    """Current active swap targets are recognizable disk files/partitions.
+    False includes zram, mixed, absent and unknown topology; not historical evidence."""
     zswap_enabled: bool = False
     """`/sys/module/zswap/parameters/enabled` is `Y` and `/proc/meminfo` has
     the `Zswap`/`Zswapped` fields (a missing file or missing fields both mean

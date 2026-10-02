@@ -9,6 +9,7 @@ units", "Definitions" and "Behaviour details" for the source contract.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -148,6 +149,7 @@ def read_system(root: Path, uid: int, *, page_size: int | None = None) -> System
         zswap_writeback_bytes=_counter_bytes(vmstat, "zswpwb", page_size),
         swap_in_bytes=_counter_bytes(vmstat, "pswpin", page_size),
         swap_out_bytes=_counter_bytes(vmstat, "pswpout", page_size),
+        swap_disk_only=_read_swap_disk_only(root / "proc" / "swaps"),
         zswap_compressor=(
             _read_zswap_str_param(zswap_params_dir / "compressor") if zswap_enabled else None
         ),
@@ -155,6 +157,42 @@ def read_system(root: Path, uid: int, *, page_size: int | None = None) -> System
             _read_zswap_int_param(zswap_params_dir / "max_pool_percent") if zswap_enabled else None
         ),
         zswap_compression_ratio=_zswap_compression_ratio(zswap_pool_bytes, zswapped_bytes),
+    )
+
+
+def _read_swap_disk_only(path: Path) -> bool:
+    """Fail closed on unknown topology; never infer historical storage targets."""
+    try:
+        lines = _read_small_file(str(path), until_eof=True).splitlines()
+    except OSError:
+        return False
+    if not lines or lines[0].split() != ["Filename", "Type", "Size", "Used", "Priority"]:
+        return False
+    entries = [line.split() for line in lines[1:] if line.strip()]
+    return bool(entries) and all(_disk_swap_entry(entry) for entry in entries)
+
+
+def _disk_swap_entry(entry: list[str]) -> bool:
+    if len(entry) != 5:
+        return False
+    name, kind, capacity, used, priority = entry
+    if re.fullmatch(r"[0-9]+ [0-9]+ -?[0-9]+", f"{capacity} {used} {priority}") is None:
+        return False
+    try:
+        if int(capacity) <= 0 or int(used) > int(capacity):
+            return False
+    except ValueError:
+        # Excessively large malformed integers must not invalidate the host sample.
+        return False
+    if kind == "file":
+        return name.startswith("/") and not name.startswith("/dev/")
+    # Aliases/device-mapper targets need mapping knowledge; keep their wording generic.
+    return (
+        kind == "partition"
+        and re.fullmatch(
+            r"/dev/(?:[shv]d[a-z]+[0-9]*|xvd[a-z]+[0-9]*|nvme[0-9]+n[0-9]+(?:p[0-9]+)?)", name
+        )
+        is not None
     )
 
 
