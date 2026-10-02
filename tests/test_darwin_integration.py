@@ -133,3 +133,28 @@ def test_pagination_stops_when_controlled_identity_never_appears(
             deadline=time.monotonic() + 5,
         )
     assert calls == 5
+
+
+@pytest.mark.parametrize("field_count", [8, 6])
+def test_native_counts_requires_current_eight_field_helper_protocol(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, field_count: int
+) -> None:
+    calls: list[list[str]] = []
+    fields = ["64", "232", "80", "416", "144", "32", "112", "120"]
+
+    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        output = " ".join(fields[:field_count]) if command[1] == "abi" else '{"vm_count": 40}'
+        return subprocess.CompletedProcess(command, 0, output, "")
+
+    monkeypatch.setattr(harness.subprocess, "run", run)
+    cli, binary = tmp_path / "bin/appmem", tmp_path / "probe"
+    if field_count == 6:
+        with pytest.raises(harness.CheckError, match="C helper ABI response malformed"):
+            harness.native_counts(cli, binary, tmp_path, time.monotonic() + 5)
+        assert calls == [[str(binary), "abi"]]
+    else:
+        result = harness.native_counts(cli, binary, tmp_path, time.monotonic() + 5)
+        assert result == {"vm_sdk_size_bytes": 416, "vm_runtime_count": 40}
+        assert len(calls) == 2
+        assert calls[1][:3] == [str(cli.parent / "python"), "-I", "-c"]
