@@ -31,10 +31,11 @@ def test_enabled_zswap_remains_visible_below_eighty_columns() -> None:
 
 def test_panel_linux_accounting_and_unknowns_are_current_sample() -> None:
     text = linux_details(STATS, (1023, 243 * 1024))
-    assert "4.0 GiB of data compressed into 1.0 GiB of RAM (4.0:1)" in text
+    assert "Data held                  4.0 GiB" in text
+    assert "Compression                4.0:1" in text
     assert "Swap used includes the data held in zswap" in text
     assert "RAM used includes the compressed size: 1.0 GiB" in text
-    assert "RAM limit: ~6.0 GiB (20%)" in text
+    assert "Pool limit                 ~6.0 GiB · 20% of RAM" in text
     assert "Current rate            1023 B/s        243 KiB/s" in text
     assert "18.8" not in text and "19.4" not in text
     assert "unavailable" in linux_details(replace(STATS, zswap_pool_bytes=None), (None, None))
@@ -231,7 +232,9 @@ async def test_linux_overlay_retains_wheel_viewport_and_accepts_worker_after_clo
         assert app.focused is table
         await pilot.press("h")
         await pilot.pause()
-        assert "5.0 GiB of data" in str(app.screen.query_one("#host-text", Static).content)
+        assert "Data held                  5.0 GiB" in str(
+            app.screen.query_one("#host-text", Static).content
+        )
         delay[0] = False
 
         def failed_read(self: LinuxBackend) -> SystemStats:

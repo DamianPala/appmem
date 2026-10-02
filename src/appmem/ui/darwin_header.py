@@ -9,8 +9,7 @@ from appmem.fmt import format_elapsed, format_pair, size
 from appmem.ui.header import (  # pyright: ignore[reportPrivateUsage]
     ThemeColors,
     _bar_text,  # pyright: ignore[reportPrivateUsage] - shared gauge style
-    activity_token,
-    written_token,
+    swap_activity,
 )
 from appmem.ui.host_grid import geometry, grid_row
 
@@ -49,7 +48,23 @@ def render_host_header(
     percentage. Growth timing identifies the session/reset epoch; app baselines
     can be newer when identity or coverage changes.
     """
-    _, bar_width, _ = geometry(width)
+    _, bar_width, value_width = geometry(width)
+    used, total = host.swap_used_bytes, host.swap_total_bytes
+    valid_swap = _nonnegative(used) and _nonnegative(total) and used <= total
+    swap_value = (
+        (format_pair(used, total) + " used/alloc" if total else "0 B; not allocated")
+        if valid_swap
+        else "unavailable"
+    )
+    partition = host.ram_partition
+    ram_value = (
+        format_pair(partition[0], host.physical_bytes) + " used"
+        if partition is not None
+        else "used unavailable"
+    )
+    # Grow the shared primary slot only when complete values require it;
+    # optional metadata gives way before native allocation qualifications.
+    value_width = max(value_width, Text(swap_value).cell_len, Text(ram_value).cell_len)
 
     def row(
         label: str,
@@ -57,21 +72,28 @@ def render_host_header(
         bar: Text | None = None,
         metadata: tuple[tuple[int, Text], ...] = (),
     ) -> Text:
-        return grid_row(label, value, width, gauge=bar, metadata=metadata, ascii_bars=ascii_bars)
+        return grid_row(
+            label,
+            value,
+            width,
+            gauge=bar,
+            metadata=metadata,
+            ascii_bars=ascii_bars,
+            primary_width=value_width,
+        )
 
-    partition = host.ram_partition
     if partition is None:
         ram = row(
             "RAM",
-            Text("used unavailable"),
+            Text(ram_value),
             metadata=((24, Text(f"total {_amount(host.physical_bytes)}")),),
         )
     else:
-        used, backed, free = partition
+        ram_used, backed, free = partition
         ram = row(
             "RAM",
-            Text(format_pair(used, host.physical_bytes) + " used"),
-            _bar_text(used, host.physical_bytes, bar_width, colors, ascii_bars=ascii_bars),
+            Text(ram_value),
+            _bar_text(ram_used, host.physical_bytes, bar_width, colors, ascii_bars=ascii_bars),
             (
                 (20, Text(f"file-backed {size(backed)}")),
                 (12, Text(f"free {size(free)}")),
@@ -88,11 +110,6 @@ def render_host_header(
         Text(_amount(physical) + " RAM" if valid else "unavailable"),
         metadata=((35, Text(f"{_amount(logical)} data {arrow} RAM {ratio}")),),
     )
-    used, total = host.swap_used_bytes, host.swap_total_bytes
-    valid_swap = _nonnegative(used) and _nonnegative(total) and used <= total
-    swap_value = format_pair(used, total) + " used" if total else "0 B; not allocated"
-    if width < 60 and total > 0:
-        swap_value = format_pair(used, total) + " used/alloc now"
     swap_bar = (
         _bar_text(used, total, bar_width, colors, ascii_bars=ascii_bars)
         if total and valid_swap
@@ -100,15 +117,9 @@ def render_host_header(
     )
     swap = row(
         "Swap",
-        Text(swap_value if valid_swap else "unavailable"),
+        Text(swap_value),
         swap_bar if valid_swap else None,
-        (
-            (14, Text("allocated now ")),
-            (15, activity_token("in", swap_in_rate, ascii_bars=ascii_bars)),
-            (16, activity_token("out", swap_out_rate, ascii_bars=ascii_bars)),
-            (9, Text("(dynamic)")),
-            (35, written_token(host.swap_out_bytes)),
-        ),
+        swap_activity(swap_in_rate, swap_out_rate, host.swap_out_bytes, ascii_bars=ascii_bars),
     )
     baseline = (
         f"{'delta' if ascii_bars else 'Δ'} since {baseline_time[:5]} "

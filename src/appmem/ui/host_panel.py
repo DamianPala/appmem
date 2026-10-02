@@ -58,23 +58,28 @@ def linux_details(
     ]
     if not stats.zswap_enabled:
         blocks.append("Zswap     disabled or unavailable")
-    elif stats.zswap_pool_bytes is None or stats.zswapped_bytes is None:
-        blocks.append("Zswap     unavailable")
     else:
         pool, logical = stats.zswap_pool_bytes, stats.zswapped_bytes
-        ratio = f" ({logical / pool:.1f}:1)" if pool > 0 and logical > 0 else ""
+        ratio = (
+            f"{logical / pool:.1f}:1"
+            if pool is not None and logical is not None and pool > 0 and logical > 0
+            else "unavailable"
+        )
         percent = stats.zswap_max_pool_percent
         limit = (
-            f"~{size(stats.mem_total * percent // 100)} ({percent}%)"
+            f"~{size(stats.mem_total * percent // 100)} · {percent}% of RAM"
             if type(percent) is int and percent >= 0
             else "unavailable"
         )
         blocks.append(
-            f"Zswap     {size(logical)} of data compressed into {size(pool)} of RAM{ratio}.\n"
-            f"          RAM used includes the compressed size: {size(pool)}.\n"
-            "          Swap used includes the data held in zswap, even without writing them "
-            "to disk.\n"
-            f"          RAM limit: {limit}; this RAM is not reserved in advance."
+            "Zswap\n"
+            f"  {'RAM occupied':<27}{_amount(pool)}\n"
+            f"  {'Pool limit':<27}{limit}\n"
+            f"  {'Data held':<27}{_amount(logical)}\n"
+            f"  {'Compression':<27}{ratio}\n\n"
+            f"RAM used includes the compressed size: {_amount(pool)}.\n"
+            "The pool limit is a policy; this RAM is not reserved in advance.\n"
+            "Swap used includes the data held in zswap, even without writing them to disk."
         )
     blocks.append(
         f"Swap      {format_pair(stats.swap_total - stats.swap_free, stats.swap_total)} used"

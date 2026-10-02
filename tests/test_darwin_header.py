@@ -265,7 +265,7 @@ def test_long_elapsed_uses_existing_compact_format(width: int) -> None:
 
 
 @pytest.mark.parametrize("width", [80, 100, 120, 160])
-def test_swap_activity_slots_stay_fixed_across_used_digit_boundary(width: int) -> None:
+def test_swap_activity_retains_allocation_across_used_digit_boundary(width: int) -> None:
     lines = [
         render_host_header(
             replace(HOST, swap_used_bytes=used * GIB, swap_total_bytes=16 * GIB),
@@ -276,9 +276,9 @@ def test_swap_activity_slots_stay_fixed_across_used_digit_boundary(width: int) -
         )[2].plain
         for used in (5, 10)
     ]
-    assert len({line.index("in ") for line in lines}) == 1
-    if width >= 120:
-        assert len({line.index("out ") for line in lines}) == 1
+    for used, line in zip((5, 10), lines, strict=True):
+        assert f"{used:.1f}/16.0 GiB used/alloc" in line
+        assert "in 1 KiB/s" in line and "out 1 KiB/s" in line
     assert all(len(line) <= width for line in lines)
 
 
@@ -295,17 +295,17 @@ def test_host_grid_keeps_native_values_and_alignment(width: int) -> None:
     assert ram.plain.index("5.1/") == compression.plain.index("1.0 GiB") == swap.plain.index("0.5/")
     assert not any(glyph in compression.plain for glyph in ("█", "░", "#"))
     if width >= 80:
-        assert "in " in swap.plain and "allocated now" in swap.plain
-        assert ("out " in swap.plain) == (width >= 120)
+        assert "in " in swap.plain and "used/alloc" in swap.plain
+        assert "out " in swap.plain
     if width >= 120:
         assert all(label in ram.plain for label in ("file-backed", "free", "wired", "purgeable"))
-        assert "allocated now" in swap.plain
+        assert "used/alloc" in swap.plain
 
 
 def test_large_native_values_preserve_metadata_fields_when_actual_text_fits() -> None:
     host = replace(HOST, physical_bytes=128 * GIB, wired_bytes=100 * GIB)
-    ram = render_host_header(host, 120, colors=COLORS)[0]
-    assert ram.cell_len <= 120
+    ram = render_host_header(host, 121, colors=COLORS)[0]
+    assert ram.cell_len <= 121
     assert all(label in ram.plain for label in ("file-backed", "free", "wired", "purgeable"))
     assert "wired 100.0 GiB" in ram.plain
     assert not ram.plain.endswith("…")

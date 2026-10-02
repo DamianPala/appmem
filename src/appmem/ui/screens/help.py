@@ -69,7 +69,8 @@ _SWAP_ACTIVITY_NOTE = (
     "are excluded; zero-page bypass depends on kernel version. Rates average about 10 seconds "
     "in this session. Unknown means insufficient or unavailable samples, while 0 B/s is "
     "measured zero. Clock discontinuities reset measurement; b resets growth only. These "
-    "rates are not SSD throughput. Wide headers show written bytes since boot; h shows "
+    "rates are not SSD throughput. Headers from 105 columns show out with written "
+    "bytes since boot; h shows "
     "Read/Written rates, boot totals and exact totals since AppMem started. Session totals "
     "survive b, navigation and rate/clock resets. Missing initial counters or any decrease "
     "leave that direction unavailable; temporary missing readings retain its baseline. "
@@ -83,7 +84,7 @@ _BAR_NOTE = (
 
 _HEADER_NOTE = (
     "h on the main dashboard opens live, scrollable host memory details. "
-    "A dim right-edge … (ASCII >) means information hidden for space, not an unavailable reading. "
+    "A trailing … (ASCII >) means information hidden for space, not an unavailable reading. "
     "The header counts the whole machine (RAM/Swap/avail). Rows only cover the app "
     "trees appmem walks, plus the hidden system and elsewhere totals -- they won't "
     "add up to the header, and that's expected."

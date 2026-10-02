@@ -84,8 +84,8 @@ def test_cumulative_units_handle_since_boot_sizes(value: int, text: str) -> None
     assert total_amount(value) == text
     linux = header(replace(STATS, swap_out_bytes=value), width=160)[2]
     mac = render_host_header(replace(HOST, swap_out_bytes=value), 160, colors=COLORS)[2]
-    assert f"written {text} since boot" in linux.plain
-    assert f"written {text} since boot" in mac.plain
+    assert f"({text} since boot)" in linux.plain
+    assert f"({text} since boot)" in mac.plain
     assert linux.cell_len <= 160 and mac.cell_len <= 160
 
 
@@ -96,7 +96,7 @@ def test_zero_mac_allocation_does_not_erase_nonzero_native_activity() -> None:
     text = darwin_details(host, (0, 0), (0, 0))
     assert "0/0 B used / allocated now" in text
     assert "Since boot              1.0 GiB         2.0 GiB" in text
-    assert "written 2.0 GiB since boot" in render_host_header(host, 160, colors=COLORS)[2].plain
+    assert "(2.0 GiB since boot)" in render_host_header(host, 160, colors=COLORS)[2].plain
 
 
 @pytest.mark.parametrize(
@@ -180,14 +180,14 @@ def test_header_total_is_secondary_and_no_loss_or_overflow(
     swap = next(line for line in lines if line.plain.startswith("Swap"))
     assert all(line.cell_len <= width for line in lines)
     assert len(lines) == 4
-    assert ("written 41.6 GiB since boot" in swap.plain) is (width >= 160)
+    assert ("(41.6 GiB since boot)" in swap.plain) is (width >= 105)
     if width == 80:
         assert swap.plain.endswith(">" if ascii_bars else "…")
         assert "in 0 B/s" in swap.plain
         if platform == "linux":
             assert "out 1 KiB/s" in swap.plain
         else:
-            assert "allocated now" in swap.plain
+            assert "used/alloc" in swap.plain
     if width >= 160:
         assert "in 0 B/s" in swap.plain and "out 1 KiB/s" in swap.plain
 

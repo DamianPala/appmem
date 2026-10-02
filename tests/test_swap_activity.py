@@ -190,7 +190,8 @@ def test_unknown_zero_and_activity_slots_ascii_and_unicode() -> None:
             rendered.append(lines[2].plain)
         assert ("?" if ascii_bars else "—") in rendered[0]
         assert "0 B/s" in rendered[1]
-        assert len({line.index("out") for line in rendered}) == 1
+        assert len({line.index("in ") for line in rendered}) == 1
+        assert all("out " in line for line in rendered)
         assert all(len(line) <= 120 for line in rendered)
 
 

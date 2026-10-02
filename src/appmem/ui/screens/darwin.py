@@ -848,7 +848,8 @@ class DarwinHelpScreen(Screen[None]):
                 "files, including housekeeping, not logical app bytes or SSD throughput. "
                 "Unknown means insufficient/unavailable samples; 0 B/s is measured zero. "
                 "Clock discontinuities reset rates; b resets growth only. "
-                "Wide headers show written bytes since boot; h shows Read/Written rates, "
+                "Headers from 105 columns show out with written bytes since boot; "
+                "h shows Read/Written rates, "
                 "boot totals and exact totals since AppMem started. Session totals survive "
                 "navigation and rate resets. Missing initial counters or any decrease leave "
                 "that direction unavailable; temporary missing readings retain its baseline.",
@@ -925,7 +926,7 @@ class DarwinHelpScreen(Screen[None]):
 
         grouping = (
             "h on the main dashboard opens live, scrollable host memory details. "
-            "A dim right-edge … (ASCII >) means data hidden for space, not an unavailable reading. "
+            "A trailing … (ASCII >) means data hidden for space, not an unavailable reading. "
             "Bundles follow the outermost .app path; bundleless processes follow "
             "the nearest app ancestor or a session root. Shared launchd XPC/WebKit "
             "services can remain separate, so related footprints may be omitted. "

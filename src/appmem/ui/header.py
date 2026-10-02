@@ -77,14 +77,17 @@ def _swap_style(used: int, total: int, colors: ThemeColors) -> str | None:
     return None
 
 
-def written_token(value: int | None) -> Text:
-    return Text(f"written {total_amount(value)} since boot")
-
-
-def activity_token(direction: str, rate: int | None, *, ascii_bars: bool) -> Text:
-    """Reserve the same slot for unknown, zero, and measured activity."""
-    value = ("?" if ascii_bars else "—") if rate is None else format_rate(rate)
-    return Text(f"{direction} {value}".ljust(len(direction) + 12))
+def swap_activity(
+    incoming: int | None, outgoing: int | None, written: int | None, *, ascii_bars: bool
+) -> tuple[tuple[int, Text], ...]:
+    """Keep rates first; the boot total qualifies only the outgoing traffic."""
+    unknown = "?" if ascii_bars else "—"
+    read = unknown if incoming is None else format_rate(incoming)
+    write = unknown if outgoing is None else format_rate(outgoing)
+    separator = " · " if not ascii_bars else " / "
+    rates = Text(f"in {read}{separator}out {write}")
+    total = Text(f"({total_amount(written)} since boot)")
+    return ((rates.cell_len, rates), (total.cell_len, total))
 
 
 def _pressure_word_text(stats: SystemStats, colors: ThemeColors) -> Text:
@@ -140,14 +143,14 @@ def render_header(  # noqa: PLR0913 - independent keyword-only render inputs
             gauge=bar,
             metadata=metadata,
             ascii_bars=ascii_bars,
-            hidden=height < 18 or (label == "RAM" and width < 110),
+            hidden=height < 18,
         )
 
     ram = row(
         "RAM",
         Text(format_pair(stats.mem_total - stats.mem_available, stats.mem_total) + " used"),
         gauge(stats.mem_total - stats.mem_available, stats.mem_total),
-        _ram_metadata(stats, width),
+        _ram_metadata(stats),
     )
     swap_used = stats.swap_total - stats.swap_free
     swap = row(
@@ -157,11 +160,7 @@ def render_header(  # noqa: PLR0913 - independent keyword-only render inputs
             style=_swap_style(swap_used, stats.swap_total, colors) or "",
         ),
         gauge(swap_used, stats.swap_total) if stats.swap_total else Text("off"),
-        (
-            (15, activity_token("in", swap_in_rate, ascii_bars=ascii_bars)),
-            (16, activity_token("out", swap_out_rate, ascii_bars=ascii_bars)),
-            (35, written_token(stats.swap_out_bytes)),
-        ),
+        swap_activity(swap_in_rate, swap_out_rate, stats.swap_out_bytes, ascii_bars=ascii_bars),
     )
     pressure = row(
         "Pressure",
@@ -251,19 +250,16 @@ def _zswap_grid(
     )
 
 
-def _ram_metadata(stats: SystemStats, width: int) -> tuple[tuple[int, Text], ...]:
-    available = f"avail {size(stats.mem_available)}"
-    if width >= 110:
-        unit = unit_of(stats.mem_total)
-        available += (
-            f" ({size_in_unit(stats.mem_free, unit)} free, "
-            f"{size_in_unit(stats.mem_cache, unit)} cache, "
-            f"{size_in_unit(stats.mem_slab, unit)} slab)"
-        )
-    return (
-        (46 if width >= 110 else 15, Text(available)),
-        (16, Text(f"shared {size(stats.mem_shared)}")),
+def _ram_metadata(stats: SystemStats) -> tuple[tuple[int, Text], ...]:
+    available = Text(f"avail {size(stats.mem_available)}")
+    shared = Text(f"shared {size(stats.mem_shared)}")
+    unit = unit_of(stats.mem_total)
+    breakdown = Text(
+        f"({size_in_unit(stats.mem_free, unit)} free, "
+        f"{size_in_unit(stats.mem_cache, unit)} cache, "
+        f"{size_in_unit(stats.mem_slab, unit)} slab)"
     )
+    return ((15, available), (16, shared), (breakdown.cell_len, breakdown))
 
 
 def _compact_header(
@@ -277,8 +273,9 @@ def _compact_header(
     )
     values = Text(f"RAM {ram}  Swap {swap}")
     values.truncate(max(0, width - 1))
-    values += Text(" " * max(0, width - 1 - values.cell_len))
-    values += Text(">" if ascii_bars else "…", style="dim")
+    values.rstrip()
+    values += Text(" " if values.cell_len < width - 1 else "")
+    values += Text(">" if ascii_bars else "…", style="")
     values.no_wrap = True
     return [
         values,
