@@ -430,7 +430,19 @@ def test_darwin_schema_needs_no_native_collection(
 @pytest.mark.parametrize(
     ("argv", "markers"),
     [
-        (["--help"], ("-i, --interval", "default: 1", "appmem snapshot --help")),
+        (
+            ["--help"],
+            (
+                "-i, --interval",
+                "default: 1",
+                "appmem snapshot --help",
+                "f/d/r",
+                "f/r/n/p/u",
+                "Esc back",
+                "PgUp/PgDn",
+                "Ctrl+P",
+            ),
+        ),
         (["snapshot", "--help"], ("--limit N", "default: 50", "--system is unsupported")),
         (["app", "--help"], ("--scope user", "default: user", "default: 100")),
     ],
@@ -1005,7 +1017,7 @@ async def test_baseline_reset_updates_header_time_and_elapsed(
     class Clock:
         @staticmethod
         def now() -> datetime:
-            return datetime(2026, 10, 1, 12, 0, int(clock[0]) % 60)
+            return datetime(2026, 10, 1, 12, int(clock[0]) // 60, int(clock[0]) % 60)
 
     monkeypatch.setattr(screens, "datetime", Clock)
     reader = Reader()
@@ -1017,15 +1029,67 @@ async def test_baseline_reset_updates_header_time_and_elapsed(
         main = app.screen
         assert isinstance(main, DarwinMainScreen)
         before_time = main._baseline_time  # pyright: ignore[reportPrivateUsage]
-        clock[0] = 142.0
+        clock[0] = 172.0
         main.refresh_now()
         header = main.query_one("#header4", Static)
-        assert "42s ago" in str(header.content)
+        assert "(1m)" in str(header.content)
         reader.memories[10] = ProcessMemory(150, 150, 100)
         await pilot.press("b")
-        assert "0s ago" in str(header.content)
-        assert main._baseline_started == 142.0  # pyright: ignore[reportPrivateUsage]
+        assert "(0s)" in str(header.content)
+        assert main._baseline_started == 172.0  # pyright: ignore[reportPrivateUsage]
         assert all(row.delta_bytes == 0 for row in main._rows.values())  # pyright: ignore[reportPrivateUsage]
         baseline_time = main._baseline_time  # pyright: ignore[reportPrivateUsage]
         assert baseline_time is not None and baseline_time in str(header.content)
         assert baseline_time != before_time
+
+
+@pytest.mark.asyncio
+async def test_darwin_help_scroll_reaches_keys_and_returns_at_80x24() -> None:
+    from textual.containers import VerticalScroll
+
+    reader = Reader()
+    backend = DarwinBackend(501, reader)
+    app = AppMemApp(interval=60, main_screen_factory=lambda: DarwinMainScreen(backend, 60))
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        main = app.screen
+        await pilot.press("?")
+        screen = app.screen
+        assert isinstance(screen, DarwinHelpScreen)
+        scroll = screen.query_one("#darwin-help-scroll", VerticalScroll)
+        assert scroll.has_focus and scroll.max_scroll_y > 0
+        assert screen.query_one("#darwin-help-title", Static).region.y == 0
+        footer = screen.query_one("#footer", Static)
+        assert footer.region.bottom <= 24
+        await pilot.press("end")
+        await pilot.pause()
+        assert scroll.scroll_y == scroll.max_scroll_y
+        body = screen.query_one("#darwin-help-text", Static)
+        assert "q / Ctrl+C" in str(body.content)
+        assert body.region.bottom <= scroll.region.bottom
+        await pilot.press("home")
+        await pilot.pause()
+        assert scroll.scroll_y == 0
+        await pilot.press("escape")
+        assert app.screen is main
+
+
+def test_darwin_text_reports_use_aligned_units_and_keep_documents() -> None:
+    reader = Reader()
+    reader.add(10, 1, "Long App", "/Applications/Long App.app/Contents/MacOS/App", 1024**3)
+    reader.add(11, 10, "helper", None, None)
+    reader.add(20, 1, "Small", "/Applications/Small.app/Contents/MacOS/Small", 1024**2)
+    backend = DarwinBackend(501, reader)
+    document, _ = darwin_report.snapshot_document(backend, limit=10, now=datetime.now(UTC))
+    original = json.dumps(document)
+    text = darwin_report.render_snapshot_text(document)
+    assert json.dumps(document) == original
+    assert all(label in text for label in ("RAM       ", "Compress  ", "Swap      ", "Pressure  "))
+    assert "1.0 GiB" in text and "1 MiB" in text and "partial" in text
+    assert "Δ" not in text and "baseline" not in text and "bytes" not in text
+    rows = [line for line in text.splitlines() if line.startswith(("Long App", "Small"))]
+    assert rows[0].index("GiB") + 1 == rows[1].index("MiB")
+    result = darwin_report.app_document(backend, "Long App", limit=10, now=datetime.now(UTC))
+    assert result is not None
+    detail = darwin_report.render_app_text(result[0])
+    assert "1.0 GiB" in detail and "unknown" in detail and "partial" in detail

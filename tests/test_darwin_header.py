@@ -47,7 +47,7 @@ THEMES = {theme.name: theme for theme in (*BUILTIN_THEMES.values(), *TERMINAL_TH
 COLORS = ThemeColors(success="green", warning="yellow", error="red", primary="blue")
 
 
-@pytest.mark.parametrize("width", [40, 65, 80, 120, 200])
+@pytest.mark.parametrize("width", [40, 65, 75, 80, 100, 120, 160, 200])
 def test_header_preserves_native_meanings_at_responsive_widths(width: int) -> None:
     ram, compression, swap, status = render_host_header(HOST, width, colors=COLORS)
     assert all(line.cell_len <= width and line.no_wrap for line in (ram, compression, swap, status))
@@ -59,11 +59,14 @@ def test_header_preserves_native_meanings_at_responsive_widths(width: int) -> No
     assert "3.0" in compression.plain and "1.0" in compression.plain
     assert "RAM" in compression.plain
     if width >= 65:
-        assert "File-backed" in ram.plain and "Free" in ram.plain
+        assert "file-backed" in ram.plain and "free" in ram.plain
         assert "data → 1.0 GiB RAM" in compression.plain
         assert "█" in swap.plain and "░" in swap.plain
+    if width == 75:
+        assert "█" in ram.plain
     if width >= 120:
-        assert "Wired" in compression.plain
+        assert "wired" in ram.plain
+        assert "wired" not in compression.plain
         assert "█" in ram.plain
     assert not any(
         word in line.plain.lower()
@@ -258,5 +261,49 @@ def test_pressure_baseline_and_scope_fit_and_remain_ascii() -> None:
         HOST, 120, colors=COLORS, ascii_bars=True, baseline_time="12:34:56", baseline_elapsed=42
     )[3]
     assert "current user" in status.plain
-    assert "growth baseline 12:34:56 (42s ago)" in status.plain
+    assert "delta since 12:34 (42s)" in status.plain
     assert all(ord(char) < 128 for char in status.plain)
+
+
+@pytest.mark.parametrize("width", [80, 100, 120, 160])
+def test_ram_slots_stay_stable_across_normal_counter_changes(width: int) -> None:
+    first = render_host_header(HOST, width, colors=COLORS, ascii_bars=True)[0].plain
+    second = render_host_header(
+        replace(HOST, physical_bytes=16 * GIB, wired_bytes=900 * MIB, purgeable_bytes=9 * MIB),
+        width,
+        colors=COLORS,
+        ascii_bars=True,
+    )[0].plain
+    assert first.index("file-backed") == second.index("file-backed")
+    assert set(first[10:20]) <= {"#", "."}
+    assert "wired" in first if width >= 120 else "wired" not in first
+    assert len(first) <= width and len(second) <= width
+
+
+@pytest.mark.parametrize("width", [80, 100, 120, 160])
+def test_long_elapsed_uses_existing_compact_format(width: int) -> None:
+    line = render_host_header(
+        HOST, width, colors=COLORS, baseline_time="09:41:59", baseline_elapsed=4320
+    )[3].plain
+    assert "Δ since 09:41 (1h12m)" in line
+    line = render_host_header(
+        HOST, width, colors=COLORS, baseline_time="09:41", baseline_elapsed=120 * 86400
+    )[3].plain
+    assert "(120d)" in line
+
+
+def test_oversized_counter_drops_details_before_main_units() -> None:
+    host = replace(HOST, physical_bytes=10**25)
+    line = render_host_header(host, 120, colors=COLORS)[0].plain
+    assert "GiB used" in line and "wired" not in line
+
+
+@pytest.mark.parametrize(("wired", "purgeable"), [(4, 1), (100, 100)])
+def test_ram_slots_keep_separators_when_full(wired: int, purgeable: int) -> None:
+    host = replace(
+        HOST, physical_bytes=128 * GIB, wired_bytes=wired * GIB, purgeable_bytes=purgeable * GIB
+    )
+    line = render_host_header(host, 120, colors=COLORS)[0].plain
+    assert "GiB used " in line and len(line) <= 120
+    assert "wired" in line if wired == 4 else "wired" not in line
+    assert ")file-backed" not in line

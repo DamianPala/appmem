@@ -195,8 +195,12 @@ Footprint is a per-process native physical footprint, not resident RAM or
 reclaimable memory. Denied process reads make app totals partial or unknown.
 macOS 15+ Apple Silicon is required. --system is unsupported.
 
-Keys: Enter details, g group by command, b reset growth baseline,
-      up/down move, T theme, ? help, q/Ctrl+C quit.
+Keys: f/d/r main sort MEMORY/ΔMEM/RESIDENT (when visible; repeat reverses).
+      f/r/n/p/u details sort MEMORY/RESIDENT/command/PID or count/unreadable.
+      Enter details or group members, g group by command, Esc back, b reset Δ.
+      up/down/PgUp/PgDn move, Home/End first/last, T/Ctrl+P theme,
+      ? help, esc/?/q close help, q/Ctrl+C quit live view.
+      Click header sorts/reverses; click row selects, double click opens.
 """
 _DARWIN_SNAPSHOT_HELP_TEXT = """\
 appmem snapshot: native host memory and user application footprints.

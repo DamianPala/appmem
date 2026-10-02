@@ -6,7 +6,11 @@ from collections import defaultdict
 from datetime import datetime
 from typing import Any
 
+from rich.cells import cell_len
+
 from appmem.darwin_backend import DarwinApp, DarwinBackend, DarwinProcess
+from appmem.fmt import format_pair, size
+from appmem.render import escape_control_chars
 
 
 def _coverage(app: DarwinApp) -> dict[str, object]:
@@ -136,44 +140,106 @@ def app_document(
     return document, app.procs, len(commands)
 
 
+def _text_amount(value: object, *, partial: bool = False) -> str:
+    if type(value) is not int or value < 0:
+        return "unknown"
+    return size(value) + ("*" if partial else "")
+
+
+def _text_table(headers: tuple[str, ...], rows: list[tuple[str, ...]]) -> list[str]:
+    widths = [
+        max(cell_len(header), *(cell_len(row[i]) for row in rows)) if rows else cell_len(header)
+        for i, header in enumerate(headers)
+    ]
+
+    def line(row: tuple[str, ...]) -> str:
+        return "  ".join(
+            value + " " * (width - cell_len(value))
+            if headers[i] in ("APP", "COMMAND")
+            else " " * (width - cell_len(value)) + value
+            for i, (value, width) in enumerate(zip(row, widths, strict=True))
+        ).rstrip()
+
+    return [line(headers), *(line(row) for row in rows)]
+
+
 def render_snapshot_text(document: dict[str, Any]) -> str:
     system = document["system"]
+    used = system["used_excluding_file_backed_bytes"]
+    total = system["physical_bytes"]
+    ram = (
+        format_pair(used, total) + " used"
+        if type(used) is int and type(total) is int and total > 0
+        else f"used unavailable; total {_text_amount(total)}"
+    )
+    ram += f" ({_text_amount(system['wired_bytes'])} wired"
+    if system["purgeable_bytes"] is not None:
+        ram += f", {_text_amount(system['purgeable_bytes'])} purgeable"
+    ram += (
+        f")  file-backed {_text_amount(system['file_backed_bytes'])}"
+        f"  free {_text_amount(system['free_excluding_speculative_bytes'])}"
+    )
+    logical, physical = system["compressor_logical_bytes"], system["compressor_physical_bytes"]
+    compression = f"{_text_amount(logical)} data -> {_text_amount(physical)} RAM"
+    if type(logical) is int and type(physical) is int and logical > 0 and physical > 0:
+        compression += f"  ({logical / physical:.1f}:1)"
+    swap_used, allocated = system["swap_used_bytes"], system["swap_total_bytes"]
+    if type(swap_used) is not int or type(allocated) is not int or not 0 <= swap_used <= allocated:
+        swap = "unavailable"
+    elif allocated == 0:
+        swap = "0 B used; not allocated"
+    else:
+        swap = format_pair(swap_used, allocated) + " used/allocated now"
     lines = [
         "macOS application footprints (experimental)",
-        f"Physical {system['physical_bytes']} B  "
-        f"Native free (incl. speculative) {system['free_bytes']} B  "
-        f"Wired {system['wired_bytes']} B",
-        f"Compressor physical {system['compressor_physical_bytes']} B  "
-        f"Swap used {system['swap_used_bytes']} B / "
-        f"currently allocated {system['swap_total_bytes']} B",
-        f"Native pressure {document['pressure']['level'] or 'unavailable'}",
-        "APP  MEMORY (bytes)  PROCS  COVERAGE",
+        f"RAM       {ram}",
+        f"Compress  {compression}",
+        f"Swap      {swap}",
+        f"Pressure  {document['pressure']['level'] or 'unavailable'}  current user",
+        "",
     ]
-    for app in document["apps"]:
-        footprint = app["footprint_bytes"]
-        coverage = app["coverage"]
-        amount = "unknown" if footprint is None else str(footprint)
-        label = "partial" if coverage["partial"] else "complete"
-        lines.append(f"{app['name']}  {amount}  {app['procs']}  {label}")
+    rows = [
+        (
+            escape_control_chars(app["name"]),
+            _text_amount(app["footprint_bytes"], partial=app["coverage"]["partial"]),
+            _text_amount(app["resident_bytes"], partial=app["coverage"]["resident_partial"]),
+            str(app["procs"]),
+            "partial" if app["coverage"]["partial"] else "complete",
+        )
+        for app in document["apps"]
+    ]
+    lines.extend(_text_table(("APP", "MEMORY", "RESIDENT", "PROCS", "COVERAGE"), rows))
+    lines.append("* partial known sum; unknown = unavailable for that metric")
     return "\n".join(lines)
 
 
 def render_app_text(document: dict[str, Any]) -> str:
     app = document["app"]
-    amount = "unknown" if app["footprint_bytes"] is None else str(app["footprint_bytes"])
+    coverage = "partial" if app["coverage"]["partial"] else "complete"
     lines = [
-        f"{app['name']} ({app['id']})  memory {amount} B",
-        "PID  COMMAND  MEMORY (bytes)",
+        f"{escape_control_chars(app['name'])} ({escape_control_chars(app['id'])})  "
+        f"memory {_text_amount(app['footprint_bytes'])}  {coverage}"
     ]
-    for process in document["processes"]:
-        value = process["footprint_bytes"]
-        lines.append(
-            f"{process['pid']}  {process['command']}  {'unknown' if value is None else value}"
+    rows = [
+        (
+            str(p["pid"]),
+            escape_control_chars(p["command"]),
+            _text_amount(p["footprint_bytes"]),
+            _text_amount(p["resident_bytes"]),
         )
-    lines.append("COMMAND  MEMORY (bytes)  PROCS")
-    for command in document["commands"]:
-        value = command["footprint_bytes"]
-        lines.append(
-            f"{command['command']}  {'unknown' if value is None else value}  {command['procs']}"
+        for p in document["processes"]
+    ]
+    lines.extend(_text_table(("PID", "COMMAND", "MEMORY", "RESIDENT"), rows))
+    rows = [
+        (
+            escape_control_chars(c["command"]),
+            _text_amount(c["footprint_bytes"], partial=bool(c["unreadable_processes"])),
+            _text_amount(c["resident_bytes"], partial=bool(c["resident_unreadable_processes"])),
+            str(c["procs"]),
+            "partial" if c["unreadable_processes"] else "complete",
         )
+        for c in document["commands"]
+    ]
+    lines.extend(_text_table(("COMMAND", "MEMORY", "RESIDENT", "PROCS", "COVERAGE"), rows))
+    lines.append("* partial known sum; unknown = unavailable for that metric")
     return "\n".join(lines)

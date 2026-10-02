@@ -5,7 +5,7 @@ from __future__ import annotations
 from rich.text import Text
 
 from appmem.darwin_native import HostMemory
-from appmem.fmt import format_pair, size, size_in_unit, unit_of
+from appmem.fmt import format_elapsed, format_pair, size, size_in_unit, unit_of
 from appmem.ui.header import (
     ThemeColors,
     _bar_text,  # pyright: ignore[reportPrivateUsage] - reuse Linux gauge styling
@@ -37,8 +37,25 @@ def _ram(host: HostMemory, width: int, colors: ThemeColors, *, ascii_bars: bool)
         )
     used, backed, free = partition
     value = Text(format_pair(used, host.physical_bytes) + " used")
-    details = Text(f"File-backed {size(backed)}  Free {size(free)}")
-    bar_width = _bar_width(width)
+    details = Text(f"file-backed {size(backed)}  free {size(free)}")
+    wired = _amount(host.wired_bytes)
+    purgeable = host.purgeable_bytes
+    annotation = Text(f"({wired} wired)")
+    if type(purgeable) is int and 0 <= purgeable <= host.physical_bytes:
+        annotation = Text(f"({wired} wired, {size(purgeable)} purgeable)")
+    # Width buckets reserve slots for normal values. Tick-to-tick number changes
+    # do not decide whether the gauge or the annotation exists.
+    bar_width = 30 if width >= 160 else 16 if width >= 120 else 10 if width >= 80 else 0
+    if width >= 80 and value.cell_len <= 20 and details.cell_len <= 35:
+        bar = _bar_text(used, host.physical_bytes, bar_width, colors, ascii_bars=ascii_bars)
+        primary = label + bar + Text("  ") + value
+        primary.append(" " * (21 - value.cell_len))
+        if width >= 120 and annotation.cell_len < 36:
+            primary += annotation
+            primary.append(" " * (36 - annotation.cell_len))
+        return primary + details
+    # Oversized counters degrade by dropping secondary details before units.
+    bar_width = _bar_width(width) if width < 80 else 0
     if label.cell_len + bar_width + value.cell_len + details.cell_len + 4 > width:
         bar_width = 0
     bar = (
@@ -89,22 +106,8 @@ def _compression(host: HostMemory, width: int, *, ascii_bars: bool) -> Text:
     else:
         compression = Text(f"Compress  {size(logical)} data {arrow} {size(physical)} RAM")
     ratio = Text(f"({logical / physical:.1f}:1)") if logical > 0 and physical > 0 else None
-    wired = Text(f"Wired {_amount(host.wired_bytes)}")
-    purgeable = (
-        Text(f"Purgeable (in used) {size(host.purgeable_bytes)}")
-        if host.purgeable_bytes is not None and 0 <= host.purgeable_bytes <= host.physical_bytes
-        else None
-    )
     return fit_line(
-        (
-            ("compression", compression),
-            ("ratio", ratio),
-            ("wired", wired),
-            ("purgeable", purgeable),
-        ),
-        ("purgeable", "wired", "ratio"),
-        width,
-        separator="  ",
+        (("compression", compression), ("ratio", ratio)), ("ratio",), width, separator="  "
     )
 
 
@@ -135,15 +138,15 @@ def render_host_header(
     pressure = Text("Pressure".ljust(10 if width >= 60 else 9)) + _pressure(host, colors)
     scope = Text("current user")
     baseline = (
-        Text(f"growth baseline {baseline_time} ({baseline_elapsed}s ago)")
+        Text(
+            f"{'delta' if ascii_bars else 'Δ'} since {baseline_time[:5]} "
+            f"({format_elapsed(max(0, baseline_elapsed))})"
+        )
         if baseline_time is not None
         else None
     )
-    if baseline_time is not None:
-        if width < 60:
-            baseline = Text(f"{baseline_time[:5]} {baseline_elapsed}s")
-        elif width < 80:
-            baseline = Text(f"growth {baseline_time} ({baseline_elapsed}s)")
+    if baseline_time is not None and width < 60:
+        baseline = Text(f"{baseline_time[:5]} {format_elapsed(max(0, baseline_elapsed))}")
     lines = (
         _ram(host, width, colors, ascii_bars=ascii_bars),
         _compression(host, width, ascii_bars=ascii_bars),

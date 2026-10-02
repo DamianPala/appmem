@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import textwrap
 from dataclasses import dataclass
 from datetime import datetime
 from time import monotonic
@@ -11,6 +12,7 @@ from rich.text import Text
 from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
+from textual.containers import VerticalScroll
 from textual.message import Message
 from textual.screen import Screen
 from textual.widgets import Static
@@ -71,7 +73,7 @@ class DarwinMainScreen(LiveScreen):
         Binding("f", "sort('footprint')", "sort memory", show=False),
         Binding("r", "sort('resident')", "sort resident", show=False),
         Binding("d", "sort('delta')", "sort growth", show=False),
-        Binding("b", "reset_delta", "reset growth", show=False),
+        Binding("b", "reset_delta", "reset Δ", show=False),
         Binding("?", "help", "help", show=False),
     ]
 
@@ -207,7 +209,7 @@ class DarwinMainScreen(LiveScreen):
                 "sort",
             ),
             (("enter",), "procs"),
-            (("b",), "reset growth"),
+            (("b",), "reset Δ"),
             (("T",), "theme"),
             (("?",), "help"),
             (("q",), "quit"),
@@ -216,7 +218,7 @@ class DarwinMainScreen(LiveScreen):
             build_footer(
                 tuple(items),
                 width=self.size.width,
-                drop_order=("theme", "reset growth", "procs", "sort"),
+                drop_order=("theme", "reset Δ", "procs", "sort"),
             )
         )
 
@@ -342,7 +344,7 @@ class DarwinMainScreen(LiveScreen):
         self.action_sort(event.column_key)
 
     def _reset_baseline_clock(self) -> None:
-        self._baseline_time = datetime.now().strftime("%H:%M:%S")
+        self._baseline_time = datetime.now().strftime("%H:%M")
         self._baseline_started = monotonic()
 
     def action_reset_delta(self) -> None:
@@ -759,37 +761,117 @@ class DarwinHelpScreen(Screen[None]):
         Binding("q", "back", "back", show=False),
     ]
 
+    DEFAULT_CSS = """
+    DarwinHelpScreen #darwin-help-scroll { height: 1fr; scrollbar-gutter: stable; }
+    DarwinHelpScreen #darwin-help-text { height: auto; }
+    """
+
     def compose(self) -> ComposeResult:
-        yield Static(
-            "macOS 15+ Apple Silicon (experimental)\n\n"
-            "MEMORY is native process physical footprint. RESIDENT includes shared/file-backed "
-            "pages and may double count between processes. These metrics are not additive, "
-            "and their difference is not swap. MEMORY is not resident RAM, "
-            "reclaimable memory, or an Activity Monitor total.\n"
-            "* marks a partial known sum; ? means no members are readable for that metric. "
-            "MEMORY and RESIDENT track independent read coverage. "
-            "Growth stays unknown until a complete sample sets that app's baseline. "
-            "The first complete sample shows zero. A partial current sample shows unknown; "
-            "recovery compares with the retained complete baseline.\n"
-            "Bundleless processes follow the nearest app ancestor or a separate session root. "
-            "Missing ancestry can make grouping partial. Shared XPC/WebKit services "
-            "started by launchd can remain separate rows (for example Safari and "
-            "WebContent), so an app row may omit related service footprints.\n"
-            "RAM used = physical - (native free - speculative) - file-backed. "
-            "Reserved/unaccounted memory remains used; purgeable overlaps used. "
-            "File-backed is not all immediately available. Host Free excludes speculative, "
-            "not an available-memory estimate. Compression shows "
-            "logical data -> physical RAM. Native pressure is a kernel state, not PSI. "
-            "The Swap gauge compares used with currently allocated space, which grows "
-            "dynamically; zero total means none allocated. Per-app swap is unavailable.\n\n"
-            "Click a header to sort; click a row to select it, double click to open it. "
-            "Main: f/d/r sort memory/growth/resident (when visible), "
-            "b reset growth, Enter details. "
-            "Growth baseline time is the session/reset epoch; individual app baselines "
-            "may start later after identity or coverage changes. "
-            "Details: f/r/n/p/u sort memory/resident/command/PID or count/unreadable, "
-            "g group commands, Enter group members. Esc goes back; T opens themes. "
-            "?/q close this help; q quits from a live view."
+        yield Static("macOS help  esc/?/q close", id="darwin-help-title")
+        with VerticalScroll(id="darwin-help-scroll"):
+            yield Static(
+                self._body(self.app.size.width - 2),  # pyright: ignore[reportUnknownMemberType]
+                id="darwin-help-text",
+                markup=False,
+            )
+        yield Static(build_footer(((("esc",), "close"),)), id="footer")
+
+    def on_mount(self) -> None:
+        self.query_one("#darwin-help-scroll", VerticalScroll).focus()
+
+    def on_resize(self, event: events.Resize) -> None:
+        self.call_after_refresh(self._refresh_body)
+
+    def _refresh_body(self) -> None:
+        scroll = self.query_one("#darwin-help-scroll", VerticalScroll)
+        self.query_one("#darwin-help-text", Static).update(
+            self._body(scroll.size.width - scroll.scrollbar_size_vertical)
+        )
+
+    @staticmethod
+    def _body(width: int) -> str:
+        definitions = (
+            (
+                "MEMORY",
+                "App physical footprint, including native compression accounting; "
+                "not resident RAM, reclaimable memory or an Activity Monitor total.",
+            ),
+            (
+                "RESIDENT",
+                "Resident shared/file-backed pages can double count between processes. "
+                "Do not add to MEMORY or subtract to infer swap.",
+            ),
+            (
+                "ΔMEM",
+                "Change since the app's first complete sample or b reset. Partial current "
+                "samples stay unknown; recovery uses the retained complete baseline. Reopened "
+                "apps start fresh. The header clock is the session/reset epoch.",
+            ),
+            (
+                "* / ?",
+                "Partial known sum / unknown for that metric. MEMORY and RESIDENT "
+                "have independent coverage; grouping can also be partial.",
+            ),
+            (
+                "RAM",
+                "Host physical usage: physical - (native free - speculative) - file-backed. "
+                "Reserved/unaccounted memory stays used. Wired and purgeable overlap used.",
+            ),
+            (
+                "file-backed",
+                "Not all immediately available. Free excludes speculative and "
+                "is not an available-memory estimate.",
+            ),
+            ("Compress", "Logical data -> physical RAM, with a ratio when both are nonzero."),
+            (
+                "Swap",
+                "Used / currently allocated space, allocated dynamically. Zero total "
+                "means none allocated; per-app swap is unavailable.",
+            ),
+            ("Pressure", "Native kernel state: normal, warning or critical; not Linux PSI."),
+        )
+        keys = (
+            ("click header", "sort; click again reverses"),
+            ("click row", "select; double click opens"),
+            ("f / d / r", "main: sort MEMORY / ΔMEM / RESIDENT (when visible)"),
+            (
+                "f / r / n / p / u",
+                "details: sort MEMORY / RESIDENT / command / PID or count / unreadable",
+            ),
+            ("up/down PgUp PgDn", "move"),
+            ("Home / End", "first / last row"),
+            ("Enter", "app details or grouped command members"),
+            ("g", "details: toggle grouping by command"),
+            ("Esc", "back"),
+            ("b", "reset Δ and the displayed baseline clock"),
+            ("T / Ctrl+P", "theme"),
+            ("?", "help"),
+            ("q / Ctrl+C", "quit live view; esc/?/q close help"),
+        )
+
+        def items(entries: tuple[tuple[str, str], ...], column: int) -> str:
+            return "\n".join(
+                textwrap.fill(
+                    body,
+                    width=max(width, column + 10),
+                    initial_indent=f"{label:<{column}}",
+                    subsequent_indent=" " * column,
+                )
+                for label, body in entries
+            )
+
+        grouping = (
+            "Bundles follow the outermost .app path; bundleless processes follow "
+            "the nearest app ancestor or a session root. Shared launchd XPC/WebKit "
+            "services can remain separate, so related footprints may be omitted. "
+            "App sums do not equal host RAM. macOS 15+ Apple Silicon (experimental)."
+        )
+        return (
+            items(definitions, 13)
+            + "\n\n"
+            + textwrap.fill(grouping, width=max(width, 20))
+            + "\n\nKeys:\n"
+            + items(keys, 22)
         )
 
     def action_back(self) -> None:
