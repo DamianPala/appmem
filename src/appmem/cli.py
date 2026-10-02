@@ -102,6 +102,7 @@ Keys:
   b                    reset the Δ baseline to now
   T / Ctrl+P           change the theme (opens on the current theme, remembered in the
                        config file)
+  h                    main dashboards: live host memory; h/Esc close
   ?                    help screen
   q / Ctrl+C           quit
 
@@ -198,6 +199,7 @@ macOS 15+ Apple Silicon is required. --system is unsupported.
 Keys: f/d/r main sort MEMORY/ΔMEM/RESIDENT (when visible; repeat reverses).
       f/r/n/p/u details sort MEMORY/RESIDENT/command/PID or count/unreadable.
       Enter details or group members, g group by command, Esc back, b reset Δ.
+      h main dashboard host memory (h/Esc close); dim … (ASCII >) marks hidden host data.
       up/down/PgUp/PgDn move, Home/End first/last, T/Ctrl+P theme,
       ? help, esc/?/q close help, q/Ctrl+C quit live view.
       Click header sorts/reverses; click row selects, double click opens.

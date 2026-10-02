@@ -1,136 +1,25 @@
-"""Four host rows with native Darwin meanings and shared gauge styling."""
+"""Host header with native Darwin meanings and shared fixed geometry."""
 
 from __future__ import annotations
 
 from rich.text import Text
 
 from appmem.darwin_native import HostMemory
-from appmem.fmt import format_elapsed, format_pair, size, size_in_unit, unit_of
-from appmem.ui.header import (
+from appmem.fmt import format_elapsed, format_pair, size
+from appmem.ui.header import (  # pyright: ignore[reportPrivateUsage]
     ThemeColors,
-    _bar_text,  # pyright: ignore[reportPrivateUsage] - reuse Linux gauge styling
-    _bar_width,  # pyright: ignore[reportPrivateUsage] - retain shared width buckets
+    _bar_text,  # pyright: ignore[reportPrivateUsage] - shared gauge style
     activity_token,
 )
-from appmem.ui.layout import fit_line
+from appmem.ui.host_grid import geometry, grid_row
 
 
 def _nonnegative(value: int) -> bool:
     return type(value) is int and value >= 0
 
 
-def _amount(value: int) -> str:
-    return size(value) if _nonnegative(value) else "unavailable"
-
-
-def _ram(host: HostMemory, width: int, colors: ThemeColors, *, ascii_bars: bool) -> Text:
-    partition = host.ram_partition
-    label = Text("RAM".ljust(10 if width >= 60 else 6))
-    if partition is None:
-        return fit_line(
-            (
-                ("ram", label + Text("used unavailable")),
-                ("total", Text(f"total {_amount(host.physical_bytes)}")),
-            ),
-            ("total",),
-            width,
-            separator="; ",
-        )
-    used, backed, free = partition
-    value = Text(format_pair(used, host.physical_bytes) + " used")
-    details = Text(f"file-backed {size(backed)}  free {size(free)}")
-    wired = _amount(host.wired_bytes)
-    purgeable = host.purgeable_bytes
-    annotation = Text(f"({wired} wired)")
-    if type(purgeable) is int and 0 <= purgeable <= host.physical_bytes:
-        annotation = Text(f"({wired} wired, {size(purgeable)} purgeable)")
-    # Width buckets reserve slots for normal values. Tick-to-tick number changes
-    # do not decide whether the gauge or the annotation exists.
-    bar_width = 30 if width >= 160 else 16 if width >= 120 else 10 if width >= 80 else 0
-    if width >= 80 and value.cell_len <= 20 and details.cell_len <= 35:
-        bar = _bar_text(used, host.physical_bytes, bar_width, colors, ascii_bars=ascii_bars)
-        primary = label + bar + Text("  ") + value
-        primary.append(" " * (21 - value.cell_len))
-        if width >= 120 and annotation.cell_len < 36:
-            primary += annotation
-            primary.append(" " * (36 - annotation.cell_len))
-        return primary + details
-    # Oversized counters degrade by dropping secondary details before units.
-    bar_width = _bar_width(width) if width < 80 else 0
-    if label.cell_len + bar_width + value.cell_len + details.cell_len + 4 > width:
-        bar_width = 0
-    bar = (
-        _bar_text(used, host.physical_bytes, bar_width, colors, ascii_bars=ascii_bars) + Text("  ")
-        if bar_width
-        else Text()
-    )
-    return fit_line(
-        (("ram", label + bar + value), ("details", details)), ("details",), width, separator="  "
-    )
-
-
-def _swap(
-    host: HostMemory,
-    width: int,
-    colors: ThemeColors,
-    *,
-    ascii_bars: bool,
-    swap_in_rate: int | None,
-    swap_out_rate: int | None,
-) -> Text:
-    used, total = host.swap_used_bytes, host.swap_total_bytes
-    label = Text("Swap".ljust(10 if width >= 60 else 6))
-    if not (_nonnegative(used) and _nonnegative(total) and used <= total):
-        return label + Text("unavailable")
-    value = (
-        Text("0 B used; not allocated")
-        if total == 0
-        else Text(
-            format_pair(used, total).rjust(len(format_pair(total, total))) + " used/allocated now"
-        )
-    )
-    dynamic = Text("(dynamic allocation)") if width >= 160 else None
-    activity = (
-        activity_token("in", swap_in_rate, ascii_bars=ascii_bars)
-        + Text(" ")
-        + activity_token("out", swap_out_rate, ascii_bars=ascii_bars)
-        if width >= 80
-        else None
-    )
-    bar_width = 20 if width >= 120 else 6 if width >= 80 else _bar_width(width)
-    reserved = 32 if activity is not None else 0
-    if label.cell_len + bar_width + 2 + value.cell_len + reserved > width:
-        bar_width = 0
-    bar = Text()
-    if bar_width:
-        bar = (
-            Text("-" * bar_width, style="dim")
-            if total == 0
-            else _bar_text(used, total, bar_width, colors, ascii_bars=ascii_bars)
-        ) + Text("  ")
-    return fit_line(
-        (("swap", label + bar + value), ("activity", activity), ("dynamic", dynamic)),
-        ("dynamic",),
-        width,
-        separator="  ",
-    )
-
-
-def _compression(host: HostMemory, width: int, *, ascii_bars: bool) -> Text:
-    logical, physical = host.compressor_logical_bytes, host.compressor_physical_bytes
-    if not (_nonnegative(logical) and _nonnegative(physical)):
-        return Text("Compress unavailable")
-    arrow = ">" if ascii_bars else "→"
-    if width < 60:
-        unit = unit_of(max(logical, physical))
-        left, right = size_in_unit(logical, unit), size_in_unit(physical, unit)
-        compression = Text(f"Comp {left}{arrow}{right} {unit} RAM")
-    else:
-        compression = Text(f"Compress  {size(logical)} data {arrow} {size(physical)} RAM")
-    ratio = Text(f"({logical / physical:.1f}:1)") if logical > 0 and physical > 0 else None
-    return fit_line(
-        (("compression", compression), ("ratio", ratio)), ("ratio",), width, separator="  "
-    )
+def _amount(value: int | None) -> str:
+    return size(value) if type(value) is int and value >= 0 else "unavailable"
 
 
 def _pressure(host: HostMemory, colors: ThemeColors) -> Text:
@@ -159,37 +48,81 @@ def render_host_header(
     percentage. Growth timing identifies the session/reset epoch; app baselines
     can be newer when identity or coverage changes.
     """
-    pressure = Text("Pressure".ljust(10 if width >= 60 else 9)) + _pressure(host, colors)
-    scope = Text("current user")
-    baseline = (
-        Text(
-            f"{'delta' if ascii_bars else 'Δ'} since {baseline_time[:5]} "
-            f"({format_elapsed(max(0, baseline_elapsed))})"
+    _, bar_width, _ = geometry(width)
+
+    def row(
+        label: str,
+        value: Text,
+        bar: Text | None = None,
+        metadata: tuple[tuple[int, Text], ...] = (),
+    ) -> Text:
+        return grid_row(label, value, width, gauge=bar, metadata=metadata, ascii_bars=ascii_bars)
+
+    partition = host.ram_partition
+    if partition is None:
+        ram = row(
+            "RAM",
+            Text("used unavailable"),
+            metadata=((24, Text(f"total {_amount(host.physical_bytes)}")),),
         )
-        if baseline_time is not None
-        else None
+    else:
+        used, backed, free = partition
+        ram = row(
+            "RAM",
+            Text(format_pair(used, host.physical_bytes) + " used"),
+            _bar_text(used, host.physical_bytes, bar_width, colors, ascii_bars=ascii_bars),
+            (
+                (20, Text(f"file-backed {size(backed)}")),
+                (12, Text(f"free {size(free)}")),
+                (14, Text(f"wired {_amount(host.wired_bytes)}")),
+                (17, Text(f"purgeable {_amount(host.purgeable_bytes)}")),
+            ),
+        )
+    logical, physical = host.compressor_logical_bytes, host.compressor_physical_bytes
+    valid = _nonnegative(logical) and _nonnegative(physical)
+    arrow = ">" if ascii_bars else "→"
+    ratio = f"({logical / physical:.1f}:1)" if valid and logical > 0 and physical > 0 else "ratio ?"
+    compression = row(
+        "Compress",
+        Text(_amount(physical) + " RAM" if valid else "unavailable"),
+        metadata=((35, Text(f"{_amount(logical)} data {arrow} RAM {ratio}")),),
     )
-    if baseline_time is not None and width < 60:
-        baseline = Text(f"{baseline_time[:5]} {format_elapsed(max(0, baseline_elapsed))}")
-    lines = (
-        _ram(host, width, colors, ascii_bars=ascii_bars),
-        _compression(host, width, ascii_bars=ascii_bars),
-        _swap(
-            host,
-            width,
-            colors,
-            ascii_bars=ascii_bars,
-            swap_in_rate=swap_in_rate,
-            swap_out_rate=swap_out_rate,
-        ),
-        fit_line(
-            (("pressure", pressure), ("scope", scope), ("baseline", baseline)),
-            ("baseline",),
-            width,
-            separator="  ",
+    used, total = host.swap_used_bytes, host.swap_total_bytes
+    valid_swap = _nonnegative(used) and _nonnegative(total) and used <= total
+    swap_value = format_pair(used, total) + " used" if total else "0 B; not allocated"
+    if width < 60 and total > 0:
+        swap_value = format_pair(used, total) + " used/alloc now"
+    swap_bar = (
+        _bar_text(used, total, bar_width, colors, ascii_bars=ascii_bars)
+        if total and valid_swap
+        else Text("-" * bar_width, style="dim")
+    )
+    swap = row(
+        "Swap",
+        Text(swap_value if valid_swap else "unavailable"),
+        swap_bar if valid_swap else None,
+        (
+            (14, Text("allocated now ")),
+            (15, activity_token("in", swap_in_rate, ascii_bars=ascii_bars)),
+            (16, activity_token("out", swap_out_rate, ascii_bars=ascii_bars)),
+            (9, Text("(dynamic)")),
         ),
     )
-    for line in lines:
-        line.no_wrap = True
-        line.overflow = "ellipsis"
-    return lines
+    baseline = (
+        f"{'delta' if ascii_bars else 'Δ'} since {baseline_time[:5]} "
+        f"({format_elapsed(max(0, baseline_elapsed))})"
+        if baseline_time
+        else ""
+    )
+    if width < 110:
+        baseline = baseline.replace(" since ", " ")
+    pressure = row(
+        "Pressure",
+        Text(),
+        _pressure(host, colors),
+        metadata=(
+            (15, Text("apps: this user")),
+            *(((25 if width >= 110 else 19, Text(baseline)),) if baseline else ()),
+        ),
+    )
+    return ram, compression, swap, pressure

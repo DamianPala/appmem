@@ -32,11 +32,12 @@ from textual.widgets import Static
 
 from appmem.backend import Backend
 from appmem.collect import CgroupUnavailableError, MemoryStatUnavailableError
-from appmem.fmt import format_delta, size, truncate_name
+from appmem.fmt import format_delta, format_elapsed, size, truncate_name
 from appmem.model import AppStats, SystemStats
 from appmem.rate import Sample, update_rate
 from appmem.render import escape_control_chars
 from appmem.ui.header import ThemeColors, render_header
+from appmem.ui.host_panel import HostPanel, linux_details
 from appmem.ui.layout import build_footer
 from appmem.ui.process_rows import initial_process_sort
 from appmem.ui.rows import (
@@ -305,6 +306,7 @@ class MainScreen(LiveScreen):
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("h", "host", "host", show=False),
         Binding("s", "sort('swap')", "sort SWAP", show=False),
         Binding("r", "sort('ram')", "sort RAM", show=False),
         Binding("t", "sort('total')", "sort TOTAL", show=False),
@@ -357,6 +359,7 @@ class MainScreen(LiveScreen):
         self._young_baseline = True
         self._delta_restyle_pending = False
         self._last_stats: SystemStats | None = None
+        self._host_stale = False
         self._column_widths: tuple[int | None, ...] = ()
         self._ascii_bars = _detect_ascii_bars()
         self._tick_count = 0
@@ -420,6 +423,7 @@ class MainScreen(LiveScreen):
             [
                 (("b",), "reset Δ"),
                 (("T",), "theme"),
+                (("h",), "host"),
                 (("?",), "help"),
                 (("q",), "quit"),
             ]
@@ -499,17 +503,21 @@ class MainScreen(LiveScreen):
         if result.cgroup_error is not None:
             self._fail_cgroup_unavailable(result.cgroup_error)
             return
-        if result.stats is None:  # transient read/parse failure this tick: keep the last frame
-            return
         if not self._accept_tick(result.generation):
             # `x` toggled (or the screen was covered/left) while this read was
             # in flight: its result no longer matches the current context,
             # discard it rather than show a stale table (SPEC.md "Tech").
             return
+        if result.stats is None:  # transient read/parse failure this tick: keep the last frame
+            self._host_stale = True
+            self._notify_host_panel()
+            return
         self._procs_by_unit = result.procs_by_unit or {}
         self._apply_refresh(result.stats, result.apps or [], scroll=False)
 
     def on_screen_resume(self) -> None:
+        if self._resumed_from_host_panel():
+            return
         # A read dispatched before the covering screen closed is now stale,
         # even if nothing we track here actually changed while it was up.
         # Resuming from the process view is a drill-out, same as Esc
@@ -573,8 +581,12 @@ class MainScreen(LiveScreen):
             self._fail_cgroup_unavailable(exc)
             return
         except MemoryStatUnavailableError:
+            self._host_stale = True
+            self._notify_host_panel()
             return  # transient this tick: keep the last data on screen, try again next tick
         except (OSError, ValueError):
+            self._host_stale = True
+            self._notify_host_panel()
             return  # transient read/parse failure: same treatment, try again next tick
         self._apply_refresh(stats, apps, scroll=scroll)
 
@@ -603,6 +615,28 @@ class MainScreen(LiveScreen):
         self._young_baseline = young_now
         self._apply_rows(build_rows(apps, self._baseline), scroll=scroll)
         self._update_header(stats)
+        self._host_stale = False
+        self._notify_host_panel()
+
+    def _host_content(self) -> str:
+        if self._last_stats is None:
+            return "Host memory unavailable; waiting for a successful reading."
+        stale = "Read failed; showing last successful reading.\n\n" if self._host_stale else ""
+        changes = (
+            f"Changes   Δ shows memory changes since {self._baseline_time:%H:%M}"
+            f" ({format_elapsed(self._baseline_age())} ago)."
+        )
+        content = (
+            stale
+            + linux_details(self._last_stats, (self._swap_in_rate, self._swap_out_rate))
+            + "\n"
+            + changes
+        )
+        return content.replace("·", "|").replace("Δ", "delta") if self._ascii_bars else content
+
+    def action_host(self) -> None:
+        self._host_panel_open = True
+        self.app.push_screen(HostPanel(self, self._host_content, self.action_help))  # pyright: ignore[reportUnknownMemberType]
 
     def _fail_cgroup_unavailable(self, exc: CgroupUnavailableError) -> None:
         # No traceback, exit 1, JSON line after the terminal is restored

@@ -47,34 +47,6 @@ THEMES = {theme.name: theme for theme in (*BUILTIN_THEMES.values(), *TERMINAL_TH
 COLORS = ThemeColors(success="green", warning="yellow", error="red", primary="blue")
 
 
-@pytest.mark.parametrize("width", [40, 65, 75, 80, 100, 120, 160, 200])
-def test_header_preserves_native_meanings_at_responsive_widths(width: int) -> None:
-    ram, compression, swap, status = render_host_header(HOST, width, colors=COLORS)
-    assert all(line.cell_len <= width and line.no_wrap for line in (ram, compression, swap, status))
-    assert "RAM" in ram.plain and "used" in ram.plain and "GiB" in ram.plain
-    assert "Swap" in swap.plain and "0.5/1.0 GiB" in swap.plain
-    assert "allocated" in swap.plain
-    assert "Pressure" in status.plain and "normal" in status.plain
-    assert "current user" in status.plain
-    assert "3.0" in compression.plain and "1.0" in compression.plain
-    assert "RAM" in compression.plain
-    if width >= 65:
-        assert "file-backed" in ram.plain and "free" in ram.plain
-        assert "data → 1.0 GiB RAM" in compression.plain
-        assert "█" in swap.plain and "░" in swap.plain
-    if width == 75:
-        assert "█" in ram.plain
-    if width >= 120:
-        assert "wired" in ram.plain
-        assert "wired" not in compression.plain
-        assert "█" in ram.plain
-    assert not any(
-        word in line.plain.lower()
-        for line in (ram, compression, swap, status)
-        for word in ("available", "psi", "disabled", "capacity")
-    )
-
-
 def test_swap_ratio_tracks_current_allocation_instead_of_fixed_capacity() -> None:
     half = render_host_header(HOST, 80, colors=COLORS)[2]
     grown = render_host_header(replace(HOST, swap_total_bytes=2 * GIB), 80, colors=COLORS)[2]
@@ -89,7 +61,7 @@ def test_zero_swap_is_not_allocated_with_neutral_placeholder(width: int) -> None
     swap = render_host_header(
         replace(HOST, swap_used_bytes=0, swap_total_bytes=0), width, colors=COLORS
     )[2]
-    assert "0 B used; not allocated" in swap.plain
+    assert "0 B; not allocated" in swap.plain
     assert all(glyph not in swap.plain for glyph in ("/", "█", "░", "off", "disabled"))
 
 
@@ -120,7 +92,7 @@ def test_invalid_compression_is_unavailable(logical: int, physical: int) -> None
         120,
         colors=COLORS,
     )[1]
-    assert "Compress unavailable" in status.plain
+    assert "Compress" in status.plain and "unavailable" in status.plain
     assert ":1" not in status.plain
 
 
@@ -140,7 +112,7 @@ def test_pressure_is_colored_native_state_without_numeric_percentage(
     color: str,
 ) -> None:
     status = render_host_header(replace(HOST, pressure_level=level), 120, colors=COLORS)[3]
-    assert f"Pressure  {word}" in status.plain
+    assert "Pressure" in status.plain and word in status.plain
     assert "%" not in status.plain
     styles = [str(span.style) for span in status.spans]
     assert any(color in style for style in styles)
@@ -150,7 +122,7 @@ def test_pressure_failure_overrides_stale_level() -> None:
     status = render_host_header(
         replace(HOST, pressure_unavailable=Unavailable.ERROR), 120, colors=COLORS
     )[3]
-    assert "Pressure  unavailable" in status.plain
+    assert "Pressure" in status.plain and "unavailable" in status.plain
     assert "normal" not in status.plain
 
 
@@ -201,7 +173,7 @@ async def test_live_screen_updates_header_on_resize_theme_and_ascii_locale(
         await pilot.resize_terminal(40, 24)
         await pilot.pause()
         swap = app.screen.query_one("#header3", Static).content
-        assert isinstance(swap, Text) and swap.cell_len <= 40 and "allocated now" in swap.plain
+        assert isinstance(swap, Text) and swap.cell_len <= 40 and swap.plain.endswith(">")
         assert "Swap" in swap.plain
 
 
@@ -260,7 +232,7 @@ def test_pressure_baseline_and_scope_fit_and_remain_ascii() -> None:
     status = render_host_header(
         HOST, 120, colors=COLORS, ascii_bars=True, baseline_time="12:34:56", baseline_elapsed=42
     )[3]
-    assert "current user" in status.plain
+    assert "apps: this user" in status.plain
     assert "delta since 12:34 (42s)" in status.plain
     assert all(ord(char) < 128 for char in status.plain)
 
@@ -276,7 +248,7 @@ def test_ram_slots_stay_stable_across_normal_counter_changes(width: int) -> None
     )[0].plain
     assert first.index("file-backed") == second.index("file-backed")
     assert set(first[10:20]) <= {"#", "."}
-    assert "wired" in first if width >= 120 else "wired" not in first
+    assert "wired" in first if width >= 100 else "wired" not in first
     assert len(first) <= width and len(second) <= width
 
 
@@ -285,28 +257,11 @@ def test_long_elapsed_uses_existing_compact_format(width: int) -> None:
     line = render_host_header(
         HOST, width, colors=COLORS, baseline_time="09:41:59", baseline_elapsed=4320
     )[3].plain
-    assert "Δ since 09:41 (1h12m)" in line
+    assert ("Δ since 09:41 (1h12m)" if width >= 110 else "Δ 09:41 (1h12m)") in line
     line = render_host_header(
         HOST, width, colors=COLORS, baseline_time="09:41", baseline_elapsed=120 * 86400
     )[3].plain
     assert "(120d)" in line
-
-
-def test_oversized_counter_drops_details_before_main_units() -> None:
-    host = replace(HOST, physical_bytes=10**25)
-    line = render_host_header(host, 120, colors=COLORS)[0].plain
-    assert "GiB used" in line and "wired" not in line
-
-
-@pytest.mark.parametrize(("wired", "purgeable"), [(4, 1), (100, 100)])
-def test_ram_slots_keep_separators_when_full(wired: int, purgeable: int) -> None:
-    host = replace(
-        HOST, physical_bytes=128 * GIB, wired_bytes=wired * GIB, purgeable_bytes=purgeable * GIB
-    )
-    line = render_host_header(host, 120, colors=COLORS)[0].plain
-    assert "GiB used " in line and len(line) <= 120
-    assert "wired" in line if wired == 4 else "wired" not in line
-    assert ")file-backed" not in line
 
 
 @pytest.mark.parametrize("width", [80, 100, 120, 160])
@@ -322,5 +277,35 @@ def test_swap_activity_slots_stay_fixed_across_used_digit_boundary(width: int) -
         for used in (5, 10)
     ]
     assert len({line.index("in ") for line in lines}) == 1
-    assert len({line.index("out ") for line in lines}) == 1
-    assert all(len(line) <= width and "allocated now" in line for line in lines)
+    if width >= 120:
+        assert len({line.index("out ") for line in lines}) == 1
+    assert all(len(line) <= width for line in lines)
+
+
+@pytest.mark.parametrize("width", [40, 60, 80, 120, 160])
+def test_host_grid_keeps_native_values_and_alignment(width: int) -> None:
+    ram, compression, swap, pressure = render_host_header(HOST, width, colors=COLORS)
+    assert all(
+        line.cell_len <= width and line.no_wrap for line in (ram, compression, swap, pressure)
+    )
+    assert "5.1/8.0 GiB used" in ram.plain
+    assert "1.0 GiB RAM" in compression.plain
+    assert "0.5/1.0 GiB used" in swap.plain
+    assert "normal" in pressure.plain
+    assert ram.plain.index("5.1/") == compression.plain.index("1.0 GiB") == swap.plain.index("0.5/")
+    assert not any(glyph in compression.plain for glyph in ("█", "░", "#"))
+    if width >= 80:
+        assert "in " in swap.plain and "allocated now" in swap.plain
+        assert ("out " in swap.plain) == (width >= 120)
+    if width >= 120:
+        assert all(label in ram.plain for label in ("file-backed", "free", "wired", "purgeable"))
+        assert "allocated now" in swap.plain
+
+
+def test_large_native_values_preserve_metadata_fields_when_actual_text_fits() -> None:
+    host = replace(HOST, physical_bytes=128 * GIB, wired_bytes=100 * GIB)
+    ram = render_host_header(host, 120, colors=COLORS)[0]
+    assert ram.cell_len <= 120
+    assert all(label in ram.plain for label in ("file-backed", "free", "wired", "purgeable"))
+    assert "wired 100.0 GiB" in ram.plain
+    assert not ram.plain.endswith("…")

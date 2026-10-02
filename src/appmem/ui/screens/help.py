@@ -78,6 +78,8 @@ _BAR_NOTE = (
 )
 
 _HEADER_NOTE = (
+    "h on the main dashboard opens live, scrollable host memory details. "
+    "A dim right-edge … (ASCII >) means information hidden for space, not an unavailable reading. "
     "The header counts the whole machine (RAM/Swap/avail). Rows only cover the app "
     "trees appmem walks, plus the hidden system and elsewhere totals -- they won't "
     "add up to the header, and that's expected."
@@ -187,6 +189,7 @@ _KEYS: tuple[tuple[str, str], ...] = (
     ("c", "toggle the CACHE column"),
     ("x", "toggle system services"),
     ("b", "reset the Δ baseline to now"),
+    ("h", "main dashboards: live host memory; h/Esc close"),
     ("T / Ctrl+P", "change the theme"),
     ("?", "this screen"),
     ("q / Ctrl+C", "quit"),

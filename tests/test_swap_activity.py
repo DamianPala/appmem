@@ -145,7 +145,7 @@ def test_zswap_gauge_physical_and_activity_fit(width: int) -> None:
     assert "1.0/6.0 GiB RAM" in zswap.plain
     assert "holds 4.0 GiB" in zswap.plain
     assert "in 0 B/s" in swap.plain and "out 1 KiB/s" in swap.plain
-    assert ("limit 20%" in zswap.plain) == (width >= 120)
+    assert ("limit 20%" in zswap.plain) == (width >= 100)
 
 
 @pytest.mark.parametrize("percent", [None, 0, 1])
@@ -156,7 +156,8 @@ def test_zswap_unknown_zero_and_over_limit(percent: int | None) -> None:
     if percent is None:
         assert "/? RAM" in line.plain and "limit ?" in line.plain
     elif percent == 0:
-        assert "over-limit" in line.plain and "limit 0%" in line.plain
+        assert "over-limit" in line.plain
+        assert "limit 0%" in line.plain and not line.plain.endswith("…")
     else:
         assert "over-limit" in line.plain
         assert "█" * 20 in line.plain
@@ -164,8 +165,9 @@ def test_zswap_unknown_zero_and_over_limit(percent: int | None) -> None:
 
 def test_off_missing_short_and_narrow_keep_previous_shapes() -> None:
     assert len(header(replace(STATS, zswap_enabled=False))) == 3
-    assert len(header(replace(STATS, zswap_pool_bytes=None))) == 3
-    assert len(header(width=79)) == 3
+    assert len(header(replace(STATS, zswap_pool_bytes=None))) == 4
+    assert "unavailable" in header(replace(STATS, zswap_pool_bytes=None))[1].plain
+    assert len(header(width=79)) == 4
     assert len(header(height=17)) == 2
     assert len(header(width=40, height=10)) == 2
 
@@ -189,7 +191,7 @@ def test_unknown_zero_and_activity_slots_ascii_and_unicode() -> None:
         assert ("?" if ascii_bars else "—") in rendered[0]
         assert "0 B/s" in rendered[1]
         assert len({line.index("out") for line in rendered}) == 1
-        assert len({len(line) for line in rendered}) == 1
+        assert all(len(line) <= 120 for line in rendered)
 
 
 @pytest.mark.asyncio

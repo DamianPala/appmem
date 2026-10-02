@@ -1704,9 +1704,9 @@ async def test_footer_drops_lowest_priority_items_at_55_columns(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
-async def test_theme_footer_item_shows_wide_and_drops_before_reset_delta(tmp_path: Path) -> None:
+async def test_theme_footer_item_shows_wide_and_drops_before_host_hint(tmp_path: Path) -> None:
     # "theme" is the new lowest-priority item (SPEC.md "Main view"): it drops
-    # before "reset Δ", which still fits at 75 columns.
+    # before the high-priority host hint at 75 columns.
     root = _base_tree(tmp_path)
     _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
 
@@ -1723,7 +1723,7 @@ async def test_theme_footer_item_shows_wide_and_drops_before_reset_delta(tmp_pat
         content = footer.content
         assert isinstance(content, Text)
         assert "T theme" not in content.plain
-        assert "reset Δ" in content.plain
+        assert "host" in content.plain
 
 
 @pytest.mark.asyncio

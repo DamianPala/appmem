@@ -64,3 +64,7 @@ A failure writes `{"error": {...}}` as the last non-empty line on stderr, with `
 `cgroup_unavailable` means this machine has no cgroup v2, no systemd user manager for this user (for example as root) or the memory controller off: say so and stop, appmem can't help here.
 `interrupted` (a signal stopped the command): run it again.
 `platform_unavailable` means the experimental Mac backend requires macOS 15+ on Apple Silicon or a required native read failed; report the platform or read error instead of substituting Linux counters.
+
+## Live host details
+
+On either main dashboard, `h` opens live host memory details; `h` or Esc closes the panel. Keyboard and wheel scroll, and the panel uses existing dashboard samples. A dim right-edge `…` (`>` in ASCII) means information hidden for space, not an unavailable reading. Failed refreshes mark retained readings stale. Linux details retain Zswap logical/physical accounting; Mac compression is native and must not be claimed as included in disk Swap used. Mac swap uses currently allocated, dynamically growing space, not a fixed capacity.

@@ -19,12 +19,13 @@ from textual.widgets import Static
 
 from appmem.darwin_backend import DarwinApp, DarwinBackend, DarwinProcess, DarwinUnavailableError
 from appmem.darwin_native import HostMemory
-from appmem.fmt import format_delta, size, truncate_name
+from appmem.fmt import format_delta, format_elapsed, size, truncate_name
 from appmem.rate import Sample, update_rate
 from appmem.render import escape_control_chars
 from appmem.ui.darwin_header import render_host_header
 from appmem.ui.darwin_rows import DarwinRow, build_rows, sort_rows, update_baseline
 from appmem.ui.header import ThemeColors
+from appmem.ui.host_panel import HostPanel, darwin_details
 from appmem.ui.layout import build_footer
 from appmem.ui.screens.live import LiveScreen
 
@@ -71,6 +72,7 @@ class DarwinMainScreen(LiveScreen):
     DarwinMainScreen Static { text-wrap: nowrap; text-overflow: ellipsis; }
     """
     BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("h", "host", "host", show=False),
         Binding("f", "sort('footprint')", "sort memory", show=False),
         Binding("r", "sort('resident')", "sort resident", show=False),
         Binding("d", "sort('delta')", "sort growth", show=False),
@@ -157,6 +159,8 @@ class DarwinMainScreen(LiveScreen):
             self._render_header()
 
     def on_screen_resume(self) -> None:
+        if self._resumed_from_host_panel():
+            return
         self._invalidate_tick()
         scroll, self._resume_scrolls = self._resume_scrolls, False
         self.refresh_now(scroll=scroll)
@@ -182,6 +186,7 @@ class DarwinMainScreen(LiveScreen):
         self._render_footer()
 
     def _render_header(self) -> None:
+        self._notify_host_panel()
         if self._read_failed:
             self.query_one("#header1", Static).update(
                 truncate_name(_read_error(self._host is not None), self.size.width)
@@ -225,6 +230,7 @@ class DarwinMainScreen(LiveScreen):
             (("enter",), "procs"),
             (("b",), "reset Δ"),
             (("T",), "theme"),
+            (("h",), "host"),
             (("?",), "help"),
             (("q",), "quit"),
         ]
@@ -235,6 +241,27 @@ class DarwinMainScreen(LiveScreen):
                 drop_order=("theme", "reset Δ", "procs", "sort"),
             )
         )
+
+    def _host_content(self) -> str:
+        if self._host is None:
+            return "Host memory unavailable; waiting for a successful reading."
+        stale = "Read failed; showing last successful reading.\n\n" if self._read_failed else ""
+        elapsed = format_elapsed(max(0, int(monotonic() - self._baseline_started)))
+        changes = (
+            f"Changes   Δ shows memory changes since {(self._baseline_time or '?')[:5]}"
+            f" ({elapsed} ago)."
+        )
+        content = (
+            stale
+            + darwin_details(self._host, (self._swap_in_rate, self._swap_out_rate))
+            + "\n"
+            + changes
+        )
+        return content.replace("·", "|").replace("Δ", "delta") if self._ascii_bars else content
+
+    def action_host(self) -> None:
+        self._host_panel_open = True
+        self.app.push_screen(HostPanel(self, self._host_content, self.action_help))  # pyright: ignore[reportUnknownMemberType]
 
     def _specs(self, table: RowTable) -> list[tuple[str, str, int | None]]:
         specs: list[tuple[str, str, int | None]] = [
@@ -866,6 +893,7 @@ class DarwinHelpScreen(Screen[None]):
             ("g", "details: toggle grouping by command"),
             ("Esc", "back"),
             ("b", "reset Δ and the displayed baseline clock"),
+            ("h", "main dashboard: live host memory; h/Esc close"),
             ("T / Ctrl+P", "theme"),
             ("?", "help"),
             ("q / Ctrl+C", "quit live view; esc/?/q close help"),
@@ -883,6 +911,8 @@ class DarwinHelpScreen(Screen[None]):
             )
 
         grouping = (
+            "h on the main dashboard opens live, scrollable host memory details. "
+            "A dim right-edge … (ASCII >) means data hidden for space, not an unavailable reading. "
             "Bundles follow the outermost .app path; bundleless processes follow "
             "the nearest app ancestor or a session root. Shared launchd XPC/WebKit "
             "services can remain separate, so related footprints may be omitted. "

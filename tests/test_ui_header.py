@@ -1,31 +1,20 @@
-"""Tests for `appmem.ui.header` (SPEC.md "Main view" header). Structural and
-behavioural checks throughout rather than pixel-exact string matches against
-illustrative mock-ups: the numbered layout/slot/drop-order rules are
-normative, ASCII art never is.
-"""
+"""Fixture-only grid, color and gauge behavior for the Linux host header."""
 
 from __future__ import annotations
 
-import itertools
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 
+import pytest
 from rich.text import Text
 from textual.theme import BUILTIN_THEMES
 
 from appmem.collect import SystemStats
-from appmem.fmt import format_pair, size_in_unit, unit_of
+from appmem.fmt import format_pair
 from appmem.ui.header import (
-    _MIN_WIDTH_FOR_TEXT_TWO_LINE,  # pyright: ignore[reportPrivateUsage]
-    _PRESSURE_STEPS,  # pyright: ignore[reportPrivateUsage]
-    _RAM_STEPS,  # pyright: ignore[reportPrivateUsage]
     ThemeColors,
     _bar_glyphs,  # pyright: ignore[reportPrivateUsage]
-    _bar_width,  # pyright: ignore[reportPrivateUsage]
-    _pressure_line,  # pyright: ignore[reportPrivateUsage]
-    _ram_line,  # pyright: ignore[reportPrivateUsage]
-    _RenderCtx,  # pyright: ignore[reportPrivateUsage]
     format_delta_since,
     render_header,
 )
@@ -100,13 +89,6 @@ def _style_at(text: Text, substr: str) -> str:
     return styles[-1]
 
 
-_CTX = _RenderCtx(colors=_COLORS, bar_width=20, ascii_bars=False, writeback_rate=None)
-_CTX_WB = replace(_CTX, writeback_rate=12 * _MIB)
-
-
-# --- bar maths (pure glyph function) -----------------------------------------
-
-
 def test_bar_glyphs_full_at_100_percent() -> None:
     fill, track = _bar_glyphs(100, 100, 20, ascii_bars=False)
     assert fill == "█" * 20
@@ -156,460 +138,6 @@ def test_bar_glyphs_rounds_rather_than_truncates() -> None:
     # 15/20 of 10 cells = 7.5 cells exactly: rounding gives 8, truncation 7.
     fill, _track = _bar_glyphs(15, 20, 10, ascii_bars=True)
     assert len(fill) == 8
-
-
-def test_bar_width_table_boundaries() -> None:
-    assert _bar_width(110) == 20
-    assert _bar_width(109) == 16
-    assert _bar_width(90) == 16
-    assert _bar_width(89) == 10
-    assert _bar_width(70) == 10
-    assert _bar_width(69) == 6
-    assert _bar_width(60) == 6
-    assert _bar_width(59) == 0
-
-
-def test_bar_track_is_dim_styled() -> None:
-    ram, _swap, _pressure = _render(_stats(mem_available=int(20.0 * _GIB)), 200, 40)
-    assert "dim" in _style_at(ram, "░")
-
-
-# --- structural: every line fits, RAM/Swap/Pressure always present ----------
-
-
-_SIZES = [(120, 40), (100, 30), (80, 24), (120, 15), (60, 20), (40, 10)]
-
-
-def test_lines_never_exceed_their_width_across_sizes_and_flags() -> None:
-    for width, height in _SIZES:
-        for stats in (_DEFAULT_STATS, _ZSWAP_STATS, _stats(swap_total=0, swap_free=0)):
-            for rate in (None, 12 * _MIB):
-                lines = _render(stats, width, height, writeback_rate=rate)
-                assert 2 <= len(lines) <= 4
-                for line in lines:
-                    assert line.cell_len <= width, (width, height, line.plain)
-
-
-def test_three_lines_at_height_18_two_below_it() -> None:
-    assert len(_render(_DEFAULT_STATS, 120, 18)) == 3
-    assert len(_render(_DEFAULT_STATS, 120, 17)) == 2
-
-
-def test_never_fewer_than_two_lines_even_at_extreme_sizes() -> None:
-    assert len(_render(_DEFAULT_STATS, 1, 1)) == 2
-
-
-def test_three_line_mode_shows_ram_swap_pressure_labels() -> None:
-    ram, swap, pressure = _render(_DEFAULT_STATS, 120, 40)
-    assert ram.plain.startswith("RAM")
-    assert swap.plain.startswith("Swap")
-    assert pressure.plain.startswith("Pressure")
-
-
-def test_two_line_v3_form_keeps_ram_and_swap_and_the_pressure_word() -> None:
-    line1, line2 = _render(_DEFAULT_STATS, 120, 15)
-    assert line1.plain.startswith("RAM")
-    assert "Pressure" in line1.plain
-    assert line2.plain.startswith("Swap")
-
-
-def test_compact_form_keeps_bare_ram_swap_and_pressure() -> None:
-    line1, line2 = _render(_DEFAULT_STATS, 40, 10)
-    assert "RAM" in line1.plain and "Swap" in line1.plain
-    assert line2.plain.startswith("Pressure")
-
-
-# --- flags decide content, not values ----------------------------------------
-
-
-def test_swap_off_has_no_bar_and_no_pair() -> None:
-    _ram, swap, _pressure = _render(_stats(swap_total=0, swap_free=0), 200, 40)
-    assert swap.plain.startswith("Swap      off")
-
-
-def test_elsewhere_shown_above_threshold_hidden_below_and_when_none() -> None:
-    _r, _s, at_threshold = _render(_stats(elsewhere=2 * _MIB), 200, 40)
-    assert "elsewhere 2 MiB" in at_threshold.plain
-
-    _r2, _s2, below = _render(_stats(elsewhere=_MIB - 1), 200, 40)
-    assert "elsewhere" not in below.plain
-
-    _r3, _s3, none_ = _render(_stats(elsewhere=None), 200, 40)
-    assert "elsewhere" not in none_.plain
-
-
-def test_pressure_word_reflects_state_not_a_fixed_label() -> None:
-    _r, _s, high = _render(
-        _stats(pressure_some_avg10=25.0, pressure_some_avg60=0.0, pressure_full_avg10=0.0), 200, 40
-    )
-    assert "high" in high.plain
-
-    no_psi = _stats(pressure_some_avg10=None, pressure_some_avg60=None, pressure_full_avg10=None)
-    _r2, _s2, unavailable = _render(no_psi, 200, 40)
-    assert "unavailable" in unavailable.plain
-
-
-# --- swap colour: error only above 90 %, no 50 % warning ---------------------
-
-
-def test_swap_pair_uncoloured_at_85_percent() -> None:
-    stats = _stats(swap_total=1000, swap_free=150)  # 85 % used
-    _ram, swap, _pressure = _render(stats, 200, 40)
-    pair = format_pair(850, 1000)
-    start = swap.plain.index(pair)
-    end = start + len(pair)
-    # No span with a colour covers the pair (an uncoloured pair may carry no
-    # span at all, unlike the coloured case `_style_at` covers).
-    styles = [str(s.style) for s in swap.spans if s.start <= start and s.end >= end]
-    assert not any("red" in style or "yellow" in style for style in styles)
-
-
-def test_swap_pair_error_coloured_above_90_percent() -> None:
-    stats = _stats(swap_total=1000, swap_free=90)  # 91 % used
-    _ram, swap, _pressure = _render(stats, 200, 40)
-    pair = format_pair(910, 1000)
-    assert "red" in _style_at(swap, pair)
-
-
-# --- no jitter: differing values keep every part at the same column ---------
-#
-# Each test below renders the same size and flags twice, with only one value
-# changed, and checks that every part is at the same column (or, where a
-# value's own size decides whether a *flag* is even met, that the same flag
-# decision is reached both times) -- rather than hand-computing the exact
-# widths involved, which the bar-width table's big steps and the >= 95
-# column Δ cutoff make easy to get wrong by construction (see the drop-order
-# section below).
-
-
-def test_ram_pair_digit_boundary_does_not_move_what_follows() -> None:
-    # 9.9 -> 10.0 GiB used, both against a fixed 99.9 GiB total: the pair
-    # slot is sized off the total (always 4 digits here), so the "used"
-    # keyword and the shared bracket after it must land in the same column
-    # either side of the boundary, even though `avail` (total - used) is
-    # itself a genuinely different, non-jittering number the other side of
-    # it (90.0 -> 89.9, also 4 digits, so it doesn't move anything either).
-    low = _stats(mem_total=int(99.9 * _GIB), mem_available=int(99.9 * _GIB) - int(9.9 * _GIB))
-    high = _stats(mem_total=int(99.9 * _GIB), mem_available=int(99.9 * _GIB) - int(10.0 * _GIB))
-    ram_low, _s1, _p1 = _render(low, 200, 40)
-    ram_high, _s2, _p2 = _render(high, 200, 40)
-
-    assert ram_low.cell_len == ram_high.cell_len
-    assert ram_low.plain.index(" used") == ram_high.plain.index(" used")
-    assert ram_low.plain.index("shared") == ram_high.plain.index("shared")
-    assert ram_low.plain.index("avail") == ram_high.plain.index("avail")
-    assert ram_low.plain.index("free") == ram_high.plain.index("free")
-
-
-def test_avail_shown_in_the_totals_unit_not_its_own() -> None:
-    # mem_available alone (536870912 B) would pick MiB on its own
-    # (`unit_of` -> "512 MiB"); forced into the RAM total's GiB it must read
-    # "0.5 GiB" instead (right-padded to the total's own digit width, "30.9"
-    # -> 4 cells), so its slot never depends on which unit it would
-    # otherwise have picked.
-    stats = _stats(mem_available=int(0.5 * _GIB))
-    ram = _render(stats, 200, 40)[0]
-    assert "avail  0.5 GiB" in ram.plain
-
-
-def test_ram_line_length_stable_across_avail_values_when_breakdown_shown() -> None:
-    # If avail's width followed its own value, RAM used 22.1 -> 10.0 GiB
-    # would drop avail between 58 and 70 columns; its slot comes from
-    # `mem_total` instead.
-    low = _render(_stats(mem_available=int(0.8 * _GIB)), 200, 40)[0]
-    high = _render(_stats(mem_available=int(12.0 * _GIB)), 200, 40)[0]
-    assert low.cell_len == high.cell_len
-
-
-def test_ram_avail_presence_does_not_depend_on_used_value() -> None:
-    for width in (60, 64, 68):
-        low_used = _render(_stats(mem_available=int(20.9 * _GIB)), width, 40)[0]
-        high_used = _render(_stats(mem_available=int(8.8 * _GIB)), width, 40)[0]
-        assert ("avail" in low_used.plain) == ("avail" in high_used.plain)
-
-
-def test_ram_shared_jitter_does_not_move_avail() -> None:
-    small = _render(_stats(mem_shared=int(0.1 * _GIB)), 200, 40)[0]
-    big = _render(_stats(mem_shared=int(12.3 * _GIB)), 200, 40)[0]
-    assert small.plain.index("avail") == big.plain.index("avail")
-
-
-def test_writeback_rate_does_not_change_compact_zswap_layout() -> None:
-    lines = [
-        _render(_ZSWAP_STATS, 98, 40, writeback_rate=rate)[1].plain
-        for rate in (None, 0, 900 * 1024, 150 * _MIB)
-    ]
-    assert len(set(lines)) == 1
-    assert "holds" in lines[0] and "writeback" not in lines[0]
-
-
-def test_elsewhere_presence_does_not_depend_on_its_own_size() -> None:
-    # Unpadded, `elsewhere` would appear or disappear between 77 and 104
-    # columns depending on `2 MiB` vs `1000 MiB`'s own text width.
-    for width in (90, 96, 104):
-        small = _render(_stats(elsewhere=2 * _MIB), width, 40)[2]
-        big = _render(_stats(elsewhere=1000 * _MIB), width, 40)[2]
-        assert ("elsewhere" in small.plain) == ("elsewhere" in big.plain)
-
-    small = _render(_stats(elsewhere=2 * _MIB), 200, 40)[2]
-    big = _render(_stats(elsewhere=1000 * _MIB), 200, 40)[2]
-    assert small.plain.index("elsewhere") == big.plain.index("elsewhere")
-    assert small.cell_len == big.cell_len
-
-
-def test_pressure_system_value_jitter_does_not_move_delta() -> None:
-    small = _render(_stats(system_ram=5 * _MIB, system_swap=0), 200, 40)[2]
-    big = _render(_stats(system_ram=int(12.5 * _GIB), system_swap=0), 200, 40)[2]
-    assert small.plain.index("Δ") == big.plain.index("Δ")
-
-
-def test_pressure_delta_elapsed_jitter_does_not_move_elsewhere() -> None:
-    stats = _stats(elsewhere=2 * _MIB)
-    now_short = _BASELINE + timedelta(seconds=5)  # "5s"
-    now_long = _BASELINE + timedelta(hours=3, minutes=45)  # "3h45m"
-    short = render_header(stats, 200, 40, colors=_COLORS, baseline_time=_BASELINE, now=now_short)[2]
-    long_ = render_header(stats, 200, 40, colors=_COLORS, baseline_time=_BASELINE, now=now_long)[2]
-    assert short.plain.index("elsewhere") == long_.plain.index("elsewhere")
-
-
-def test_multi_day_baseline_does_not_move_elsewhere() -> None:
-    stats = _stats(elsewhere=2 * _MIB)
-    columns: set[tuple[int, int]] = set()
-    for elapsed in (
-        timedelta(seconds=5),
-        timedelta(days=4, hours=4, minutes=15),  # 100h15m unbounded: 7 cells
-        timedelta(days=120, hours=5, minutes=17),
-    ):
-        line = render_header(
-            stats, 200, 40, colors=_COLORS, baseline_time=_BASELINE, now=_BASELINE + elapsed
-        )[2]
-        columns.add((line.plain.index("elsewhere"), line.cell_len))
-    assert len(columns) == 1
-
-
-def test_pressure_qualifier_growing_does_not_move_what_follows() -> None:
-    bare = _stats(pressure_some_avg10=0.0, pressure_some_avg60=0.0, pressure_full_avg10=0.0)
-    qualified = _stats(pressure_some_avg10=0.0, pressure_some_avg60=1.2, pressure_full_avg10=0.0)
-    _r1, _s1, p_bare = _render(bare, 200, 40)
-    _r2, _s2, p_qualified = _render(qualified, 200, 40)
-
-    assert p_bare.plain.index("system") == p_qualified.plain.index("system")
-
-
-# --- two-line form: never cropped, left-aligned, only from 70 cols up -------
-#
-# The floor moved from 80 to 70 when the pressure qualifier shrank (SPEC.md
-# "Main view"): the two-line form's own worst case -- label 10 + bar 10 + 2
-# + a typical pair 13 + " used" 5 + 3 + the pressure block (26, was 36) --
-# now comes to 69, one below the new floor.
-
-
-def test_two_line_form_used_only_from_70_columns_up() -> None:
-    assert _MIN_WIDTH_FOR_TEXT_TWO_LINE == 70
-    compact = _render(_DEFAULT_STATS, 69, 15)
-    two_line = _render(_DEFAULT_STATS, 70, 15)
-    assert compact[1].plain.startswith("Pressure")  # compact form's line 2
-    assert two_line[1].plain.startswith("Swap")  # two-line form's line 2
-
-
-def test_two_line_pressure_block_is_left_aligned() -> None:
-    bare = _stats(pressure_some_avg10=0.0, pressure_some_avg60=0.0, pressure_full_avg10=0.0)
-    qualified = _stats(pressure_some_avg10=0.0, pressure_some_avg60=1.2, pressure_full_avg10=0.0)
-    line1_bare = _render(bare, 90, 15)[0]
-    line1_qualified = _render(qualified, 90, 15)[0]
-
-    assert line1_bare.plain.index("Pressure") == line1_qualified.plain.index("Pressure")
-    assert "1.2" in line1_qualified.plain  # the qualifier actually renders, not cropped
-
-
-def test_two_line_first_line_length_does_not_depend_on_the_pressure_word() -> None:
-    bare = _stats(pressure_some_avg10=0.0, pressure_some_avg60=0.0, pressure_full_avg10=0.0)
-    worst = _stats(pressure_some_avg10=0.0, pressure_some_avg60=99.9, pressure_full_avg10=0.0)
-    for width in (70, 90, 120):
-        assert _render(bare, width, 15)[0].cell_len == _render(worst, width, 15)[0].cell_len
-
-
-def test_two_line_pressure_block_unmoved_by_ram_avail_jitter() -> None:
-    low_avail = _stats(mem_available=int(0.5 * _GIB))
-    high_avail = _stats(mem_available=int(20.0 * _GIB))
-    line1_low = _render(low_avail, 90, 15)[0]
-    line1_high = _render(high_avail, 90, 15)[0]
-    assert line1_low.plain.index("Pressure") == line1_high.plain.index("Pressure")
-
-
-_LONGEST_PRESSURE_WORD = "none (was 99.9 %)"
-
-
-def test_longest_pressure_word_never_cropped_at_required_sizes() -> None:
-    stats = _stats(pressure_some_avg10=0.0, pressure_some_avg60=99.9, pressure_full_avg10=0.0)
-    big_ram = replace(stats, mem_total=int(125.7 * _GIB), mem_available=int(60.0 * _GIB))
-    sizes = [(120, 40), (100, 30), (80, 24), (90, 15), (80, 15), (70, 15), (40, 10)]
-    for case, (width, height) in itertools.product((stats, big_ram), sizes):
-        # `.plain` is never cropped; the widget crops what is wider than the terminal.
-        holder = [ln for ln in _render(case, width, height) if _LONGEST_PRESSURE_WORD in ln.plain]
-        assert holder, (width, height)
-        assert holder[0].cell_len <= width, (width, height, holder[0].plain)
-
-
-# --- one grid: `system` in the RAM/Swap pair's own column -------------------
-
-_PRESSURE_LEVELS: dict[str, dict[str, float]] = {
-    "none": {"pressure_some_avg10": 0.0, "pressure_some_avg60": 0.0, "pressure_full_avg10": 0.0},
-    "none_qualified": {
-        "pressure_some_avg10": 0.0,
-        "pressure_some_avg60": 99.9,
-        "pressure_full_avg10": 0.0,
-    },
-    "some": {"pressure_some_avg10": 3.2, "pressure_some_avg60": 0.0, "pressure_full_avg10": 1.0},
-    "high": {"pressure_some_avg10": 25.0, "pressure_some_avg60": 0.0, "pressure_full_avg10": 0.0},
-}
-
-
-def _ram_pair_column(ram: Text, stats: SystemStats) -> int:
-    used = stats.mem_total - stats.mem_available
-    pair = format_pair(used, stats.mem_total)
-    return ram.plain.index(pair)
-
-
-def test_pressure_system_aligns_with_the_ram_swap_pair_column() -> None:
-    # SPEC.md "Main view": one grid for the header's three lines -- `system`
-    # starts in exactly the RAM/Swap pair's own column, for every pressure
-    # level including the qualifier's own worst case, with or without
-    # zswap, at both 120 and 100 columns (100 still fits: its bar column is
-    # wide enough for the new, shorter qualifier).
-    for width in (120, 100):
-        for base in (_DEFAULT_STATS, _ZSWAP_STATS):
-            for fields in _PRESSURE_LEVELS.values():
-                stats = replace(base, **fields)
-                lines = _render(stats, width, 40)
-                ram, pressure = lines[0], lines[-1]
-                assert pressure.plain.index("system") == _ram_pair_column(ram, stats), (
-                    width,
-                    fields,
-                )
-
-
-def test_pressure_system_column_is_width_only_where_the_grid_does_not_fit() -> None:
-    # Below the bar column that can hold the qualifier's own worst case
-    # (SPEC.md "Main view"), `system` falls back to a fixed, width-only
-    # column -- the same for every pressure level, not the RAM/Swap pair's
-    # own column (bar_width=10 here, too short for the grid to engage).
-    columns: set[int] = set()
-    for fields in _PRESSURE_LEVELS.values():
-        stats = replace(_DEFAULT_STATS, **fields)
-        ram, _swap, pressure = _render(stats, 80, 40)
-        columns.add(pressure.plain.index("system"))
-        assert pressure.plain.index("system") != _ram_pair_column(ram, stats)
-        assert "   system" in pressure.plain  # the usual 3-space gap, even after the worst case
-    assert len(columns) == 1
-
-
-def test_compact_form_values_never_move_or_drop_parts() -> None:
-    base = _stats(pressure_some_avg10=0.0, pressure_some_avg60=0.0, pressure_full_avg10=0.0)
-    varied = _stats(
-        mem_available=int(30.9 * _GIB) - int(9.9 * _GIB),
-        pressure_some_avg10=0.0,
-        pressure_some_avg60=84.9,
-        pressure_full_avg10=0.0,
-        system_ram=5 * _MIB,
-    )
-    for width in (40, 47, 69):
-        lines_base = _render(base, width, 15, writeback_rate=12 * _MIB)
-        lines_varied = _render(varied, width, 15, writeback_rate=900 * 1024)
-        for one, other in zip(lines_base, lines_varied, strict=True):
-            assert one.cell_len == other.cell_len, (width, one.plain, other.plain)
-            for part in ("Swap", "system"):
-                assert one.plain.find(part) == other.plain.find(part), (width, part)
-
-
-def test_two_line_avail_bracket_value_does_not_move_the_pressure_block() -> None:
-    small = _stats(mem_free=int(0.1 * _GIB), mem_cache=int(0.2 * _GIB), mem_slab=int(0.1 * _GIB))
-    big = _stats(mem_free=int(12.1 * _GIB), mem_cache=int(14.6 * _GIB), mem_slab=int(10.2 * _GIB))
-    line1_small = _render(small, 250, 15)[0]
-    line1_big = _render(big, 250, 15)[0]
-    assert "slab" in line1_small.plain
-    assert line1_small.plain.index("Pressure") == line1_big.plain.index("Pressure")
-
-
-# --- drop order: each line's own step tuple, applied directly ---------------
-#
-# Widening the terminal isn't monotonic in the parts shown -- the bar-width
-# table has big steps, so crossing e.g. 110 -> 109 can *shrink* the bar by 4
-# cells and free more room than 1 column of width cost, and below 95 columns
-# dropping Δ unconditionally can do the same for whatever is left on the
-# Pressure line. Sweeping the width can't tell "drop order" apart from those
-# two effects, so the drop order itself is checked directly against each
-# line's declared step tuple instead.
-
-
-def test_ram_steps_drop_breakdown_then_avail_then_shared() -> None:
-    assert _RAM_STEPS == ("avail_breakdown", "avail", "shared")
-    stats = _DEFAULT_STATS
-
-    none = _ram_line(stats, _CTX, disabled=frozenset())
-    assert "free" in none.plain and "avail" in none.plain and "shared" in none.plain
-
-    breakdown_gone = _ram_line(stats, _CTX, disabled=frozenset({"avail_breakdown"}))
-    assert "free" not in breakdown_gone.plain
-    assert "avail" in breakdown_gone.plain and "shared" in breakdown_gone.plain
-
-    avail_gone = _ram_line(stats, _CTX, disabled=frozenset({"avail_breakdown", "avail"}))
-    assert "avail" not in avail_gone.plain
-    assert "shared" in avail_gone.plain
-
-    all_gone = _ram_line(stats, _CTX, disabled=frozenset({"avail_breakdown", "avail", "shared"}))
-    assert "shared" not in all_gone.plain
-    assert all_gone.plain.startswith("RAM")
-
-
-def test_pressure_steps_drop_elsewhere_then_delta_then_system() -> None:
-    assert _PRESSURE_STEPS == ("elsewhere", "delta", "system")
-    stats = _stats(elsewhere=2 * _MIB)
-
-    none = _pressure_line(stats, _CTX, _BASELINE, _NOW, width=200, disabled=frozenset())
-    assert "elsewhere" in none.plain and "Δ" in none.plain and "system" in none.plain
-
-    elsewhere_gone = _pressure_line(
-        stats, _CTX, _BASELINE, _NOW, width=200, disabled=frozenset({"elsewhere"})
-    )
-    assert "elsewhere" not in elsewhere_gone.plain
-    assert "Δ" in elsewhere_gone.plain and "system" in elsewhere_gone.plain
-
-    delta_gone = _pressure_line(
-        stats, _CTX, _BASELINE, _NOW, width=200, disabled=frozenset({"elsewhere", "delta"})
-    )
-    assert "Δ" not in delta_gone.plain
-    assert "system" in delta_gone.plain
-
-    every_step = frozenset({"elsewhere", "delta", "system"})
-    all_gone = _pressure_line(stats, _CTX, _BASELINE, _NOW, width=200, disabled=every_step)
-    assert "system" not in all_gone.plain
-    assert all_gone.plain.startswith("Pressure")
-
-
-def test_delta_hidden_below_95_columns_even_when_it_would_otherwise_fit() -> None:
-    stats = _stats()  # no elsewhere/system pressure competing for room
-    wide = _render(stats, 94, 40)[2]
-    narrow_ok = _render(stats, 95, 40)[2]
-    assert "Δ" not in wide.plain
-    assert "Δ" in narrow_ok.plain
-
-
-def test_never_drops_ram_swap_or_pressure_label() -> None:
-    stats = _stats(elsewhere=2 * _MIB)
-    lines = _render(stats, 1, 40)
-    assert lines[0].plain.startswith("RAM")
-    assert lines[1].plain.startswith("Swap")
-    assert lines[2].plain.startswith("Pressure")
-
-
-def test_lines_are_no_wrap_with_ellipsis_overflow() -> None:
-    for line in _render(_stats(elsewhere=2 * _MIB), 1, 40):
-        assert line.no_wrap is True
-        assert line.overflow == "ellipsis"
-
-
-# --- format_delta_since -------------------------------------------------------
 
 
 def test_format_delta_since() -> None:
@@ -662,12 +190,52 @@ def test_ansi_theme_colours_are_accepted() -> None:
     assert all(line.plain for line in lines)
 
 
-# --- size-only breakdown padding: numbers inherit the parent's unit ---------
+@pytest.mark.parametrize("width", [40, 60, 80, 120, 160])
+@pytest.mark.parametrize("height", [16, 24, 30, 40])
+@pytest.mark.parametrize("ascii_bars", [False, True])
+def test_grid_preserves_cell_width_and_never_wraps(
+    width: int, height: int, ascii_bars: bool
+) -> None:
+    lines = _render(_ZSWAP_STATS, width, height, ascii_bars=ascii_bars)
+    assert all(line.cell_len <= width and line.no_wrap for line in lines)
+    assert len(lines) == (2 if height < 18 else 4)
+    if ascii_bars:
+        assert all(ord(c) < 128 for line in lines for c in line.plain)
+    if height < 18:
+        assert all(line.plain.endswith(">" if ascii_bars else "…") for line in lines)
 
 
-def test_ram_shared_bracket_inherits_rams_unit_without_repeating_it() -> None:
-    ram, _swap, _pressure = _render(_DEFAULT_STATS, 200, 40)
-    unit = unit_of(_DEFAULT_STATS.mem_total)
-    value = size_in_unit(_DEFAULT_STATS.mem_shared, unit)
-    assert f"({value} shared)" in ram.plain
-    assert f"{unit} shared" not in ram.plain  # the unit isn't repeated
+@pytest.mark.parametrize("width", [60, 80, 120, 160])
+def test_primary_values_and_metadata_share_fixed_columns(width: int) -> None:
+    lines = _render(replace(_ZSWAP_STATS, zswap_max_pool_percent=20), width)
+    value_starts = [
+        line.plain.index(token)
+        for line, token in zip(lines[:3], ("22.1/", "1.0/", "23.3/"), strict=True)
+    ]
+    assert len(set(value_starts)) == 1
+    separators = [line.plain.index("│") for line in lines if "│" in line.plain]
+    assert len(set(separators)) <= 1
+    changed = _render(replace(_ZSWAP_STATS, mem_available=29 * _GIB, mem_shared=12 * _GIB), width)
+    for before, after in zip(lines, changed, strict=True):
+        if "│" in before.plain:
+            assert before.plain.index("│") == after.plain.index("│")
+
+
+def test_shared_is_metadata_and_hidden_marker_only_means_omission() -> None:
+    ram = _render(_DEFAULT_STATS, 160)[0].plain
+    assert ram.index("shared") > ram.index("│")
+    assert not ram.endswith("…")
+    assert _render(_DEFAULT_STATS, 80)[0].plain.endswith("…")
+
+
+def test_unknown_pressure_and_disabled_swap_are_not_zero_usage() -> None:
+    lines = _render(_stats(pressure_some_avg10=None, swap_total=0, swap_free=0), 120)
+    assert "off" in lines[1].plain and "0.0/" not in lines[1].plain
+    assert "unavailable" in lines[2].plain
+
+
+def test_system_and_baseline_positions_do_not_depend_on_values() -> None:
+    first = _render(_DEFAULT_STATS, 160)[2].plain
+    second = _render(_stats(system_ram=32 * _GIB, pressure_some_avg60=1.0), 160)[2].plain
+    for token in ("system", "Δ since", "elsewhere"):
+        assert first.index(token) == second.index(token)
