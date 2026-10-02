@@ -38,11 +38,15 @@ class SystemStats:
     """`/proc/meminfo` `SReclaimable`: kernel caches of file names and inodes
     (dentries, inodes), reclaimable on demand -- the third part of the header
     `avail` breakdown, alongside `free` and `cache`."""
+    swap_in_bytes: int | None = None
+    """Lifetime pswpin pages times kernel page size, or None when unavailable."""
+    swap_out_bytes: int | None = None
+    """Lifetime pswpout pages times kernel page size, including zswap writeback."""
     zswap_enabled: bool = False
     """`/sys/module/zswap/parameters/enabled` is `Y` and `/proc/meminfo` has
     the `Zswap`/`Zswapped` fields (a missing file or missing fields both mean
     "off": no knob, or no support to turn on). Gates the header's whole zswap
-    bracket and the per-app ZSWAP column (SPEC.md "Main view")."""
+    gauge and the per-app ZSWAP column (SPEC.md "Main view")."""
     zswap_pool_bytes: int | None = None
     """`/proc/meminfo` `Zswap`: RAM the compressed pool itself costs. `None`
     whenever `zswap_enabled` is `False`."""
@@ -51,10 +55,10 @@ class SystemStats:
     uncompressed size -- already part of `SWAP` used. `None` whenever
     `zswap_enabled` is `False`."""
     zswap_writeback_bytes: int | None = None
-    """`/proc/vmstat` `zswpwb` (pages written back from the pool to disk
-    swap) times the page size, cumulative since boot. `None` when the kernel
+    """`/proc/vmstat` `zswpwb` (pages written back from the pool to swap
+    devices) times the page size, cumulative since boot. `None` when the kernel
     has no `zswpwb` counter at all. A single snapshot has no rate of its own;
-    the live view turns two ticks of this into the `to disk` MiB/s token,
+    the live view turns two ticks of this into the optional `writeback` rate token,
     and an agent can do the same by diffing two snapshots."""
     zswap_compressor: str | None = None
     """`/sys/module/zswap/parameters/compressor` (e.g. `lzo`, `zstd`). `None`

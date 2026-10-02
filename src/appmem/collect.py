@@ -103,7 +103,7 @@ class Unit:
 # --- system ---------------------------------------------------------------
 
 
-def read_system(root: Path, uid: int) -> SystemStats:
+def read_system(root: Path, uid: int, *, page_size: int | None = None) -> SystemStats:
     """Read system-wide memory/swap/pressure, the hidden system.slice total and
     the `elsewhere` figure (SPEC.md "Behaviour details"). `uid` locates the
     user tree for the `elsewhere` subtraction."""
@@ -121,7 +121,8 @@ def read_system(root: Path, uid: int) -> SystemStats:
         and "Zswap" in meminfo
         and "Zswapped" in meminfo
     )
-    zswpwb = _read_vmstat_zswpwb(root / "proc" / "vmstat")
+    vmstat = _read_vmstat(root / "proc" / "vmstat")
+    page_size = os.sysconf("SC_PAGE_SIZE") if page_size is None else page_size
     zswap_params_dir = root / "sys" / "module" / "zswap" / "parameters"
     zswap_pool_bytes = meminfo.get("Zswap") if zswap_enabled else None
     zswapped_bytes = meminfo.get("Zswapped") if zswap_enabled else None
@@ -144,7 +145,9 @@ def read_system(root: Path, uid: int) -> SystemStats:
         zswap_enabled=zswap_enabled,
         zswap_pool_bytes=zswap_pool_bytes,
         zswapped_bytes=zswapped_bytes,
-        zswap_writeback_bytes=(zswpwb * os.sysconf("SC_PAGE_SIZE") if zswpwb is not None else None),
+        zswap_writeback_bytes=_counter_bytes(vmstat, "zswpwb", page_size),
+        swap_in_bytes=_counter_bytes(vmstat, "pswpin", page_size),
+        swap_out_bytes=_counter_bytes(vmstat, "pswpout", page_size),
         zswap_compressor=(
             _read_zswap_str_param(zswap_params_dir / "compressor") if zswap_enabled else None
         ),
@@ -244,23 +247,31 @@ def _read_zswap_int_param(path: Path) -> int | None:
     return int(value) if value.lstrip("-").isdigit() else None
 
 
-def _read_vmstat_zswpwb(path: Path) -> int | None:
-    """The `zswpwb` counter from `/proc/vmstat`: pages written back from the
-    zswap pool to disk swap, cumulative since boot. `None` when the file or
-    the line is missing (no zswap support).
+def _counter_bytes(values: dict[str, int], key: str, page_size: int) -> int | None:
+    value = values.get(key)
+    return value * page_size if value is not None and page_size > 0 else None
 
-    `until_eof=True`: `/proc/vmstat` is a multi-record seq_file, served one
-    page per `read()` regardless of request size (`_read_small_file_bytes`),
-    and `zswpwb` sits well past the first page on a real machine."""
+
+def _read_vmstat(path: Path) -> dict[str, int]:
+    """Read page counters once, through EOF for multi-record seq_file responses."""
     try:
         content = _read_small_file(str(path), until_eof=True)
-    except FileNotFoundError:
-        return None
+    except OSError:
+        return {}
+    values: dict[str, int] = {}
     for line in content.splitlines():
-        key, _, value = line.partition(" ")
-        if key == "zswpwb" and value.strip().isdigit():
-            return int(value.strip())
-    return None
+        fields = line.split()
+        if (
+            len(fields) == 2
+            and fields[0] in {"pswpin", "pswpout", "zswpwb"}
+            and fields[1].isascii()
+            and fields[1].isdigit()
+        ):
+            try:
+                values[fields[0]] = int(fields[1])
+            except ValueError:
+                continue  # oversized malformed decimal is unavailable
+    return values
 
 
 # --- finding units ----------------------------------------------------------
@@ -500,7 +511,7 @@ def _read_small_file_bytes(path: str, *, until_eof: bool = False) -> bytes:
       `read()` call, no matter how big a buffer is requested; a short first
       read here does not mean EOF. A single read of one of these silently
       truncates instead of raising, since the file itself isn't exhausted,
-      only this read of it. Their two callers (`_read_vmstat_zswpwb`,
+      only this read of it. Their two callers (`_read_vmstat`,
       `_iter_procs_content`) pass `until_eof=True`, which instead loops until
       an empty read confirms EOF: open/read/read/close for a file under one
       page (the same as every read cost before this split), plus one read per

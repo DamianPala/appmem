@@ -167,6 +167,8 @@ SNAPSHOT_OUTPUT: dict[str, object] = {
                 "ram_cache_bytes",
                 "ram_slab_bytes",
                 "ram_shared_bytes",
+                "swap_in_bytes",
+                "swap_out_bytes",
                 "swap_total_bytes",
                 "swap_used_bytes",
                 "system_services_ram_bytes",
@@ -225,6 +227,23 @@ SNAPSHOT_OUTPUT: dict[str, object] = {
                         "swappable but not droppable by the kernel."
                     ),
                 },
+                "swap_in_bytes": {
+                    "type": ["integer", "null"],
+                    "description": (
+                        "Lifetime since boot: /proc/vmstat pswpin times "
+                        "SC_PAGE_SIZE. Swap device reads, including zram; "
+                        "successful zswap hits excluded. null when unavailable."
+                    ),
+                },
+                "swap_out_bytes": {
+                    "type": ["integer", "null"],
+                    "description": (
+                        "Lifetime since boot: /proc/vmstat pswpout times "
+                        "SC_PAGE_SIZE. Swap device writes, including zram and "
+                        "zswap writeback; not SSD throughput. null when "
+                        "unavailable."
+                    ),
+                },
                 "swap_total_bytes": {
                     "type": "integer",
                     "description": "Total configured swap space.",
@@ -279,7 +298,7 @@ SNAPSHOT_OUTPUT: dict[str, object] = {
                 "zswap_writeback_bytes": {
                     "type": ["integer", "null"],
                     "description": (
-                        "Pages written back from the zswap pool to disk swap, cumulative "
+                        "Pages written back from the zswap pool to swap devices, cumulative "
                         "since boot; one sample has no rate, so diff two snapshots. null "
                         "when the kernel has no writeback counter."
                     ),

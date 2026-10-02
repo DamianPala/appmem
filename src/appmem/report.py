@@ -77,6 +77,8 @@ def _system_dict(stats: SystemStats) -> dict[str, Any]:
         "ram_slab_bytes": stats.mem_slab,
         "ram_shared_bytes": stats.mem_shared,
         "swap_total_bytes": stats.swap_total,
+        "swap_in_bytes": stats.swap_in_bytes,
+        "swap_out_bytes": stats.swap_out_bytes,
         "swap_used_bytes": stats.swap_total - stats.swap_free,
         "system_services_ram_bytes": stats.system_ram,
         "system_services_swap_bytes": stats.system_swap,

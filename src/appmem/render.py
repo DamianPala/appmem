@@ -71,7 +71,7 @@ def _pressure_line(pressure: dict[str, Any] | None) -> str:
 
 def _swap_line_part(system: dict[str, Any]) -> str:
     swap = f"Swap {format_pair(system['swap_used_bytes'], system['swap_total_bytes'])}"
-    # No `to disk` here: a one-shot snapshot has no rate to show, only the
+    # No activity rates here: a one-shot snapshot has no rate to show, only the
     # cumulative `zswap_writeback_bytes` (SPEC.md "Main view" note on
     # `zswap_writeback_bytes`). Same bracket text as the live header
     # (`format_zswap_part`), so the Swap part reads the same everywhere.

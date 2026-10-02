@@ -82,12 +82,14 @@ done:
 
 int main(int argc, char **argv) {
     if (argc == 2 && strcmp(argv[1], "abi") == 0) {
-        printf("%zu %zu %zu %zu %zu %zu\n",
+        printf("%zu %zu %zu %zu %zu %zu %zu %zu\n",
                sizeof(struct proc_bsdshortinfo), sizeof(struct rusage_info_v4),
                offsetof(struct rusage_info_v4, ri_phys_footprint),
                sizeof(struct vm_statistics64),
                offsetof(struct vm_statistics64, total_uncompressed_pages_in_compressor),
-               sizeof(struct xsw_usage));
+               sizeof(struct xsw_usage),
+               offsetof(struct vm_statistics64, swapins),
+               offsetof(struct vm_statistics64, swapouts));
         return 0;
     }
     if (argc == 3 && strcmp(argv[1], "parent") == 0) return proxy_child(argv[2]);

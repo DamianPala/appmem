@@ -34,6 +34,7 @@ from appmem.backend import Backend
 from appmem.collect import CgroupUnavailableError, MemoryStatUnavailableError
 from appmem.fmt import format_delta, size, truncate_name
 from appmem.model import AppStats, SystemStats
+from appmem.rate import Sample, update_rate
 from appmem.render import escape_control_chars
 from appmem.ui.header import ThemeColors, render_header
 from appmem.ui.layout import build_footer
@@ -54,7 +55,6 @@ from appmem.ui.screens.help import HelpScreen
 from appmem.ui.screens.live import LiveScreen
 from appmem.ui.screens.processes import ProcessesScreen
 from appmem.ui.table import RowTable
-from appmem.writeback import Sample, update_writeback
 
 # Key caps (reverse video); at full width the plain text is exactly
 # " r s t d z sort  enter procs  x system  c cache  w zswap  b reset Δ  T theme
@@ -297,7 +297,8 @@ class MainScreen(LiveScreen):
     # over from the header lines and the footer, regardless of row count.
     DEFAULT_CSS = """
     MainScreen #table { height: 1fr; }
-    MainScreen #header1, MainScreen #header2, MainScreen #header3, MainScreen #footer {
+    MainScreen #header1, MainScreen #header2, MainScreen #header3,
+    MainScreen #header4, MainScreen #footer {
         text-wrap: nowrap;
         text-overflow: ellipsis;
     }
@@ -335,6 +336,10 @@ class MainScreen(LiveScreen):
         (unknown) until the first tick lands."""
         self._writeback_history: tuple[Sample, ...] = ()
         self._writeback_rate: int | None = None
+        self._swap_in_history: tuple[Sample, ...] = ()
+        self._swap_out_history: tuple[Sample, ...] = ()
+        self._swap_in_rate: int | None = None
+        self._swap_out_rate: int | None = None
         self._sort_key: SortKey = DEFAULT_SORT_KEY
         self._sort_reverse = DEFAULT_SORT_REVERSE
         self._baseline: dict[tuple[str, str], AppStats] = {}
@@ -375,6 +380,7 @@ class MainScreen(LiveScreen):
         yield Static(id="header1")
         yield Static(id="header2")
         yield Static(id="header3")
+        yield Static(id="header4")
         table: RowTable = RowTable(id="table")
         self._rebuild_columns(table)
         yield table
@@ -614,8 +620,19 @@ class MainScreen(LiveScreen):
 
     def _update_header(self, stats: SystemStats) -> None:
         self._last_stats = stats
-        self._writeback_history, self._writeback_rate = update_writeback(
-            self._writeback_history, time.monotonic(), stats.zswap_writeback_bytes
+        now, wall = time.monotonic(), time.time()
+        self._writeback_history, self._writeback_rate = update_rate(
+            self._writeback_history,
+            now,
+            stats.zswap_writeback_bytes,
+            wall=wall,
+            interval=self._interval,
+        )
+        self._swap_in_history, self._swap_in_rate = update_rate(
+            self._swap_in_history, now, stats.swap_in_bytes, wall=wall, interval=self._interval
+        )
+        self._swap_out_history, self._swap_out_rate = update_rate(
+            self._swap_out_history, now, stats.swap_out_bytes, wall=wall, interval=self._interval
         )
         if stats.zswap_enabled != self._zswap_enabled:
             # A footer item (and `w`'s effect) appears or disappears with it:
@@ -649,7 +666,7 @@ class MainScreen(LiveScreen):
             primary=_bar_fill_colour(theme),
         )
 
-    _HEADER_IDS: ClassVar[tuple[str, ...]] = ("#header1", "#header2", "#header3")
+    _HEADER_IDS: ClassVar[tuple[str, ...]] = ("#header1", "#header2", "#header3", "#header4")
 
     def _update_header_lines(self) -> None:
         if self._last_stats is None:
@@ -662,6 +679,8 @@ class MainScreen(LiveScreen):
             baseline_time=self._baseline_time,
             now=datetime.now(),
             writeback_rate=self._writeback_rate,
+            swap_in_rate=self._swap_in_rate,
+            swap_out_rate=self._swap_out_rate,
             ascii_bars=self._ascii_bars,
         )
         for widget_id, content in zip(self._HEADER_IDS, lines, strict=False):

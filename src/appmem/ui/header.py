@@ -1,23 +1,4 @@
-"""Main-view header: three lines, RAM/Swap/Pressure, each with a
-used/avail (or used/free) gauge bar (SPEC.md "Main view").
-
-Layout is decided from the terminal size and a handful of state flags only
-(zswap on, writeback active, `elsewhere` >= 1 MiB, pressure readable, Swap
-off) -- never from the current values, so nothing jitters tick to tick. Two
-mechanisms make that true:
-
-- Every figure that can change width (a used/total pair, a breakdown
-  number, the zswap pool, `to disk`'s rate, `elsewhere`'s size) is padded to
-  a fixed slot: the width its *total* would need in the worst case for a
-  figure bounded by one, or a literal worst-case string for one that isn't
-  (a rate has no natural total to bound it). A value crossing a digit
-  boundary (`9.9` -> `10.0`) never shifts anything to its right.
-- Which parts show is a plain "keep dropping the next-lowest-priority part
-  until it fits" pass per line, using those same fixed slot widths for the
-  fit check -- so the same combination of parts is chosen at a given width
-  regardless of the actual numbers, and dropping never has to overshoot and
-  refill.
-"""
+"""Responsive host gauges with neutral session swap activity and physical Zswap."""
 
 from __future__ import annotations
 
@@ -31,7 +12,6 @@ from appmem.fmt import (
     format_elapsed,
     format_pair,
     format_rate,
-    format_zswap_part,
     pressure_word,
     size,
     size_in_unit,
@@ -48,17 +28,13 @@ _LABEL_WIDTH = 10
 # Fixed-width slots for parts whose content never depends on machine size,
 # so their literal worst-case text is known up front (SPEC.md "Main view"):
 # `none (was 99.9 %)` (17), `system 999.9 GiB [x]`-ish (19), `Δ since
-# HH:MM (elapsed)` with elapsed up to 6 cells (22), `to disk 1023 MiB/s`
-# (19), `elsewhere ` plus an 8-cell value (18).
+# HH:MM (elapsed)` with elapsed up to 6 cells (22), `elsewhere ` plus
+# an 8-cell value (18).
 _PRESSURE_SLOT = len("none (was 99.9 %)")  # 17: the qualifier's own worst case
 _SYSTEM_SLOT = 19
 _DELTA_SLOT = 22
-_WRITEBACK_SLOT = len("to disk 1023 MiB/s")
-_ELSEWHERE_VALUE_SLOT = 8  # "1023 MiB" / "99.9 GiB"-ish, same ceiling as `to disk`'s rate
+_ELSEWHERE_VALUE_SLOT = 8  # "1023 MiB" / "99.9 GiB"-ish
 _ELSEWHERE_SLOT = len("elsewhere ") + _ELSEWHERE_VALUE_SLOT
-# A zswap pool is a RAM cost, so its worst case comes from RAM's own total,
-# not Swap's -- at least this flat minimum for a small machine.
-_ZSWAP_POOL_MIN_SLOT = 8  # "1023 MiB" / "99.9 GiB"-ish
 # The H < 18, W >= 70 two-line form's pressure block, right of the RAM line.
 _PRESSURE_BLOCK_SLOT = len("Pressure ") + _PRESSURE_SLOT  # 26
 
@@ -84,15 +60,14 @@ _MIN_WIDTH_FOR_TEXT_TWO_LINE = 70
 
 # Per-line drop order, lowest priority first (SPEC.md "Main view"). RAM's
 # `avail_breakdown` step removes only the `(free, cache, slab)` bracket,
-# keeping bare `avail`; Swap's `zswap_long` step shortens the zswap bracket
-# to `(X zswapped)` before `zswap` drops it entirely.
+# keeping bare `avail`; Swap can drop the optional repeated zswap amount.
 _RAM_STEPS: tuple[str, ...] = ("avail_breakdown", "avail", "shared")
-_SWAP_STEPS: tuple[str, ...] = ("zswap_long", "zswap")
+_SWAP_STEPS: tuple[str, ...] = ("zswap",)
 _PRESSURE_STEPS: tuple[str, ...] = ("elsewhere", "delta", "system")
 _TWO_LINE_SWAP_STEPS: tuple[str, ...] = (*_SWAP_STEPS, "delta", "system")
-# H < 18, W < 70 compact form (SPEC.md "Main view"): "Pressure …, then to
-# disk …, then system, as they fit" -- system is the first to go.
-_COMPACT_STEPS: tuple[str, ...] = ("system", "to_disk")
+# H < 18, W < 70 compact form (SPEC.md "Main view"): "Pressure …, then
+# system, as they fit" -- system is the first to go.
+_COMPACT_STEPS: tuple[str, ...] = ("system",)
 
 
 @dataclass(frozen=True)
@@ -123,6 +98,9 @@ class _RenderCtx:
     bar_width: int
     ascii_bars: bool
     writeback_rate: int | None
+    swap_in_rate: int | None = None
+    swap_out_rate: int | None = None
+    width: int = 120
 
 
 def _bar_width(width: int) -> int:
@@ -233,55 +211,68 @@ def _swap_style(used: int, total: int, colors: ThemeColors) -> str | None:
     return None
 
 
-def _zswap_pool_slot(mem_total: int) -> int:
-    return max(_ZSWAP_POOL_MIN_SLOT, len(size(mem_total)))
-
-
-def _zswap_bracket(stats: SystemStats, unit: str, disabled: frozenset[str]) -> str | None:
-    # Same "pad the whole `(...)` slot" rule as `_shared_bracket`.
-    if not stats.zswap_enabled or stats.zswapped_bytes is None or stats.zswap_pool_bytes is None:
+def _writeback_token(writeback_rate: int | None) -> Text | None:
+    if writeback_rate is None:
         return None
-    if "zswap" in disabled:
-        return None
-    worst_zswapped = size_in_unit(stats.swap_total, unit)
-    pool_slot = _zswap_pool_slot(stats.mem_total)
-    if "zswap_long" in disabled:
-        text = format_zswap_part(stats.zswapped_bytes, stats.zswap_pool_bytes, unit, short=True)
-        return f"({text})".ljust(len(f"({worst_zswapped} zswapped)"))
-    text = format_zswap_part(stats.zswapped_bytes, stats.zswap_pool_bytes, unit)
-    # The pool's own worst-case width, not its current value -- the pool
-    # changes every tick same as anything else here.
-    worst_text = f"({worst_zswapped} zswapped into {'0' * pool_slot} RAM)"
-    return f"({text})".ljust(len(worst_text))
+    return Text(f"writeback {format_rate(writeback_rate)}")
 
 
-def _writeback_token(writeback_rate: int | None, colors: ThemeColors) -> Text | None:
-    if writeback_rate is None or writeback_rate <= 0:
-        return None
-    text = f"to disk {format_rate(writeback_rate)}".ljust(_WRITEBACK_SLOT)
-    return Text(text, style=colors.warning)
+def activity_token(direction: str, rate: int | None, *, ascii_bars: bool) -> Text:
+    """Reserve the same slot for unknown, zero, and measured activity."""
+    value = ("?" if ascii_bars else "—") if rate is None else format_rate(rate)
+    return Text(f"{direction} {value}".ljust(len(direction) + 12))
 
 
 def _swap_line(stats: SystemStats, ctx: _RenderCtx, *, disabled: frozenset[str]) -> Text:
-    label = Text("Swap".ljust(_LABEL_WIDTH))
+    text = Text("Swap".ljust(_LABEL_WIDTH))
     if stats.swap_total == 0:
-        return label + Text("off")
-    used = stats.swap_total - stats.swap_free
-    unit = unit_of(stats.swap_total)
-    text = label
-    if ctx.bar_width > 0:
-        bar = _bar_text(
-            used, stats.swap_total, ctx.bar_width, ctx.colors, ascii_bars=ctx.ascii_bars
-        )
-        text = text + bar + Text("  ")
-    style = _swap_style(used, stats.swap_total, ctx.colors)
-    text = text + Text(_pair_slot(used, stats.swap_total), style=style or "") + Text(" used")
-    bracket = _zswap_bracket(stats, unit, disabled)
-    if bracket is not None:
-        text = text + Text(" ") + Text(bracket)
-    wb_token = _writeback_token(ctx.writeback_rate, ctx.colors)
-    if wb_token is not None:
-        text = text + Text("   ") + wb_token
+        text += Text("off".ljust(20))
+    else:
+        used = stats.swap_total - stats.swap_free
+        if ctx.bar_width > 0:
+            text += _bar_text(
+                used, stats.swap_total, ctx.bar_width, ctx.colors, ascii_bars=ctx.ascii_bars
+            ) + Text("  ")
+        text += Text(
+            _pair_slot(used, stats.swap_total),
+            style=_swap_style(used, stats.swap_total, ctx.colors) or "",
+        ) + Text(" used")
+    if ctx.width >= 80:
+        text += Text("  ") + activity_token("in", ctx.swap_in_rate, ascii_bars=ctx.ascii_bars)
+        text += Text(" ") + activity_token("out", ctx.swap_out_rate, ascii_bars=ctx.ascii_bars)
+    if ctx.width >= 160 and "zswap" not in disabled and stats.zswapped_bytes is not None:
+        text += Text(f" ({size(stats.zswapped_bytes)} in zswap)")
+    return text
+
+
+def _zswap_line(stats: SystemStats, ctx: _RenderCtx) -> Text:
+    pool = stats.zswap_pool_bytes
+    assert pool is not None
+    percent = stats.zswap_max_pool_percent
+    limit = stats.mem_total * percent // 100 if type(percent) is int and percent >= 0 else None
+    text = Text("Zswap".ljust(_LABEL_WIDTH))
+    if ctx.bar_width:
+        text += (
+            Text("-" * ctx.bar_width, style="dim")
+            if not limit
+            else _bar_text(pool, limit, ctx.bar_width, ctx.colors, ascii_bars=ctx.ascii_bars)
+        ) + Text("  ")
+    value = f"{size(pool)}/? RAM" if limit is None else format_pair(pool, limit) + " RAM"
+    text += Text(value.ljust(20))
+    text += Text(" over-limit" if limit is not None and pool > limit else " " * 11)
+    if ctx.width >= 80:
+        text += Text(f"  holds {size(stats.zswapped_bytes or 0)}".ljust(19))
+    if ctx.width >= 120:
+        ratio = stats.zswap_compression_ratio
+        ratio_text = f"({ratio:.1f}:1)" if ratio is not None else "(ratio ?)"
+        text += Text(f" {ratio_text}".ljust(13))
+        text += Text(" limit ?" if limit is None else f" limit {percent}% of RAM")
+    if ctx.width >= 160:
+        token = _writeback_token(ctx.writeback_rate)
+        if token is not None:
+            text += Text("  ") + token
+    text.no_wrap = True
+    text.overflow = "ellipsis"
     return text
 
 
@@ -391,6 +382,13 @@ def _three_line_header(
         _PRESSURE_STEPS,
         width,
     )
+    if (
+        stats.zswap_enabled
+        and stats.zswap_pool_bytes is not None
+        and stats.zswapped_bytes is not None
+        and width >= 80
+    ):
+        return [ram, _zswap_line(stats, ctx), swap, pressure]
     return [ram, swap, pressure]
 
 
@@ -447,13 +445,10 @@ def _compact_ram_swap_line(stats: SystemStats) -> Text:
 def _compact_status_line(stats: SystemStats, ctx: _RenderCtx, *, disabled: frozenset[str]) -> Text:
     word = _pressure_word_text(stats, ctx.colors)
     # Same reserved slot as the Pressure line: the word never moves what
-    # follows it, and `to disk`/`system` still fit under it at every width
+    # follows it, and `system` still fit under it at every width
     # this form is used at (9-cell label + 17 + 3 + 19 = 48 at most).
     pad = " " * max(_PRESSURE_SLOT - word.cell_len, 0)
     text = Text("Pressure ") + word + Text(pad)
-    wb_token = _writeback_token(ctx.writeback_rate, ctx.colors)
-    if wb_token is not None and "to_disk" not in disabled:
-        text = text + Text("   ") + wb_token
     if "system" not in disabled:
         text = text + Text("   ") + Text(_system_token(stats).ljust(_SYSTEM_SLOT))
     return text
@@ -461,7 +456,7 @@ def _compact_status_line(stats: SystemStats, ctx: _RenderCtx, *, disabled: froze
 
 def _compact_header(stats: SystemStats, width: int, ctx: _RenderCtx) -> list[Text]:
     # H < 18, W < 70 (SPEC.md "Main view"): bare RAM/Swap pairs, then
-    # pressure/to-disk/system "as they fit" -- this shape never draws a bar,
+    # pressure/system "as they fit" -- this shape never draws a bar,
     # no Δ, no elsewhere.
     line1 = _compact_ram_swap_line(stats)
     line1.no_wrap = True
@@ -472,7 +467,7 @@ def _compact_header(stats: SystemStats, width: int, ctx: _RenderCtx) -> list[Tex
     return [line1, line2]
 
 
-def render_header(
+def render_header(  # noqa: PLR0913 - independent keyword-only render inputs
     stats: SystemStats,
     width: int,
     height: int,
@@ -481,10 +476,13 @@ def render_header(
     baseline_time: datetime,
     now: datetime,
     writeback_rate: int | None = None,
+    swap_in_rate: int | None = None,
+    swap_out_rate: int | None = None,
     ascii_bars: bool = False,
 ) -> list[Text]:
     """The main-view header, 2 or 3 `Text` lines depending on the terminal's
-    height and width (SPEC.md "Main view"):
+    height and width (SPEC.md "Main view"). Readable enabled Zswap adds a
+    physical pool row at height >= 18 and width >= 80:
 
     - `height >= 18`: three lines, RAM / Swap / Pressure, each with its own
       gauge bar and its own priority-drop rules.
@@ -493,7 +491,7 @@ def render_header(
       70 columns this form's own worst case can't promise the Pressure word
       won't be cropped, so the compact form takes over instead.
     - `height < 18`, `width < 70`: two bare lines, no bars, no Δ, no
-      `elsewhere` -- just RAM/Swap pairs and pressure/`to disk`/`system` as
+      `elsewhere` -- just RAM/Swap pairs and pressure/`system` as
       they fit.
 
     Never fewer than two lines. `colors` supplies the active theme's
@@ -506,6 +504,9 @@ def render_header(
         bar_width=_bar_width(width),
         ascii_bars=ascii_bars,
         writeback_rate=writeback_rate,
+        swap_in_rate=swap_in_rate,
+        swap_out_rate=swap_out_rate,
+        width=width,
     )
     if height >= _MIN_HEIGHT_FOR_THREE_LINES:
         return _three_line_header(stats, width, ctx, baseline_time, now)

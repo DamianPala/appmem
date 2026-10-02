@@ -54,7 +54,9 @@ On macOS 15+ Apple Silicon, use the [Mac workflow](#mac-workflow) below. The Lin
 - Ready commands: `systemctl --user stop 'UNIT'` for a unit from `units` of a `scope: "user"` app; `sudo systemctl stop 'UNIT'` for `scope: "system"`; `kill PID` for one process. Stopping a terminal's main unit closes every window in it, so prefer `kill PID` for the specific command or ask the user to close that tab.
 - Don't recommend `swapoff` or `vm.swappiness` changes from one snapshot: `swapoff` needs free RAM for everything paged out, and under `none` swap is doing its job.
 - `high` with most swap in one app: free that app. `high` with swap spread thin and `ram_available_bytes` near zero: the machine needs fewer things running or more RAM.
-- With zswap on, `zswap_writeback_bytes` growing between two snapshots means the compressed pool is overflowing to the disk swap, which is slow: that is worth naming.
+- `swap_in_bytes`/`swap_out_bytes` are independently nullable lifetime host counters. Linux counts swap-device pages × page size (zram included, successful zswap hits excluded); macOS counts page-rounded compressed segment transfers, not logical app bytes. Neither is SSD throughput. TUI rates need session history; one-shot snapshots do not provide them.
+- Zswap holds logical swap data compressed in physical RAM. Swap used already includes the pre-compression size, RAM used already includes the pool after compression. The table ZSWAP is logical; the gauge is physical against an approximate policy limit, not preallocated RAM or extra swap capacity.
+- `zswap_writeback_bytes` growth is pool writeback to swap devices, already included in swap out. Never sum these counters.
 
 ## Errors
 

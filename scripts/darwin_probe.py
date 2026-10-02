@@ -86,6 +86,8 @@ def abi(binary: Path) -> dict[str, int]:
         "vm_sdk_size",
         "vm_logical_offset",
         "swap_size",
+        "vm_swapins_offset",
+        "vm_swapouts_offset",
     )
     actual: dict[str, int] = dict(zip(keys, map(int, output.split()), strict=True))
     validate_sdk_abi(actual)

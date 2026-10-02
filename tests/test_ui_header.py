@@ -15,23 +15,17 @@ from rich.text import Text
 from textual.theme import BUILTIN_THEMES
 
 from appmem.collect import SystemStats
-from appmem.fmt import format_pair, format_zswap_part, size_in_unit, unit_of
+from appmem.fmt import format_pair, size_in_unit, unit_of
 from appmem.ui.header import (
-    _COMPACT_STEPS,  # pyright: ignore[reportPrivateUsage]
     _MIN_WIDTH_FOR_TEXT_TWO_LINE,  # pyright: ignore[reportPrivateUsage]
     _PRESSURE_STEPS,  # pyright: ignore[reportPrivateUsage]
     _RAM_STEPS,  # pyright: ignore[reportPrivateUsage]
-    _SWAP_STEPS,  # pyright: ignore[reportPrivateUsage]
-    _TWO_LINE_SWAP_STEPS,  # pyright: ignore[reportPrivateUsage]
     ThemeColors,
     _bar_glyphs,  # pyright: ignore[reportPrivateUsage]
     _bar_width,  # pyright: ignore[reportPrivateUsage]
-    _compact_status_line,  # pyright: ignore[reportPrivateUsage]
     _pressure_line,  # pyright: ignore[reportPrivateUsage]
     _ram_line,  # pyright: ignore[reportPrivateUsage]
     _RenderCtx,  # pyright: ignore[reportPrivateUsage]
-    _swap_line,  # pyright: ignore[reportPrivateUsage]
-    _two_line_swap,  # pyright: ignore[reportPrivateUsage]
     format_delta_since,
     render_header,
 )
@@ -191,7 +185,7 @@ def test_lines_never_exceed_their_width_across_sizes_and_flags() -> None:
         for stats in (_DEFAULT_STATS, _ZSWAP_STATS, _stats(swap_total=0, swap_free=0)):
             for rate in (None, 12 * _MIB):
                 lines = _render(stats, width, height, writeback_rate=rate)
-                assert 2 <= len(lines) <= 3
+                assert 2 <= len(lines) <= 4
                 for line in lines:
                     assert line.cell_len <= width, (width, height, line.plain)
 
@@ -228,43 +222,9 @@ def test_compact_form_keeps_bare_ram_swap_and_pressure() -> None:
 # --- flags decide content, not values ----------------------------------------
 
 
-def test_zswap_bracket_shown_only_when_enabled() -> None:
-    _ram, swap, _pressure = _render(_ZSWAP_STATS, 200, 40)
-    assert "zswapped" in swap.plain
-
-    _ram2, swap_off, _p2 = _render(_DEFAULT_STATS, 200, 40)
-    assert "zswapped" not in swap_off.plain
-
-
-def test_zswap_long_form_wording() -> None:
-    _ram, swap, _pressure = _render(_ZSWAP_STATS, 200, 40)
-    assert _ZSWAP_STATS.zswapped_bytes is not None
-    assert _ZSWAP_STATS.zswap_pool_bytes is not None
-    unit = unit_of(_ZSWAP_STATS.swap_total)
-    expected = format_zswap_part(_ZSWAP_STATS.zswapped_bytes, _ZSWAP_STATS.zswap_pool_bytes, unit)
-    assert expected in swap.plain
-    assert "into 1.0 GiB RAM" in swap.plain
-
-
 def test_swap_off_has_no_bar_and_no_pair() -> None:
     _ram, swap, _pressure = _render(_stats(swap_total=0, swap_free=0), 200, 40)
-    assert swap.plain == "Swap      off"
-
-
-def test_to_disk_token_shown_while_writeback_rate_positive() -> None:
-    _ram, swap, _pressure = _render(_ZSWAP_STATS, 200, 40, writeback_rate=12 * _MIB)
-    assert "to disk 12 MiB/s" in swap.plain
-
-
-def test_to_disk_token_hidden_when_rate_is_zero_or_none() -> None:
-    for rate in (None, 0):
-        _ram, swap, _pressure = _render(_ZSWAP_STATS, 200, 40, writeback_rate=rate)
-        assert "to disk" not in swap.plain
-
-
-def test_to_disk_styled_with_the_theme_warning_colour() -> None:
-    _ram, swap, _pressure = _render(_ZSWAP_STATS, 200, 40, writeback_rate=12 * _MIB)
-    assert "yellow" in _style_at(swap, "to disk 12 MiB/s")
+    assert swap.plain.startswith("Swap      off")
 
 
 def test_elsewhere_shown_above_threshold_hidden_below_and_when_none() -> None:
@@ -374,37 +334,13 @@ def test_ram_shared_jitter_does_not_move_avail() -> None:
     assert small.plain.index("avail") == big.plain.index("avail")
 
 
-def test_zswap_pool_jitter_does_not_move_to_disk() -> None:
-    small_pool = replace(_ZSWAP_STATS, zswap_pool_bytes=9 * _MIB)
-    big_pool = replace(_ZSWAP_STATS, zswap_pool_bytes=int(1.2 * _GIB))  # crosses MiB -> GiB
-    swap_small = _render(small_pool, 200, 40, writeback_rate=12 * _MIB)[1]
-    swap_big = _render(big_pool, 200, 40, writeback_rate=12 * _MIB)[1]
-    assert swap_small.cell_len == swap_big.cell_len
-    assert swap_small.plain.index("to disk") == swap_big.plain.index("to disk")
-
-
-def test_zswapped_jitter_does_not_move_to_disk() -> None:
-    small = replace(_ZSWAP_STATS, zswapped_bytes=int(0.1 * _GIB))
-    big = replace(_ZSWAP_STATS, zswapped_bytes=int(20.0 * _GIB))
-    swap_small = _render(small, 200, 40, writeback_rate=12 * _MIB)[1]
-    swap_big = _render(big, 200, 40, writeback_rate=12 * _MIB)[1]
-    assert swap_small.plain.index("to disk") == swap_big.plain.index("to disk")
-
-
-def test_writeback_rate_jitter_does_not_flip_zswap_bracket_form() -> None:
-    # At ~98 columns an unpadded rate would pick the long zswap form for
-    # `12 MiB/s` and the short one for `150 MiB/s` or `900 KiB/s`: the
-    # long/short choice must depend only on the width.
-    forms = {
-        "into" in _render(_ZSWAP_STATS, 98, 40, writeback_rate=rate)[1].plain
-        for rate in (
-            5 * 1024,
-            900 * 1024,
-            12 * _MIB,
-            150 * _MIB,
-        )
-    }
-    assert len(forms) == 1
+def test_writeback_rate_does_not_change_compact_zswap_layout() -> None:
+    lines = [
+        _render(_ZSWAP_STATS, 98, 40, writeback_rate=rate)[1].plain
+        for rate in (None, 0, 900 * 1024, 150 * _MIB)
+    ]
+    assert len(set(lines)) == 1
+    assert "holds" in lines[0] and "writeback" not in lines[0]
 
 
 def test_elsewhere_presence_does_not_depend_on_its_own_size() -> None:
@@ -545,7 +481,8 @@ def test_pressure_system_aligns_with_the_ram_swap_pair_column() -> None:
         for base in (_DEFAULT_STATS, _ZSWAP_STATS):
             for fields in _PRESSURE_LEVELS.values():
                 stats = replace(base, **fields)
-                ram, _swap, pressure = _render(stats, width, 40)
+                lines = _render(stats, width, 40)
+                ram, pressure = lines[0], lines[-1]
                 assert pressure.plain.index("system") == _ram_pair_column(ram, stats), (
                     width,
                     fields,
@@ -581,7 +518,7 @@ def test_compact_form_values_never_move_or_drop_parts() -> None:
         lines_varied = _render(varied, width, 15, writeback_rate=900 * 1024)
         for one, other in zip(lines_base, lines_varied, strict=True):
             assert one.cell_len == other.cell_len, (width, one.plain, other.plain)
-            for part in ("Swap", "to disk", "system"):
+            for part in ("Swap", "system"):
                 assert one.plain.find(part) == other.plain.find(part), (width, part)
 
 
@@ -625,22 +562,6 @@ def test_ram_steps_drop_breakdown_then_avail_then_shared() -> None:
     assert all_gone.plain.startswith("RAM")
 
 
-def test_swap_steps_drop_long_zswap_then_short_then_gone() -> None:
-    assert _SWAP_STEPS == ("zswap_long", "zswap")
-    stats = _ZSWAP_STATS
-
-    none = _swap_line(stats, _CTX, disabled=frozenset())
-    assert "into" in none.plain and "zswapped" in none.plain
-
-    long_gone = _swap_line(stats, _CTX, disabled=frozenset({"zswap_long"}))
-    assert "into" not in long_gone.plain
-    assert "zswapped" in long_gone.plain
-
-    all_gone = _swap_line(stats, _CTX, disabled=frozenset({"zswap_long", "zswap"}))
-    assert "zswapped" not in all_gone.plain
-    assert all_gone.plain.startswith("Swap")
-
-
 def test_pressure_steps_drop_elsewhere_then_delta_then_system() -> None:
     assert _PRESSURE_STEPS == ("elsewhere", "delta", "system")
     stats = _stats(elsewhere=2 * _MIB)
@@ -663,63 +584,6 @@ def test_pressure_steps_drop_elsewhere_then_delta_then_system() -> None:
     every_step = frozenset({"elsewhere", "delta", "system"})
     all_gone = _pressure_line(stats, _CTX, _BASELINE, _NOW, width=200, disabled=every_step)
     assert "system" not in all_gone.plain
-    assert all_gone.plain.startswith("Pressure")
-
-
-def test_two_line_swap_steps_drop_order() -> None:
-    assert _TWO_LINE_SWAP_STEPS == ("zswap_long", "zswap", "delta", "system")
-    stats = _ZSWAP_STATS
-
-    none = _two_line_swap(stats, _CTX, _BASELINE, _NOW, width=200, disabled=frozenset())
-    assert "into" in none.plain and "Δ" in none.plain and "system" in none.plain
-
-    long_gone = _two_line_swap(
-        stats, _CTX, _BASELINE, _NOW, width=200, disabled=frozenset({"zswap_long"})
-    )
-    assert "into" not in long_gone.plain and "zswapped" in long_gone.plain
-    assert "Δ" in long_gone.plain and "system" in long_gone.plain
-
-    zswap_gone = _two_line_swap(
-        stats, _CTX, _BASELINE, _NOW, width=200, disabled=frozenset({"zswap_long", "zswap"})
-    )
-    assert "zswapped" not in zswap_gone.plain
-    assert "Δ" in zswap_gone.plain and "system" in zswap_gone.plain
-
-    delta_gone = _two_line_swap(
-        stats,
-        _CTX,
-        _BASELINE,
-        _NOW,
-        width=200,
-        disabled=frozenset({"zswap_long", "zswap", "delta"}),
-    )
-    assert "Δ" not in delta_gone.plain and "system" in delta_gone.plain
-
-    all_gone = _two_line_swap(
-        stats,
-        _CTX,
-        _BASELINE,
-        _NOW,
-        width=200,
-        disabled=frozenset({"zswap_long", "zswap", "delta", "system"}),
-    )
-    assert "system" not in all_gone.plain
-    assert all_gone.plain.startswith("Swap")
-
-
-def test_compact_steps_drop_system_then_to_disk() -> None:
-    assert _COMPACT_STEPS == ("system", "to_disk")
-    stats = _stats()
-
-    none = _compact_status_line(stats, _CTX_WB, disabled=frozenset())
-    assert "to disk" in none.plain and "system" in none.plain
-
-    system_gone = _compact_status_line(stats, _CTX_WB, disabled=frozenset({"system"}))
-    assert "system" not in system_gone.plain
-    assert "to disk" in system_gone.plain
-
-    all_gone = _compact_status_line(stats, _CTX_WB, disabled=frozenset({"system", "to_disk"}))
-    assert "to disk" not in all_gone.plain
     assert all_gone.plain.startswith("Pressure")
 
 

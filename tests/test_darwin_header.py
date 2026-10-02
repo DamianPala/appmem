@@ -307,3 +307,20 @@ def test_ram_slots_keep_separators_when_full(wired: int, purgeable: int) -> None
     assert "GiB used " in line and len(line) <= 120
     assert "wired" in line if wired == 4 else "wired" not in line
     assert ")file-backed" not in line
+
+
+@pytest.mark.parametrize("width", [80, 100, 120, 160])
+def test_swap_activity_slots_stay_fixed_across_used_digit_boundary(width: int) -> None:
+    lines = [
+        render_host_header(
+            replace(HOST, swap_used_bytes=used * GIB, swap_total_bytes=16 * GIB),
+            width,
+            colors=COLORS,
+            swap_in_rate=1024,
+            swap_out_rate=1024,
+        )[2].plain
+        for used in (5, 10)
+    ]
+    assert len({line.index("in ") for line in lines}) == 1
+    assert len({line.index("out ") for line in lines}) == 1
+    assert all(len(line) <= width and "allocated now" in line for line in lines)

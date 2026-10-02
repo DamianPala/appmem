@@ -10,6 +10,7 @@ from appmem.ui.header import (
     ThemeColors,
     _bar_text,  # pyright: ignore[reportPrivateUsage] - reuse Linux gauge styling
     _bar_width,  # pyright: ignore[reportPrivateUsage] - retain shared width buckets
+    activity_token,
 )
 from appmem.ui.layout import fit_line
 
@@ -68,7 +69,15 @@ def _ram(host: HostMemory, width: int, colors: ThemeColors, *, ascii_bars: bool)
     )
 
 
-def _swap(host: HostMemory, width: int, colors: ThemeColors, *, ascii_bars: bool) -> Text:
+def _swap(
+    host: HostMemory,
+    width: int,
+    colors: ThemeColors,
+    *,
+    ascii_bars: bool,
+    swap_in_rate: int | None,
+    swap_out_rate: int | None,
+) -> Text:
     used, total = host.swap_used_bytes, host.swap_total_bytes
     label = Text("Swap".ljust(10 if width >= 60 else 6))
     if not (_nonnegative(used) and _nonnegative(total) and used <= total):
@@ -76,11 +85,21 @@ def _swap(host: HostMemory, width: int, colors: ThemeColors, *, ascii_bars: bool
     value = (
         Text("0 B used; not allocated")
         if total == 0
-        else Text(format_pair(used, total) + " used/allocated now")
+        else Text(
+            format_pair(used, total).rjust(len(format_pair(total, total))) + " used/allocated now"
+        )
     )
-    dynamic = Text("(dynamic allocation)") if width >= 100 else None
-    bar_width = _bar_width(width)
-    if label.cell_len + bar_width + 2 + value.cell_len > width:
+    dynamic = Text("(dynamic allocation)") if width >= 160 else None
+    activity = (
+        activity_token("in", swap_in_rate, ascii_bars=ascii_bars)
+        + Text(" ")
+        + activity_token("out", swap_out_rate, ascii_bars=ascii_bars)
+        if width >= 80
+        else None
+    )
+    bar_width = 20 if width >= 120 else 6 if width >= 80 else _bar_width(width)
+    reserved = 32 if activity is not None else 0
+    if label.cell_len + bar_width + 2 + value.cell_len + reserved > width:
         bar_width = 0
     bar = Text()
     if bar_width:
@@ -90,7 +109,10 @@ def _swap(host: HostMemory, width: int, colors: ThemeColors, *, ascii_bars: bool
             else _bar_text(used, total, bar_width, colors, ascii_bars=ascii_bars)
         ) + Text("  ")
     return fit_line(
-        (("swap", label + bar + value), ("dynamic", dynamic)), ("dynamic",), width, separator="  "
+        (("swap", label + bar + value), ("activity", activity), ("dynamic", dynamic)),
+        ("dynamic",),
+        width,
+        separator="  ",
     )
 
 
@@ -128,6 +150,8 @@ def render_host_header(
     ascii_bars: bool = False,
     baseline_time: str | None = None,
     baseline_elapsed: int = 0,
+    swap_in_rate: int | None = None,
+    swap_out_rate: int | None = None,
 ) -> tuple[Text, Text, Text, Text]:
     """RAM excludes file-backed; compression is logical data -> physical RAM.
 
@@ -150,7 +174,14 @@ def render_host_header(
     lines = (
         _ram(host, width, colors, ascii_bars=ascii_bars),
         _compression(host, width, ascii_bars=ascii_bars),
-        _swap(host, width, colors, ascii_bars=ascii_bars),
+        _swap(
+            host,
+            width,
+            colors,
+            ascii_bars=ascii_bars,
+            swap_in_rate=swap_in_rate,
+            swap_out_rate=swap_out_rate,
+        ),
         fit_line(
             (("pressure", pressure), ("scope", scope), ("baseline", baseline)),
             ("baseline",),

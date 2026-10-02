@@ -55,7 +55,7 @@ RESIDENT includes shared/file-backed pages and may double count between processe
 
 Help (`?`) has structured definitions and keys in a focused scroll area, with a visible close hint. Terminal `snapshot` uses four host rows without gauges or session Δ, followed by aligned app columns with binary units; `app` uses aligned process and command columns. `unknown` and partial coverage remain explicit. Host RAM is physical usage and app MEMORY is footprint; these categories do not sum to one another.
 
-Agents can use `appmem schema`, `appmem snapshot --json`, and `appmem app ID --json` from this development build. The Mac JSON contract has `platform: "darwin"` and nullable `footprint_bytes` and `resident_bytes` with separate readable/unreadable coverage counts, plus native backing counters and the validated derived RAM partition. Linux JSON and schema remain unchanged. `platform_unavailable` means this Mac build is running on an unsupported OS or processor, or a required native read failed.
+Agents can use `appmem schema`, `appmem snapshot --json`, and `appmem app ID --json` from this development build. The Mac JSON contract has `platform: "darwin"` and nullable `footprint_bytes` and `resident_bytes` with separate readable/unreadable coverage counts, plus native backing counters and the validated derived RAM partition. Linux retains its existing values with additive nullable host swap counters. `platform_unavailable` means this Mac build is running on an unsupported OS or processor, or a required native read failed.
 
 ## Using it on Linux
 
@@ -91,6 +91,10 @@ Closing the app gives you back less than that: memory shared with other apps sta
 CACHE (press `c`) is file data the kernel keeps around because something read or wrote it recently.
 It is not part of RAM or TOTAL: the kernel can drop it when it needs the space, and an app that just read a big file would otherwise look like a memory hog.
 The rows don't add up to the header, because system services, virtual machines, containers and other users hold the rest.
+
+The Linux header targets 120×30, with compact 80×24 and wide 160×40 layouts. With zswap enabled, RAM/Zswap/Swap/Pressure are separate rows. Zswap shows its physical RAM pool against an approximate configured policy limit, plus the logical data it holds. Swap used includes the size before compression; RAM used includes the pool after compression. For 5.7 GiB held in 1.4 GiB RAM, those amounts are already included, so do not add them again. The per-app ZSWAP column is logical; the gauge is physical. Zswap does not expand swap capacity; occupied swap slots are not bytes solely on SSD.
+
+Both platforms show neutral Swap in/out rates from 80 columns, averaged over about 10 seconds. Unknown means insufficient or unavailable samples; 0 B/s means measured zero. Linux counts swap-device activity, including zram and excluding successful zswap hits. macOS counts page-rounded compressed segment transfers to/from swap files, including housekeeping, not logical app bytes. Neither measures SSD throughput. Wide Linux views may show writeback, already included in out. Growth reset leaves rates running; snapshots expose lifetime counters in JSON without rates or session Δ.
 
 ## For agents
 

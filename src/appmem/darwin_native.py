@@ -159,6 +159,8 @@ def validate_sdk_abi(actual: dict[str, int]) -> None:
         "footprint_offset": RUsageV4.phys_footprint.offset,
         "vm_logical_offset": VMStatistics64.total_uncompressed_pages_in_compressor.offset,
         "swap_size": c.sizeof(SwapUsage),
+        "vm_swapins_offset": VMStatistics64.swapins.offset,
+        "vm_swapouts_offset": VMStatistics64.swapouts.offset,
     }
     if {key: actual.get(key) for key in expected} != expected:
         raise RuntimeError(f"SDK/ctypes required ABI mismatch: {actual} != {expected}")
@@ -201,6 +203,8 @@ class HostMemory:
     pressure_level: int | None
     pressure_unavailable: Unavailable | None
     pressure_error_code: int | None
+    swap_in_bytes: int | None = None
+    swap_out_bytes: int | None = None
     speculative_bytes: int | None = None
     file_backed_bytes: int | None = None
     purgeable_bytes: int | None = None
@@ -253,6 +257,8 @@ def decode_vm(vm: VMStatistics64, count: int, page_size: int) -> dict[str, int |
         "compressor_physical": vm.compressor_page_count * page_size,
         "compressor_logical": vm.total_uncompressed_pages_in_compressor * page_size,
         "swapped_logical": swapped,
+        "swap_in": vm.swapins * page_size,
+        "swap_out": vm.swapouts * page_size,
     }
 
 
@@ -344,6 +350,8 @@ class DarwinNative:
                 compressor_physical_bytes=cast(int, values["compressor_physical"]),
                 compressor_logical_bytes=cast(int, values["compressor_logical"]),
                 swapped_logical_bytes=values["swapped_logical"],
+                swap_in_bytes=values["swap_in"],
+                swap_out_bytes=values["swap_out"],
                 swap_used_bytes=swap.value.used,
                 swap_total_bytes=swap.value.total,
                 pressure_level=pressure.value.value if pressure.value is not None else None,

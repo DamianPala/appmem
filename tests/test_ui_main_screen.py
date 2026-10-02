@@ -32,6 +32,7 @@ from appmem import collect
 from appmem.collect import LinuxBackend
 from appmem.fmt import format_pair
 from appmem.model import AppStats
+from appmem.rate import Sample
 from appmem.theme import TERMINAL_THEMES, THEME_NAMES, config_path, resolve_theme
 from appmem.ui import app as ui_app
 from appmem.ui.app import AppMemApp
@@ -616,7 +617,7 @@ async def test_header_shows_zswap_bracket_when_enabled(tmp_path: Path) -> None:
         header2 = pilot.app.query_one("#header2", Static)  # Swap line
 
         assert isinstance(header2.content, Text)
-        assert "zswapped" in header2.content.plain
+        assert "holds" in header2.content.plain
 
 
 @pytest.mark.asyncio
@@ -2344,13 +2345,13 @@ async def test_header_colours_follow_the_running_apps_current_theme(tmp_path: Pa
 
 
 @pytest.mark.asyncio
-async def test_writeback_rate_reaches_the_header_in_the_running_theme_colour(
+async def test_writeback_rate_reaches_the_header_with_neutral_style(
     tmp_path: Path,
 ) -> None:
     # `_update_header_lines` must actually pass `self._writeback_rate` through
-    # to `render_header` -- `update_writeback` and `render_header` are each
-    # tested on their own (test_writeback.py, test_ui_header.py), but nothing
-    # else covers this join, the `to disk` token as it runs live.
+    # to `render_header` -- `update_rate` and `render_header` are each
+    # tested on their own (test_rate.py, test_ui_header.py), but nothing
+    # else covers this join, the optional wide writeback token.
     root = _zswap_base_tree(tmp_path)
     write_vmstat(root, zswpwb=0)
 
@@ -2370,15 +2371,20 @@ async def test_writeback_rate_reaches_the_header_in_the_running_theme_colour(
         # Seed a sample from "1 s ago" so this call has a deterministic
         # elapsed time to compute a rate from, instead of depending on how
         # much real wall-clock time the test happens to take.
-        screen._writeback_history = ((time.monotonic() - 1.0, 0),)  # pyright: ignore[reportPrivateUsage]
+        screen._writeback_history = (Sample(time.monotonic() - 1.0, time.time() - 1.0, 0),)  # pyright: ignore[reportPrivateUsage]
         screen._update_header(replace(stats, zswap_writeback_bytes=10 * 1024 * 1024))  # pyright: ignore[reportPrivateUsage]
 
         header = screen.query_one("#header2", Static).content  # Swap line
         assert isinstance(header, Text)
-        assert "to disk " in header.plain
+        assert "writeback " in header.plain
 
         dracula_warning = Color.parse(BUILTIN_THEMES["dracula"].warning or "").rich_color.name
-        assert dracula_warning in _style_at(header, "to disk ")
+        start = header.plain.index("writeback ")
+        assert not any(
+            dracula_warning in str(span.style)
+            for span in header.spans
+            if span.start <= start < span.end
+        )
 
 
 def _panel(pilot: Pilot[None]) -> ThemePanel:

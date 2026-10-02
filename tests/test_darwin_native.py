@@ -101,9 +101,16 @@ def test_probe_accepts_only_supported_sdk_vm_layouts(vm_sdk_size: int) -> None:
         "vm_sdk_size": vm_sdk_size,
         "vm_logical_offset": VMStatistics64.total_uncompressed_pages_in_compressor.offset,
         "swap_size": ctypes.sizeof(SwapUsage),
+        "vm_swapins_offset": VMStatistics64.swapins.offset,
+        "vm_swapouts_offset": VMStatistics64.swapouts.offset,
     }
     validate_sdk_abi(layout)
-    for offset in ("footprint_offset", "vm_logical_offset"):
+    for offset in (
+        "footprint_offset",
+        "vm_logical_offset",
+        "vm_swapins_offset",
+        "vm_swapouts_offset",
+    ):
         with pytest.raises(RuntimeError, match="required ABI mismatch"):
             validate_sdk_abi({**layout, offset: 0})
 
@@ -118,6 +125,8 @@ def test_probe_rejects_unknown_sdk_vm_layouts(vm_sdk_size: int) -> None:
         "vm_sdk_size": vm_sdk_size,
         "vm_logical_offset": 144,
         "swap_size": 32,
+        "vm_swapins_offset": 112,
+        "vm_swapouts_offset": 120,
     }
     with pytest.raises(RuntimeError, match="unsupported SDK"):
         validate_sdk_abi(layout)

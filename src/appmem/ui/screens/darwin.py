@@ -5,7 +5,7 @@ from __future__ import annotations
 import textwrap
 from dataclasses import dataclass
 from datetime import datetime
-from time import monotonic
+from time import monotonic, time
 from typing import ClassVar
 
 from rich.text import Text
@@ -20,6 +20,7 @@ from textual.widgets import Static
 from appmem.darwin_backend import DarwinApp, DarwinBackend, DarwinProcess, DarwinUnavailableError
 from appmem.darwin_native import HostMemory
 from appmem.fmt import format_delta, size, truncate_name
+from appmem.rate import Sample, update_rate
 from appmem.render import escape_control_chars
 from appmem.ui.darwin_header import render_host_header
 from appmem.ui.darwin_rows import DarwinRow, build_rows, sort_rows, update_baseline
@@ -93,6 +94,10 @@ class DarwinMainScreen(LiveScreen):
         self._ascii_bars = _detect_ascii_bars()
         self._baseline_time: str | None = None
         self._baseline_started = 0.0
+        self._swap_in_history: tuple[Sample, ...] = ()
+        self._swap_out_history: tuple[Sample, ...] = ()
+        self._swap_in_rate: int | None = None
+        self._swap_out_rate: int | None = None
 
     def compose(self) -> ComposeResult:
         yield Static(id="header1")
@@ -159,6 +164,13 @@ class DarwinMainScreen(LiveScreen):
     def _apply_frame(
         self, host: HostMemory, apps: list[DarwinApp], *, scroll: bool = False
     ) -> None:
+        now, wall = monotonic(), time()
+        self._swap_in_history, self._swap_in_rate = update_rate(
+            self._swap_in_history, now, host.swap_in_bytes, wall=wall, interval=self._interval
+        )
+        self._swap_out_history, self._swap_out_rate = update_rate(
+            self._swap_out_history, now, host.swap_out_bytes, wall=wall, interval=self._interval
+        )
         self._host = host
         if self._baseline_time is None:
             self._reset_baseline_clock()
@@ -190,6 +202,8 @@ class DarwinMainScreen(LiveScreen):
             colors=colors,
             ascii_bars=self._ascii_bars,
             baseline_time=self._baseline_time,
+            swap_in_rate=self._swap_in_rate,
+            swap_out_rate=self._swap_out_rate,
             baseline_elapsed=max(0, int(monotonic() - self._baseline_started)),
         )
         for index, line in enumerate(lines, 1):
@@ -791,6 +805,14 @@ class DarwinHelpScreen(Screen[None]):
     @staticmethod
     def _body(width: int) -> str:
         definitions = (
+            (
+                "Swap in/out",
+                "Host activity averaged over about 10 seconds in this session. "
+                "Native counters count page-rounded compressed segments transferred to/from swap "
+                "files, including housekeeping, not logical app bytes or SSD throughput. "
+                "Unknown means insufficient/unavailable samples; 0 B/s is measured zero. "
+                "Clock discontinuities reset rates; b resets growth only.",
+            ),
             (
                 "MEMORY",
                 "App physical footprint, including native compression accounting; "

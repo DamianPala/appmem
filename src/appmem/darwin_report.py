@@ -103,6 +103,8 @@ def snapshot_document(
             "compressor_logical_bytes": host.compressor_logical_bytes,
             "swap_used_bytes": host.swap_used_bytes,
             "swap_total_bytes": host.swap_total_bytes,
+            "swap_in_bytes": host.swap_in_bytes,
+            "swap_out_bytes": host.swap_out_bytes,
         },
         "pressure": {
             "level": pressure,

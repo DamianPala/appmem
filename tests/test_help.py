@@ -41,8 +41,8 @@ def test_body_omits_zswap_definitions_by_default() -> None:
     # The SWAP definition already mentions zswap in passing (pre-existing);
     # what must be absent is the ZSWAP column and the header-bracket note.
     assert "ZSWAP" not in body
-    assert "zswapped into Y RAM" not in body
-    assert "overflowing to the disk swap" not in body
+    assert "AFTER compression" not in body
+    assert "writeback is part of swap out" not in body
 
 
 def test_body_includes_zswap_definitions_when_enabled() -> None:
@@ -50,8 +50,8 @@ def test_body_includes_zswap_definitions_when_enabled() -> None:
 
     assert "ZSWAP" in body
     assert "not extra memory" in body
-    assert "zswapped into Y RAM" in body
-    assert "overflowing to the disk swap" in body
+    assert "AFTER compression" in body
+    assert "writeback is part of swap out" in body
 
 
 def test_body_always_explains_the_bar_glyphs() -> None:

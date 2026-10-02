@@ -44,7 +44,7 @@ MEMORY and ΔMEM keep native physical-footprint meaning and the API field name `
 
 The Mac layout targets 120×30, with a usable 80×24 compact view and the existing narrower fallbacks. RAM reserves width buckets and slots so normal counter changes do not toggle gauges or annotations. At 80 columns file-backed/free take priority over wired/purgeable; the latter appear from 120 columns. Oversized counters drop secondary content before main units. The footer reads `b reset Δ`. Darwin help uses a focused VerticalScroll with structured definitions and keys, plus fixed close hints above and below. Terminal text snapshots have four host rows (RAM/Compress/Swap/Pressure), no gauges or session Δ, and aligned binary-unit app columns; app reports align process/command columns. Unknown and partial coverage remain explicit. Host RAM, app footprint and resident are distinct accounting views and must not be summed.
 
-The Darwin `snapshot`/`app` documents and `schema` output use a separate platform-specific contract with nullable `footprint_bytes` and `resident_bytes`, independent coverage counts and additive native/derived host accounting fields and `platform: "darwin"`. The Linux documents and schema remain byte-for-byte unchanged. Native ARM64 CI covers installed wheels on Python 3.12 and 3.14 and validates the live CLI and TUI; physical desktop acceptance remains pending.
+The Darwin `snapshot`/`app` documents and `schema` output use a separate platform-specific contract with nullable `footprint_bytes` and `resident_bytes`, independent coverage counts and additive native/derived host accounting fields and `platform: "darwin"`. Linux retains its existing values with additive nullable host swap counters. Native ARM64 CI covers installed wheels on Python 3.12 and 3.14 and validates the live CLI and TUI; physical desktop acceptance remains pending.
 
 ## Screens
 
@@ -52,7 +52,8 @@ The Darwin `snapshot`/`app` documents and `schema` output use a separate platfor
 
 ```
 RAM       ██████████████▎░░░░░  22.1/30.9 GiB used (3.5 shared)    avail  8.8 GiB (1.5 free, 4.6 cache, 3.2 slab)
-Swap      ██████████████▋░░░░░  23.3/32.0 GiB used (3.0 zswapped into 1.0 GiB RAM)     to disk 12 MiB/s
+Zswap     ███░░░░░░░░░░░░░░░░░  1.0/6.2 GiB RAM     holds 3.0 GiB (3.0:1) limit 20% of RAM
+Swap      ██████████████▋░░░░░  23.3/32.0 GiB used  in 0 B/s        out 12 MiB/s
 Pressure  none                          system 610 MiB [x]    Δ since 15:58 (12m)      elsewhere 109 MiB
  APP                        RAM         SWAP        ZSWAP       TOTAL ▾     ΔRAM       ΔSWAP      PROCS
  ghostty                       6.6 GiB    11.2 GiB     1.6 GiB    17.8 GiB     -3 MiB          ·     281
@@ -62,7 +63,7 @@ Pressure  none                          system 610 MiB [x]    Δ since 15:58 (12
  r s t d z sort  enter procs  x system  c cache  w zswap  b reset Δ  T theme  ? help  q quit
 ```
 
-- **Header: three lines, each a labelled gauge** (`RAM`, `Swap`, `Pressure`, labels in a 10-cell column):
+- **Header:** RAM/Zswap/Swap/Pressure when zswap is enabled and readable, otherwise RAM/Swap/Pressure (labels in a 10-cell column). The main view targets 120×30, compact 80×24 and wide 160×40.
   - **RAM:** a bar (used vs total), then used/total in the total's unit, `used`, `(N shared)`; then `avail` with `(free, cache, slab)`.
     - used = `MemTotal - MemAvailable`.
     - `shared` = `Shmem`: tmpfs such as `/tmp` and `/dev/shm`, shared memory, GPU buffers. The kernel can only swap it out, never drop it.
@@ -70,20 +71,15 @@ Pressure  none                          system 610 MiB [x]    Δ since 15:58 (12
     - `free` = `MemFree`; `cache` = `Cached - Shmem`, clamped at 0, the same definition as the CACHE column; `slab` = `SReclaimable`, kernel caches of file names and inodes, dropped on demand.
     - The three come close to `avail` but are not an exact sum: `avail` is a kernel estimate that also keeps reserves.
   - **Swap:** a bar and used/total, or `Swap off` when `SwapTotal` is 0. The pair turns the theme's error colour above 90 % used; a full swap alone is normal, pressure says whether it hurts.
-    - With zswap enabled, `(X zswapped into Y RAM)` follows. X is swapped data kept compressed in RAM (`Zswapped`, already part of Swap used); Y is the RAM the pool takes (`Zswap`, already part of RAM used). Without zswap, nothing is shown.
-    - While the pool writes back to the disk swap, `to disk N MiB/s` follows, in the theme's warning colour. The rate comes from `/proc/vmstat` `zswpwb` over a ~10 s window. It is shown only while above 0, and never on the first tick.
+    - From 80 columns neutral `in` and `out` rates have independent fixed slots. Each uses a roughly 10-second window of lifetime counters. First/missing/invalid/decreasing samples, duplicate timestamps and discontinuities are unknown (`—`, ASCII `?`); measured zero is `0 B/s`. A wall/monotonic disagreement over 5 seconds in either direction or a gap longer than max(30 seconds, 3×configured interval) restarts measurement. `b` does not reset rates. One-shot snapshots contain no rates or Δ.
+    - Linux counters are `/proc/vmstat` `pswpin`/`pswpout` × `SC_PAGE_SIZE`, swap-device activity including zram. Successful zswap hits are excluded; zero-page bypass depends on kernel version. Darwin counters are `host_statistics64` `swapins`/`swapouts` × `host_page_size`: page-rounded compressed segment transfers to/from swap files, including housekeeping. These are not logical app bytes or SSD throughput. Both nullable lifetime counters are added to `system` JSON and schema.
+  - **Zswap:** physical `zswap_pool_bytes` / approximate `max_pool_percent × RAM` limit, followed by logical `holds` from 80 columns; ratio and percent limit from 120; optional neutral `writeback` from 160, already included in out. The limit is a policy, not preallocated RAM. Unknown and zero limits use a placeholder bar, never a guessed 20%; above-limit pools show actual values and `over-limit` with a saturated bar. Rounded arithmetic is approximate to kernel page rounding.
+    - Swap used includes held data before compression; RAM used includes the pool after compression. With 5.7 GiB held in 1.4 GiB RAM, 5.7 GiB is already in Swap used and 1.4 GiB already in RAM used. The per-app ZSWAP column is logical; the gauge physical. Do not add either again. Swap used counts occupied slots, including zswap and possibly SwapCached, not bytes solely present on SSD. Zswap does not increase configured swap capacity.
   - **Pressure:** the pressure word, bold, in the theme's success/warning/error colour (see Definitions), or `unavailable` without `/proc/pressure/memory`. The word sits in the bar column, so the next part starts in the same column as the RAM and Swap pairs whenever the longest word fits (from 90 columns). Narrower, it keeps a fixed slot that depends only on the width. Then the hidden system services' total (`system N [x]`), the Δ baseline (`Δ since 14:02 (37m)`, whole days from 100 h on; shown only while the Δ columns are, from 95 columns), and `elsewhere` (memory outside the user tree and `system.slice`: VMs, containers, other users, login sessions).
   - **Bars:** `█` fill with an eighth-block edge on a dim `░` track. The width steps with the terminal width. The fill uses the theme's accent colour, or its foreground where the accent is under 3:1 contrast. A `#`/`.` ASCII form applies when `LC_ALL`/`LC_CTYPE`/`LANG` names a non-UTF-8 locale. A bare `LANG=C` still gets Unicode bars, because Python coerces it to UTF-8 at startup. Bars carry no information that the numbers don't.
   - **No jitter.** Every part sits in a fixed-width slot sized for its worst case (from the totals, or a literal worst case for rates and durations). Which parts show depends only on the terminal size and state (zswap on, writeback active), never on the values. Nothing moves when only the numbers change.
-  - **Narrow widths.** Each line drops its own parts, least important first:
-    - RAM: the `(free, cache, slab)` breakdown, then `avail`, then `shared`;
-    - Swap: the pool part of the bracket (`into Y RAM`), then the bracket;
-    - Pressure: `elsewhere`, then Δ, then `system`.
-    The label, the pair and the pressure word always stay; `to disk` stays in the three-line form. Below the width of the fixed parts, a line is cropped with an ellipsis. The pressure word is never cropped.
-  - **Short terminals.** Below 18 rows the header takes two lines:
-    - From 70 columns, when the RAM line fits with every droppable part removed: line 1 is the RAM line (same drops as above) plus the pressure word in its own slot. Line 2 is the Swap line plus `to disk`, Δ and `system`; it drops the zswap pool part, then the bracket, then Δ, then `system`.
-    - Otherwise, a compact form. Line 1 is `RAM u/t  Swap u/t`. Line 2 is `Pressure` word, `to disk`, `system`, as far as they fit (`system` drops first). `to disk` fits from 47 columns, `system` from 48.
-    The table takes the freed row.
+  - **Narrow widths.** RAM drops breakdown, avail, then shared. Pressure drops elsewhere, Δ, then system. At 80 columns Zswap retains the pool/limit and holds; ratio, percent and writeback are hidden. Below 80, the separate Zswap row and activity rates are hidden, preserving the existing narrow main values and pressure fallback down to 40 columns. At 160 Swap may repeat `(X in zswap)` after rates.
+  - **Short terminals.** From 18 rows and 80 columns an enabled/readable Zswap adds a fourth row. Without it, or below 80 columns, there are three rows. Below 18 rows the existing two-line RAM/Pressure + Swap layout applies from 70 columns if its first line fits; otherwise two compact lines keep RAM/Swap and Pressure/system. The table receives the remaining height and preserves navigation/viewport on resize.
 - The sort marker `▴`/`▾` sits on the sorted column. Default sort: TOTAL descending.
 - Clicking the sorted column again flips the direction.
 - Rows with equal values keep a stable order by app name.
@@ -143,7 +139,7 @@ Enter on a command drills into its member processes (title `ghostty › claude`,
 ### Help screen (`?`)
 
 A scrolling screen with the definitions below in plain words, soft-wrapped to the width, with `esc/?/q close` in its title line.
-It covers what RAM, CACHE, SWAP, TOTAL, pressure and the header's shared/free/cache/avail mean (tmpfs files count toward the app that wrote them), why rows don't add up to the header, why a closed app can still have a row, and how to act on what you see, plus one line on `T` and where the theme is saved. When zswap is enabled, it also defines the zswap bracket, `to disk` and ZSWAP. It also explains the bar glyphs (`█` used, `░` what's left). It ends with the key list from the "Keys" table below, one line per key; `z` and `w` appear only when zswap is enabled, like the ZSWAP column they act on.
+It covers what RAM, CACHE, SWAP, TOTAL, pressure and the header's shared/free/cache/avail mean (tmpfs files count toward the app that wrote them), why rows don't add up to the header, why a closed app can still have a row, and how to act on what you see, plus one line on `T` and where the theme is saved. When zswap is enabled, it also defines the physical Zswap gauge, in/out, writeback and logical ZSWAP. It also explains the bar glyphs (`█` used, `░` what's left). It ends with the key list from the "Keys" table below, one line per key; `z` and `w` appear only when zswap is enabled, like the ZSWAP column they act on.
 
 ## Keys
 
@@ -391,7 +387,7 @@ Every failure writes one JSON error object as the last non-empty stderr line, ne
 
 - Python ≥ 3.12, `uv`, [Textual](https://textual.textualize.io/).
 - `model` holds shared immutable collection values and pure process/grouping math. `backend` defines the collection operations. `LinuxBackend` in `collect` reads `/sys` and `/proc` through a fixture-injectable root path.
-- CLI reports and both TUI screens use the same backend instance for collection. The screens keep refresh timing and display state; Linux accounting and grouping stay in `LinuxBackend`. User-visible Linux output is unchanged.
+- CLI reports and both TUI screens use the same backend instance for collection. The screens keep refresh timing and display state; Linux accounting and grouping stay in `LinuxBackend`. Existing Linux accounting remains unchanged; host in/out counters are additive.
 - Textual notes for the implementer:
   - `RowTable` (`appmem.ui.table`) posts a `HeaderSelected` event on a header click; `reorder(ordered_keys)` puts rows in that order without rebuilding them. Sort state, the `▴`/`▾` marker and flip-on-second-click are ours to write.
   - Update cells in place with `update_cell`, and add or remove rows only for apps that appeared or vanished. Rebuilding the table every tick causes flicker and loses the cursor.

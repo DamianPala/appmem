@@ -151,6 +151,8 @@ def _snapshot_output() -> dict[str, object]:
                     "wired_bytes",
                     "compressor_physical_bytes",
                     "compressor_logical_bytes",
+                    "swap_in_bytes",
+                    "swap_out_bytes",
                     "swap_used_bytes",
                     "swap_total_bytes",
                 ],
@@ -174,6 +176,19 @@ def _snapshot_output() -> dict[str, object]:
                 | {
                     name: _field(["integer", "null"], description)
                     for name, description in {
+                        "swap_in_bytes": (
+                            "Lifetime host_statistics64 swapins times "
+                            "host_page_size: page-rounded compressed segment "
+                            "bytes read from swap files, including housekeeping; "
+                            "null when unavailable."
+                        ),
+                        "swap_out_bytes": (
+                            "Lifetime host_statistics64 swapouts times "
+                            "host_page_size: page-rounded compressed segment "
+                            "bytes written to swap files, including housekeeping; "
+                            "not logical app bytes or SSD throughput; null when "
+                            "unavailable."
+                        ),
                         "speculative_bytes": (
                             "Native speculative pages, included in free and file-backed"
                         ),

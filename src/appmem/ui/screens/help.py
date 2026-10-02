@@ -53,10 +53,23 @@ _ZSWAP_DEFINITION: tuple[str, str] = (
 )
 
 _ZSWAP_HEADER_NOTE = (
-    "In the header, Swap's 'X zswapped into Y RAM' bracket (short: 'X zswapped') is X: "
-    "swapped data kept compressed in RAM, already part of Swap used; Y: the RAM that pool "
-    "costs, already part of RAM used. 'to disk' next to it means the pool is overflowing "
-    "to the disk swap, which is slow."
+    "Zswap holds swap pages compressed in RAM. Swap used includes their logical size BEFORE "
+    "compression; RAM used includes the physical pool AFTER compression. For 5.7 GiB held "
+    "in a 1.4 GiB pool, 5.7 GiB is already in Swap used and 1.4 GiB is already in RAM used. "
+    "The per-app ZSWAP column is logical; the Zswap gauge is physical. Do not add them again. "
+    "The gauge limit is approximately max_pool_percent of RAM, a policy limit, not reserved "
+    "or preallocated RAM; it can be exceeded after a limit change. An unknown or zero limit "
+    "has no percentage gauge. Zswap does not expand configured swap capacity. Swap used "
+    "counts occupied slots, including zswap and possibly SwapCached, not bytes only on SSD. "
+    "Optional writeback is part of swap out, not an additional total."
+)
+
+_SWAP_ACTIVITY_NOTE = (
+    "Swap in/out measure host swap-device activity, including zram. Successful zswap hits "
+    "are excluded; zero-page bypass depends on kernel version. Rates average about 10 seconds "
+    "in this session. Unknown means insufficient or unavailable samples, while 0 B/s is "
+    "measured zero. Clock discontinuities reset measurement; b resets growth only. These "
+    "rates are not SSD throughput."
 )
 
 _BAR_NOTE = (
@@ -210,6 +223,7 @@ def _build_body(width: int, *, zswap_enabled: bool = False) -> str:
         _wrap(_HEADER_NOTE, w),
         _wrap(_HEADER_TERMS_NOTE, w),
         _wrap(_BAR_NOTE, w),
+        _wrap(_SWAP_ACTIVITY_NOTE, w),
         *([_wrap(_ZSWAP_HEADER_NOTE, w)] if zswap_enabled else []),
         "\n".join(
             [
