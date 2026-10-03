@@ -183,15 +183,22 @@ def write_smaps_rollup(
     (proc_dir / "smaps_rollup").write_text(content)
 
 
-def write_vmstat(root: Path, *, zswpwb: int | None = None) -> None:
-    """`/proc/vmstat`, with just the `zswpwb` line this suite cares about.
-    `zswpwb=None` omits the line, same as a kernel with no zswap writeback
-    counter (SPEC.md "Data sources")."""
+def write_vmstat(
+    root: Path,
+    *,
+    zswpwb: int | None = None,
+    pswpin: int | None = None,
+    pswpout: int | None = None,
+) -> None:
+    """`/proc/vmstat`, with just the page counters this suite cares about.
+    A counter left `None` is omitted, same as a kernel without it (SPEC.md
+    "Data sources"): its header value is then unknown, not zero."""
     proc_dir = root / "proc"
     proc_dir.mkdir(parents=True, exist_ok=True)
     lines = ["nr_free_pages 1000"]  # a harmless unrelated line, for realism
-    if zswpwb is not None:
-        lines.append(f"zswpwb {zswpwb}")
+    for name, value in (("pswpin", pswpin), ("pswpout", pswpout), ("zswpwb", zswpwb)):
+        if value is not None:
+            lines.append(f"{name} {value}")
     (proc_dir / "vmstat").write_text("\n".join(lines) + "\n")
 
 

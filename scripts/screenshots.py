@@ -4,13 +4,14 @@ Dev script, not part of the installed package: `uv run python scripts/screenshot
 [OUT_DIR]` (default `docs/screenshots/`). Never touches the real `/proc`, `/sys` or
 `~/.config`: it builds a throwaway cgroup-v2/proc-like tree with the same fixture
 builders the test suite uses (`tests/helpers.py`), points a headless `AppMemApp` at
-it, and saves three SVGs. Every app, process, command line and number below is
-invented -- no real paths, usernames or hostnames.
+it, and saves three SVGs; a fourth, `main-macos.svg`, is the macOS main view driven by
+an in-memory stand-in for the native reader. Every app, process, command line and
+number below is invented -- no real paths, usernames or hostnames.
 
-Deterministic: the header's `Δ since HH:MM (...)` is the only wall-clock read
-(`datetime.now()` in `ui.screens.main`, patched here to a fixed instant), so a
-rerun produces byte-identical SVGs apart from Rich's own per-export random
-`terminal-<N>` id in each file, unrelated to content.
+Deterministic: the header's `Δ since HH:MM (...)` and the swap rates are the only
+clock reads (`datetime.now()` and `time.monotonic()`/`time.time()` in
+`ui.screens.main`, and the same names in `ui.screens.darwin`, patched here to fixed
+instants), so a rerun produces byte-identical SVGs.
 """
 
 from __future__ import annotations
@@ -30,9 +31,12 @@ sys.path.insert(0, str(_REPO_ROOT / "tests"))  # tests/helpers.py: no second fix
 from textual.widgets import OptionList
 
 from appmem.collect import LinuxBackend
+from appmem.darwin_backend import DarwinBackend
+from appmem.darwin_native import HostMemory, ProcessIdentity, ProcessMemory, ReadResult, Unavailable
 from appmem.theme import THEME_NAMES
 from appmem.ui.app import AppMemApp
 from appmem.ui.rows import row_key
+from appmem.ui.screens.darwin import DarwinMainScreen
 from appmem.ui.screens.main import MainScreen
 from appmem.ui.table import RowTable
 from appmem.ui.theme_picker import ThemePanel
@@ -54,24 +58,56 @@ _GIB = 1024**3
 # Each screen sized to its own content plus a couple of spare rows, not the
 # tallest screen shared by all three: a fixed 120x32 left ~16 blank rows below
 # main's table and even more below processes'.
-_MAIN_SIZE = (120, 20)
+# 140 columns is where every header row is complete: the full words ("this run",
+# "since boot", "of RAM") and no `…` for omitted details. 139 is the first such width
+# on this fixture's numbers; 140 keeps one column of slack.
+_MAIN_SIZE = (140, 20)
 _PROCESSES_SIZE = (120, 16)
-# A few columns wider than the other two: at exactly 120 the panel, docked
-# over the main view's right edge, covers the PROCS column's digits. 28 rows is the panel's own
+# A few columns wider than main: the panel, docked over the main view's right edge,
+# would cover the PROCS column's digits. 28 rows is the panel's own
 # content: border, "Theme", 21 themes, the blank info line, "↑↓ preview" and
 # "enter keep esc cancel", closing border -- one row taller would just add
 # blank padding above the bottom lines.
-_THEME_PANEL_SIZE = (130, 28)
+_THEME_PANEL_SIZE = (150, 28)
 _NO_AUTO_REFRESH_INTERVAL = 100.0  # higher than any capture takes: the timer never fires
 _UPTIME_SECONDS = 300_000.0  # ~3.5 days: a desktop session that's been running a while
 _CLK_TCK = 100  # os.sysconf("SC_CLK_TCK") is fixed at 100 on Linux regardless of kernel HZ
 _PREVIEW_THEME = "dracula"
 _CLOCK_BASE = datetime(2026, 9, 23, 9, 41, 0)  # header's own baseline instant
 _CLOCK_ELAPSED = timedelta(minutes=12)  # -> "Δ since 09:41 (12m)", never "(0s)"
+# Swap counters since boot, and what moves before the last sample. The rate window
+# spans two seconds (mount samples twice, then the bump), so these show as
+# 256 KiB/s in and 3 MiB/s out, and as "3 MiB" and "6 MiB" for this run.
+_SWAP_IN_BOOT_BYTES = round(3.1 * 1024**3)
+_SWAP_OUT_BOOT_BYTES = round(41.6 * 1024**3)
+_ZSWAP_WRITEBACK_BOOT_BYTES = round(1.2 * 1024**3)
+_SWAP_IN_MOVED = 512 * 1024
+_SWAP_OUT_MOVED = 6 * 1024**2
 
 
 def _gib(value: float) -> int:
     return round(value * _GIB)
+
+
+# The macOS view's invented machine: a 16 GiB Mac with eight apps, each a main process
+# plus helpers (footprints in MiB, main process first), and two bundleless daemons.
+_MIB = 1024**2
+_MAC_UID = 501
+_MAC_APPS: tuple[tuple[str, tuple[int, ...]], ...] = (
+    ("Harbor", (410, 330, 290, 270, 240, 190, 170, 130)),
+    ("Loom", (860, 240)),
+    ("Quill", (520, 180, 90)),
+    ("Parcel", (310, 95)),
+    ("Tidepool", (150, 60, 55, 48, 40)),
+    ("Almanac", (210,)),
+    ("Cinder", (180, 70)),
+    ("Sketchbook", (140,)),
+)
+_MAC_DAEMONS = (("syncagent", 64), ("fontd", 38))
+# Moved before the second tick so the ΔMEM column reads non-zero; MiB on the main process.
+_MAC_MOVED = {"Harbor": 310, "Quill": 24, "Loom": -150}
+_MAC_SWAP_IN_BOOT_BYTES = round(2.4 * _GIB)
+_MAC_SWAP_OUT_BOOT_BYTES = round(18.2 * _GIB)
 
 
 @dataclass(frozen=True)
@@ -264,6 +300,19 @@ def _write_system_service(root: Path) -> None:
     make_unit(unit_dir, anon=_gib(0.18), swap=0, pids=[900])
 
 
+def _write_swap_counters(root: Path, *, step: int) -> None:
+    """`/proc/vmstat`'s lifetime swap counters, in pages as the kernel keeps them. Step 1
+    follows step 0 with a light stream of swap traffic, so the header shows measured
+    rates (not `—`) and a small "this run" total; the pool writes back nothing."""
+    page = os.sysconf("SC_PAGE_SIZE")
+    write_vmstat(
+        root,
+        pswpin=(_SWAP_IN_BOOT_BYTES + step * _SWAP_IN_MOVED) // page,
+        pswpout=(_SWAP_OUT_BOOT_BYTES + step * _SWAP_OUT_MOVED) // page,
+        zswpwb=_ZSWAP_WRITEBACK_BOOT_BYTES // page,
+    )
+
+
 def _write_system_stats(root: Path) -> None:
     write_meminfo(
         root,
@@ -280,7 +329,7 @@ def _write_system_stats(root: Path) -> None:
     )
     write_zswap_enabled(root, enabled=True)
     write_zswap_params(root, compressor="zstd", max_pool_percent=20)
-    write_vmstat(root, zswpwb=None)  # the pool isn't overflowing: no "to disk" marker
+    _write_swap_counters(root, step=0)
     # Pressure `none`: a README screenshot shouldn't look like a crisis.
     write_pressure(root, some_avg10=0.0, full_avg10=0.0, some_avg60=0.0, full_avg60=0.0)
     write_uptime(root, seconds=_UPTIME_SECONDS)
@@ -310,10 +359,95 @@ def _build_fixture(root: Path) -> None:
 
 
 def _bump_a_few_values(root: Path) -> None:
-    """Move two apps' numbers before the second tick, so ΔRAM/ΔSWAP read
-    non-zero in `main.svg` instead of `·` (SPEC.md "Main view")."""
+    """Move two apps' numbers and the swap counters before the second tick, so
+    ΔRAM/ΔSWAP read non-zero in `main.svg` instead of `·` (SPEC.md "Main view") and the
+    swap rates are measured."""
     _write_app_unit(root, replace(_GHOSTTY, anon_gib=_GHOSTTY.anon_gib + 300 / 1024))
     _write_app_unit(root, replace(_CHROME, swap_gib=_CHROME.swap_gib - 200 / 1024))
+    _write_swap_counters(root, step=1)
+
+
+class _MacReader:
+    """The native reader's side of the boundary with invented data: what `DarwinBackend`
+    would read from the kernel on a Mac, with the same memory moves as `_MAC_MOVED`
+    applied by `move()`."""
+
+    def __init__(self) -> None:
+        self._identities: dict[int, ProcessIdentity] = {}
+        self._paths: dict[int, str] = {}
+        self._footprints: dict[int, int] = {}
+        self._main_pid: dict[str, int] = {}
+        self._swap_step = 0
+        pid = 100
+        for name, footprints in _MAC_APPS:
+            main = pid
+            self._main_pid[name] = main
+            for index, mib in enumerate(footprints):
+                helper = "" if index == 0 else f" Helper {index}"
+                command = f"{name}{helper}"[:15]
+                folder = f"/Applications/{name}.app/Contents"
+                path = (
+                    f"{folder}/MacOS/{name}"
+                    if index == 0
+                    else f"{folder}/Frameworks/{name} Helper.app/Contents/MacOS/{name} Helper"
+                )
+                self._add(pid, 1 if index == 0 else main, command, path, mib)
+                pid += 1
+        for name, mib in _MAC_DAEMONS:
+            self._add(pid, 1, name, f"/usr/libexec/{name}", mib)
+            pid += 1
+
+    def _add(self, pid: int, ppid: int, command: str, path: str, mib: int) -> None:
+        self._identities[pid] = ProcessIdentity(pid, ppid, _MAC_UID, 1, command)
+        self._paths[pid] = path
+        self._footprints[pid] = mib * _MIB
+
+    def move(self) -> None:
+        for name, mib in _MAC_MOVED.items():
+            self._footprints[self._main_pid[name]] += mib * _MIB
+        self._swap_step = 1
+
+    def host(self) -> ReadResult[HostMemory]:
+        return ReadResult(
+            HostMemory(
+                physical_bytes=_gib(16),
+                page_size=16_384,
+                vm_count=38,
+                free_bytes=_gib(0.6),
+                wired_bytes=_gib(2.4),
+                active_bytes=_gib(5.2),
+                inactive_bytes=_gib(4.0),
+                compressor_physical_bytes=_gib(1.1),
+                compressor_logical_bytes=_gib(3.3),
+                swapped_logical_bytes=None,
+                swap_used_bytes=_gib(1.8),
+                swap_total_bytes=_gib(3),
+                pressure_level=1,
+                pressure_unavailable=None,
+                pressure_error_code=None,
+                swap_in_bytes=_MAC_SWAP_IN_BOOT_BYTES + self._swap_step * _SWAP_IN_MOVED,
+                swap_out_bytes=_MAC_SWAP_OUT_BOOT_BYTES + self._swap_step * _SWAP_OUT_MOVED,
+                speculative_bytes=_gib(0.2),
+                file_backed_bytes=_gib(4.1),
+                purgeable_bytes=_gib(0.5),
+            )
+        )
+
+    def pids(self) -> ReadResult[list[int]]:
+        return ReadResult(list(self._identities))
+
+    def process(self, pid: int) -> ReadResult[ProcessIdentity]:
+        return ReadResult(self._identities[pid])
+
+    def path(self, pid: int) -> ReadResult[str]:
+        return ReadResult(self._paths[pid])
+
+    def memory(self, pid: int) -> ReadResult[ProcessMemory]:
+        footprint = self._footprints[pid]
+        return ReadResult(ProcessMemory(footprint, footprint * 3 // 4, pid * 10))
+
+    def bundle_id(self, bundle: str) -> ReadResult[str]:
+        return ReadResult(None, Unavailable.UNSUPPORTED)
 
 
 class _FrozenClock:
@@ -334,11 +468,31 @@ class _FrozenClock:
         return _CLOCK_BASE if self._calls == 1 else _CLOCK_BASE + _CLOCK_ELAPSED
 
 
+class _SecondPerSample:
+    """Stands in for the `time` name in `ui.screens.main`'s own namespace: the swap
+    rates are read against `time.monotonic()`/`time.time()`, once per sample. One
+    second passing per sample makes each rate an exact counter delta per second
+    instead of whatever the capture's real timing was."""
+
+    def __init__(self) -> None:
+        self._samples = 0
+
+    def monotonic(self) -> float:
+        self._samples += 1
+        return 1_000.0 + self._samples
+
+    def time(self) -> float:
+        return 1_800_000_000.0 + self._samples
+
+
 async def _capture(root: Path, out_dir: Path) -> None:
     app = AppMemApp(
         backend=LinuxBackend(root, _UID), interval=_NO_AUTO_REFRESH_INTERVAL, include_system=False
     )
-    with patch("appmem.ui.screens.main.datetime", new=_FrozenClock()):
+    with (
+        patch("appmem.ui.screens.main.datetime", new=_FrozenClock()),
+        patch("appmem.ui.screens.main.time", new=_SecondPerSample()),
+    ):
         async with app.run_test(size=_MAIN_SIZE) as pilot:
             await pilot.pause()
             screen = pilot.app.screen
@@ -377,6 +531,33 @@ async def _capture(root: Path, out_dir: Path) -> None:
             app.save_screenshot("theme-panel.svg", path=str(out_dir))
 
 
+async def _capture_macos(out_dir: Path) -> None:
+    """The macOS main view at the Linux shot's size and theme. The Darwin screen reads
+    `datetime`, `monotonic` and `time` as module names, patched here like `_capture`'s."""
+    reader = _MacReader()
+    backend = DarwinBackend(_MAC_UID, reader)
+    app = AppMemApp(
+        interval=_NO_AUTO_REFRESH_INTERVAL,
+        main_screen_factory=lambda: DarwinMainScreen(backend, _NO_AUTO_REFRESH_INTERVAL),
+    )
+    clock = _SecondPerSample()
+    with (
+        patch("appmem.ui.screens.darwin.datetime", new=_FrozenClock()),
+        patch("appmem.ui.screens.darwin.monotonic", new=clock.monotonic),
+        patch("appmem.ui.screens.darwin.time", new=clock.time),
+    ):
+        async with app.run_test(size=_MAIN_SIZE) as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, DarwinMainScreen)
+            # The header's Δ clock counts monotonic seconds; start it 12 minutes back.
+            screen._baseline_started -= _CLOCK_ELAPSED.total_seconds()  # pyright: ignore[reportPrivateUsage]
+            reader.move()
+            screen.refresh_now()
+            await pilot.pause()
+            app.save_screenshot("main-macos.svg", path=str(out_dir))
+
+
 def main() -> None:
     out_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else _REPO_ROOT / "docs" / "screenshots"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -389,7 +570,8 @@ def main() -> None:
         os.environ["LC_ALL"] = "C.UTF-8"
         _build_fixture(root)
         asyncio.run(_capture(root, out_dir))
-    print(f"wrote {out_dir / 'main.svg'}, processes.svg, theme-panel.svg")
+        asyncio.run(_capture_macos(out_dir))
+    print(f"wrote {out_dir / 'main.svg'}, main-macos.svg, processes.svg, theme-panel.svg")
 
 
 if __name__ == "__main__":

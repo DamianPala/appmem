@@ -1,45 +1,34 @@
 ---
 name: appmem
-description: Diagnose per-application memory on Linux or experimental Apple Silicon macOS with the appmem CLI. Use when the user asks what is eating memory or swap, why the machine is slow and whether memory is the cause, or which app or process to close. Linux uses systemd/cgroup v2 RAM and swap; macOS uses process physical footprints. Not for CPU, disk or network questions.
+description: Diagnose per-application memory with the appmem CLI on Linux (RAM and swap from systemd cgroup v2) or on macOS 15+ on Apple Silicon (process physical footprints). Use when the user asks what is eating memory or swap, why the machine is slow and whether memory is the cause, or which app or process to close. Not for CPU, disk or network questions.
 ---
 
 # appmem: per-application memory diagnosis for agents
 
-On Linux, appmem sums the RAM and swap counters for systemd app cgroups and reports them per application, with a drill-down to processes and commands. On macOS, it reports native physical footprints for processes and groups them by application.
+appmem reports memory per application, with a drill-down to processes and commands.
 Use its non-interactive commands; the live TUI (bare `appmem`) is for the human.
 
-- Linux published 0.2.0 package: `uv tool install appmem`. Experimental Mac support is only in the `feat/platform-backends` development branch; from that branch's checkout use `uv tool install .`.
+- Get it: `uv tool install appmem`.
 - Always pass `--json`; some agent shells look like a terminal and would get text.
 - `appmem schema` and `appmem schema COMMAND` are the catalog: every command, flag, output field with its meaning, and exit code. Read a field's `description` there before interpreting it.
+- The schema index has `platform`: `linux` or `darwin` (macOS 15+ on Apple Silicon). Linux and macOS documents share the envelope (`apps.items`, `has_more`, `next`, `processes.items`, `commands.items`) and differ in the memory fields, so read the schema of the platform you are on. Only macOS documents carry a `platform` key.
 - No root needed.
 
 ## Workflow
 
-On macOS 15+ Apple Silicon, use the [Mac workflow](#mac-workflow) below. The Linux fields in this section do not exist in the Mac document.
-
 1. `appmem snapshot --json`.
-   Read `pressure`, `system.ram_available_bytes`, `system.swap_used_bytes`, then the top `apps.items` by `total_bytes` and by `swap_bytes`.
-   Add `--system` when user apps don't explain the numbers.
-   A busy app's `top_commands` often names what is inside it without step 3.
-2. Decide whether memory is the problem right now (next section) before naming a culprit.
-3. Drill into the top 2-5 apps: `appmem app NAME --json` (`--scope system` for a `system` item; the snapshot's `next` field holds the command for the biggest one).
-   Read `commands.items` first (processes summed by command name), then `processes.items` for PIDs and units; when `has_more` is true, rerun with `--limit` at least the app's `procs`.
-4. Growth needs two samples: run `snapshot` again a few minutes later and compare the same apps.
-5. Answer with numbers: which app, how much RAM and swap, which processes or commands inside it, whether memory stalls are happening now, and one concrete action.
+   Linux: read `pressure`, `system.ram_available_bytes`, `system.swap_used_bytes`, then the top `apps.items` by `total_bytes` and by `swap_bytes`. Add `--system` when user apps don't explain the numbers. A busy app's `top_commands` often names what is inside it without step 3.
+   macOS: read `pressure.level`, then rank `apps.items` by `footprint_bytes`; a null footprint is unknown, not zero. Check `coverage` (`partial`, `grouping_partial`) before comparing totals.
+2. Decide whether memory is the problem right now before naming a culprit (Linux: next section).
+3. Drill into the top 2-5 apps: `appmem app NAME --json` (Linux: `--scope system` for a `system` item; macOS: pass the app's `id`). The snapshot's `next` field holds the command for the biggest one.
+   Read `commands.items` first (processes summed by command name), then `processes.items` for PIDs; when `has_more` is true, rerun with `--limit` at least the app's `procs`.
+4. Growth needs two samples: run `snapshot` again a few minutes later and compare the same apps (macOS: only when both have complete `coverage`). Swap traffic is the difference of `swap_in_bytes` and `swap_out_bytes` between the two samples (either may be null); one snapshot gives none.
+5. Answer with numbers: which app, how much memory, which processes or commands inside it, whether memory stalls are happening now, and one concrete action.
 
-## Mac workflow
-
-1. Run `appmem schema snapshot` and `appmem snapshot --json`. Check `platform: "darwin"`, native `pressure.level`, raw `system.physical_bytes`, `free_bytes`, `wired_bytes`, `compressor_physical_bytes`, `compressor_logical_bytes`, and global `swap_used_bytes`.
-2. Rank `apps` by `footprint_bytes`; keep apps with null footprint visible as unknown. Check `coverage.readable_processes`, `unreadable_processes`, `partial`, and `grouping_partial` before comparing totals. Footprint is native physical footprint, not resident RAM, an exact Activity Monitor total or a promise of reclaimable memory. Never derive host memory used or an "elsewhere" remainder by subtracting app footprints.
-3. Drill down with `appmem app ID --json`, using the stable `id` from the snapshot. `commands` sums known process footprints by short executable name; `processes` shows PID, start identity, footprint or an unavailable reason. Unknown members make totals partial. Do not infer per-app RAM, swap, cache, compression or GPU use; this backend does not measure them.
-4. For growth, take two samples of the same app and compare only when both have complete footprint coverage and grouping. Bundleless processes may be grouped under an app ancestor or a session root, and missing ancestry makes attribution uncertain. Same-named independent roots have separate IDs. Shared XPC/WebKit services started by launchd can appear as separate roots; a Safari or other app row may omit related service footprints. Do not infer that closing the app reclaims those separate rows. Native pressure is a kernel state, not Linux PSI or a task-stall percentage. Free memory is free physical pages, not an available-memory estimate. Zero global swap means none is currently allocated.
-5. `--system` and `--scope system` are unsupported on Mac. Do not suggest `systemctl`, Linux unit actions, or per-app swap claims. State the limits and suggest closing an identified app only when the evidence supports it.
-
-## Linux: judging RAM and swap numbers
+## Linux: judging the numbers
 
 - `pressure.level` is the last 10 s. `none` with a lot of swap used means idle pages were paged out earlier; memory is probably not why the machine feels slow now (look at CPU, I/O, GPU). `some` or `high` means tasks are waiting for memory now; appmem shows how much, not which app causes it.
-- Act when `ram_available_bytes` drops under ~10 % of `ram_total_bytes` together with `some` or `high`.
-- `pressure` is `null` when the kernel has no pressure data: judge by `ram_available_bytes` alone and say you can't tell whether stalls are happening.
+- Act when `ram_available_bytes` drops under ~10 % of `ram_total_bytes` together with `some` or `high`. `pressure` is `null` when the kernel has no pressure data: judge by `ram_available_bytes` alone and say you can't tell whether stalls are happening.
 - Never sum process `ram_bytes` to size an app: RSS counts a shared page once per process. Use the app's own `ram_bytes`.
 - Terminals: everything started from a terminal counts as the terminal app. A terminal holding many GiB is usually not the terminal itself; name what `commands.items` shows inside it (agent sessions, node processes, builds), not the terminal.
 - A process with large `swap_bytes`, small `ram_bytes` and an `age_seconds` of days is an idle sleeper that was paged out: harmless under `none`, the first thing to free under `high`.
@@ -54,19 +43,18 @@ On macOS 15+ Apple Silicon, use the [Mac workflow](#mac-workflow) below. The Lin
 - Ready commands: `systemctl --user stop 'UNIT'` for a unit from `units` of a `scope: "user"` app; `sudo systemctl stop 'UNIT'` for `scope: "system"`; `kill PID` for one process. Stopping a terminal's main unit closes every window in it, so prefer `kill PID` for the specific command or ask the user to close that tab.
 - Don't recommend `swapoff` or `vm.swappiness` changes from one snapshot: `swapoff` needs free RAM for everything paged out, and under `none` swap is doing its job.
 - `high` with most swap in one app: free that app. `high` with swap spread thin and `ram_available_bytes` near zero: the machine needs fewer things running or more RAM.
-- `swap_in_bytes`/`swap_out_bytes` are independently nullable lifetime host counters. Linux counts swap-device pages × page size (zram included, successful zswap hits excluded); macOS counts page-rounded compressed segment transfers, not logical app bytes. Neither is SSD throughput. TUI rates need session history; one-shot snapshots do not provide them. From 105 columns, Swap headers show rates followed by `(N this run)`; `(N since boot)` follows when space permits. The session total has priority over the boot total, and the adjacent omission marker reports hidden details. The host panel has Read/Written current rates, boot totals and exact totals since the first accepted host reading in this TUI run. Session totals survive growth reset, navigation and rate-window/clock resets; missing initial coverage or a counter decrease makes that direction unavailable. Temporary missing readings retain its baseline. No history is persisted.
-- Zswap holds logical swap data compressed in physical RAM. Swap used already includes the pre-compression size, RAM used already includes the pool after compression. The table ZSWAP is logical; the gauge is physical against an approximate policy limit, not preallocated RAM or extra swap capacity.
-- `zswap_writeback_bytes` growth is pool writeback to swap devices, already included in swap out. Never sum these counters.
+- With zswap on, `zswap_writeback_bytes` growing between two snapshots means the compressed pool is overflowing to the swap devices, which is slow: that is worth naming.
+
+## macOS: what to claim
+
+- Footprint is not resident RAM or a promise of reclaimable memory. Never derive host memory used by subtracting app footprints, and do not claim per-app swap, cache or compression: macOS gives none.
+- Helper services started by launchd can be their own rows, so an app row may omit helpers; closing the app does not necessarily free them.
+- `pressure.level` is a kernel state (`normal`, `warning`, `critical`), not a stall percentage.
+- `--system` and `--scope system` do not exist; never suggest `systemctl`. Suggest closing an identified app only when the evidence supports it.
 
 ## Errors
 
 A failure writes `{"error": {...}}` as the last non-empty line on stderr, with `kind`, `message`, `action` (`agent`: fix the call yourself; `user`: only the human can) and, when present, `hint` and `next` (the argv to run instead). Follow `hint` and `next`.
 `cgroup_unavailable` means this machine has no cgroup v2, no systemd user manager for this user (for example as root) or the memory controller off: say so and stop, appmem can't help here.
-`interrupted` (a signal stopped the command): run it again.
-`platform_unavailable` means the experimental Mac backend requires macOS 15+ on Apple Silicon or a required native read failed; report the platform or read error instead of substituting Linux counters.
-
-## Live host details
-
-On either main dashboard, `h` opens live host memory details; `h` or Esc closes the panel. Keyboard and wheel scroll, and the panel uses existing dashboard samples. A trailing `…` (`>` in ASCII) means information hidden for space, not an unavailable reading. Failed refreshes mark retained readings stale. Linux details retain Zswap logical/physical accounting; Mac compression is native and must not be claimed as included in disk Swap used. Mac swap uses currently allocated, dynamically growing space, not a fixed capacity.
-
-Linux disk-write wording requires recognized current swap files/direct partitions; zram, mixed, device aliases and unknown topology use generic swap-device wording. Current topology does not prove the targets of all since-boot activity. Successful zswap hits are excluded and writeback is already part of out.
+`platform_unavailable` means this system is not supported (Linux, or macOS 15+ on Apple Silicon): report it, do not substitute Linux counters.
+`read_failed` (a native read failed on a supported Mac) and `interrupted` (a signal stopped the command): run it again.

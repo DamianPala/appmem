@@ -1,18 +1,33 @@
-# appmem: spec v0.20
+# appmem: spec v0.21
 
-On Linux, a live terminal view of RAM and swap usage **per application**, not per process.
-The development branch also compares per-application physical footprints on Apple Silicon macOS.
+A live terminal view of memory usage **per application**, not per process, on Linux and on Apple Silicon macOS.
 Think `btm` or `htop`, but rows are apps (Ghostty, Brave, LibreOffice), each summing all of its processes.
 
-## Why on Linux
+## Why
 
 `htop`, `btm` and `swaptop` show processes.
 A browser or a terminal is dozens of processes, so the question "which app is eating my swap?" needs mental math.
-systemd already puts every desktop app into its own cgroup, and the kernel keeps per-cgroup memory and swap counters.
+On Linux, systemd already puts every desktop app into its own cgroup, and the kernel keeps per-cgroup memory and swap counters.
 appmem reads those counters, groups them by app, and shows a sortable live table.
+On macOS, appmem reads every process's native physical footprint and adds them up per app bundle, the same question answered from the counters that platform has.
 
 The user it is built for: the machine feels slow, htop shows a wall of processes, and they want three answers in seconds.
 Which app holds the memory and swap? Is memory actually the problem right now? What exactly should I close?
+
+## Platforms
+
+| | Linux | macOS |
+|---|---|---|
+| Requires | systemd user session, cgroup v2 with the memory controller, kernel 5.10+ (zswap figures need 5.19, Pressure needs PSI) | macOS 15+, Apple Silicon, a native arm64 Python |
+| Apps seen | the user's units, plus system services on request | the current user's processes only |
+| App memory | per-app cgroup counters: RAM, SWAP, CACHE, ZSWAP | per-process physical footprints (MEMORY) and resident sizes (RESIDENT), summed per app |
+| Host memory | RAM, Zswap, Swap, PSI pressure | RAM, compression, Swap, native pressure level |
+| Not available | cgroup v1, running as root | Intel Macs, macOS before 15, other users' processes, system scope, per-app swap, compression or GPU memory |
+
+- **Linux:** the kernel already sums each unit's memory, so appmem finds the units, names them and adds same-named units together.
+- **macOS:** nothing is counted per app, so each sample lists the user's processes, reads each one natively and groups them by `.app` bundle or ancestry. Per-app swap, cache and compression don't exist there.
+
+Any other operating system fails with `platform_unavailable`.
 
 ## Scope
 
@@ -22,37 +37,22 @@ Which app holds the memory and swap? Is memory actually the problem right now? W
 - Refresh every 1 s (`-i/--interval SECONDS` to change).
 - One row per app, sortable by clicking a column header or by key.
 - Enter on a row opens the app's process view, which can also group processes by command and drill into one command.
-- A `?` screen explaining the numbers.
+- A host header: RAM, Swap and Pressure, a Zswap gauge on Linux, compression on macOS, swap in/out rates and written totals.
+- `h`: a live host memory panel; `?`: a screen explaining the numbers.
 - Themes: Textual's built-in themes, with `terminal-dark`/`terminal-light` for the terminal's own colours. `T` opens a side panel with a live preview, and the choice is remembered in a config file.
 - Non-interactive commands for scripts and agents: `appmem snapshot`, `appmem app NAME`, `appmem schema`, plus an agent skill in `skills/appmem/SKILL.md`.
 
-**Not in v1:** recording/history, charts over time, a streaming `watch` command, CPU or I/O stats, killing processes, settings other than the theme, custom themes (the terminal themes cover a tuned terminal palette), login-session scopes, running as root, Windows, cgroup v1. The development branch has experimental macOS 15+ Apple Silicon support, described below; the published 0.2.0 package remains Linux-only.
-
-## Experimental macOS backend (development branch)
-
-On macOS 15+ Apple Silicon, `appmem` groups readable current-user processes by the outermost `.app` executable path. Bundleless processes inherit the nearest app ancestor; otherwise each highest same-user session root below launchd or an ownership boundary is independent. Same-named bundles at different paths have distinct stable IDs and display suffixes. Missing ancestry and denied process memory reads are explicit partial coverage. Shared XPC and WebKit services started by launchd can remain separate root rows; a Safari or other app row need not include related service footprints. App-embedded services and ordinary descendants still follow the stated path/ancestry rules. This limitation follows the grouping algorithm; the process inventory on a physical desktop remains to be validated. Captured members are immutable for one sample, and PID plus native start time is used when available to reject reuse.
-
-The Mac app, process and command value is **physical footprint**, including native compression accounting, never a Linux RAM/swap/cache counter or resident RSS. All-unreadable groups remain visible with unknown footprint; partially readable groups show the sum of known footprints marked partial. Growth stays unknown until an app's first complete sample establishes a zero baseline. A partial current sample shows unknown; recovery compares with the retained complete baseline. A vanished group loses its baseline, and a reopened bundle with no shared PID/start members establishes a new one. Footprint sums do not yield host memory used, available, elsewhere, or memory guaranteed to be freed.
-
-The Mac TUI displays `APP`, `MEMORY`, `ΔMEM`, `PROCS`, and `RESIDENT` at 100 columns or wider, process and command drill-down, and host native counters with a validated derived RAM partition, compressor physical/logical, global allocated swap and native pressure state. Free is not an available-memory estimate. Native pressure is not Linux PSI. Zero global swap means no swap currently allocated. Per-app swap/cache/compression/kernel memory and GPU use are unavailable. There are no systemctl suggestions or system scope actions; `--system` and `--scope system` fail with `invalid_input`.
-
-The Mac host header keeps four rows: RAM, Compress, Swap and Pressure. RAM used is `physical_bytes - (free_bytes - speculative_bytes) - file_backed_bytes`, displayed as used/physical with a themed gauge and file-backed/free figures where space permits. Native free includes speculative, also included in file-backed, so the displayed free subtracts it once. Used includes reserved/unaccounted memory; no generic residual is labelled boot reservation. File-backed is not all immediately available, and purgeable overlaps used instead of forming another bucket. Missing, negative or contradictory counters invalidate the partition; the row then keeps all its fields with `—` for the unknown ones (`—/8.0 GiB used`, free, file-backed) in the same slots, so the layout does not change. The existing JSON `free_bytes` keeps its native meaning. All backing inputs are in the supported legacy VM prefix; no SDK27 suffix is required.
-
-Compress aligns physical compressed RAM with the other primary values, with logical data and ratio in metadata. It has no invented gauge or compression limit. Wired and purgeable are RAM metadata, retained together with file-backed/free when they fit. Swap uses the existing themed gauge glyphs (or ASCII `#`/`.`), with **currently allocated swap space** as its dynamic denominator. Zero allocation reads `0 B; not allocated` with a neutral same-width placeholder where a gauge fits, no fraction. Invalid swap counters show unavailable. Pressure is the native theme-colored `normal`, `warning`, `critical` or unavailable state, with `apps: this user` in separate metadata and the `Δ since HH:MM (1h12m)` session/reset baseline time with compact elapsed age where they fit. The baseline epoch updates after a successful `b` reset; per-app baselines can be newer after identity or coverage changes. At 40 columns the main RAM, compression, swap and pressure values retain their units; the gauge, secondary accounting figures and baseline timing can drop.
-
-MEMORY and ΔMEM keep native physical-footprint meaning and the API field name `footprint_bytes`; default sort remains footprint descending. RESIDENT comes from native rusage, is shown in main/process/group/member layouts from 100 columns, and sorts by `r` or header click. Hidden sorts revert to MEMORY descending on resize. RESIDENT includes shared/file-backed pages, can double count across processes, is not additive with footprint, and their difference is not swap. Resident coverage is independent of footprint coverage: partial sums are marked `*`, wholly unreadable values `?`, never zero-filled. There is no TREND/history column, per-app SWAP or COMPRESSED, root mode or privilege call.
-
-The Mac layout targets 105×30, with a usable 80×24 compact view and the existing narrower fallbacks. The Mac rows sit on the same grid as the Linux rows (see Header in the main view) and differ only in their fields: RAM has `wired` and `free` in columns 1 and 2 and `file-backed` and `purgeable` in column 3; Compress has `data` and `ratio`; Swap is the Linux row with `used/alloc`; Pressure carries `apps: this user`. Oversized counters drop column 3 before the main units. The footer reads `b reset Δ`. Darwin help uses a focused VerticalScroll with structured definitions and keys, plus fixed close hints above and below. Terminal text snapshots have four host rows (RAM/Compress/Swap/Pressure), no gauges or session Δ, and aligned binary-unit app columns; app reports align process/command columns. Unknown and partial coverage remain explicit. Host RAM, app footprint and resident are distinct accounting views and must not be summed.
-
-The Darwin `snapshot`/`app` documents and `schema` output use a separate platform-specific contract with nullable `footprint_bytes` and `resident_bytes`, independent coverage counts and additive native/derived host accounting fields and `platform: "darwin"`. Linux retains its existing values with additive nullable host swap counters. Native ARM64 CI covers installed wheels on Python 3.12 and 3.14 and validates the live CLI and TUI; physical desktop acceptance remains pending.
+**Not in v1:** recording/history, charts over time, a streaming `watch` command, CPU or I/O stats, killing processes, settings other than the theme, custom themes (the terminal themes cover a tuned terminal palette), login-session scopes, Windows, and the platform limits in "Platforms".
 
 ## Screens
 
 ### Main view
 
+Linux:
+
 ```
 RAM      ██████████████▎░░░░░ 22.1/30.9 GiB used │ avail    8.8 GiB    shared    3.5 GiB    free  1.5 · cache  4.6 · slab  3.2
-Zswap    ███▎░░░░░░░░░░░░░░░░    1.0/6.2 GiB RAM │ holds    3.0 GiB    ratio       3.0:1    limit 20% of RAM · writeback 0 B/s
+Zswap    ███▎░░░░░░░░░░░░░░░░    1.0/6.2 GiB RAM │ holds    3.0 GiB    ratio       3.0:1    limit 20% of RAM  · writeback 0 B/s
 Swap     ██████████████▋░░░░░ 23.3/32.0 GiB used │ in         0 B/s    out      12 MiB/s    written this run   12 MiB · since boot 41.6 GiB
 Pressure none                system  610 MiB [x] │ Δ since 15:58 (12m)                      elsewhere 109 MiB
  APP                        RAM         SWAP        ZSWAP       TOTAL ▾     ΔRAM       ΔSWAP      PROCS
@@ -63,29 +63,95 @@ Pressure none                system  610 MiB [x] │ Δ since 15:58 (12m)       
  r s t d z sort  enter procs  x system  c cache  w zswap  b reset Δ  T theme  h host  ? help  q quit
 ```
 
-- **Header:** RAM/Zswap/Swap/Pressure when zswap is enabled, otherwise RAM/Swap/Pressure. Enabled Zswap remains visible below 80 columns when height permits; unreadable values say unavailable. Both platforms use one grid. A row is `label │ left │ right`. The label is 9 cells from 80 columns (10 below). The left part is a gauge and a right-aligned value, as wide as `total/total unit word` for this machine's totals (`20.4/30.9 GiB used` has no padding on a 30.9 GiB machine); the totals are constant for a run, and if one changes (swapon) the slots recompute once. Gauge widths: 10 from 80 columns, 6 from 60, none below 60; from 105 columns the largest of 20, 16 and 12 cells that leaves every row complete, else 12. The dim `│` (`|` in ASCII) starts the right part, a three-column grid at fixed positions: columns 1 and 2 are a label (as wide as the longest label in that column) and a right-aligned value (rates are unbounded, so their field is the worst case, `1023 KiB/s`; sizes are bounded by the totals), column 3 is detail text split by dim `·` (`/` in ASCII). Every position and every fit decision comes from the terminal width, the totals and those worst-case widths, never from the current values, so nothing appears, disappears or moves when a number changes: zero is shown as zero, unknown as `—` (ASCII `?`). The word form is chosen by width alone: wide words (`this run`, `since boot`, `of RAM`) and four-cell gaps from the width where the rows are complete in that form, short words (`run`, `boot`) and two-cell gaps below it. When the right part does not fit, column 3 yields first, item by item from the right, and an item is never cut. Below 70 columns of a short terminal the RAM and Swap pairs share one row. The main view targets 105×30, compact 80×24 and wide 160×40.
-  - **RAM:** used/total and a neutral gauge. Linux used = `MemTotal - MemAvailable`. `avail` and `shared` fill columns 1 and 2; `free`, `cache` and `slab` follow in column 3 in the total's unit. `shared` is `Shmem`; `free` is `MemFree`, `cache` is `Cached - Shmem` clamped at zero, `slab` is `SReclaimable`. These are not an exact sum of available RAM.
-  - **Swap:** used/total and a neutral gauge, or `off` on Linux when total is zero. Linux values turn the theme's error colour above 90% used. Mac retains its gauge and labels the denominator `used/alloc`; allocation is dynamic, as the host panel explains. The `in` and `out` rates fill columns 1 and 2; column 3 holds `written` with two label-first pairs, the total this run and the cumulative since-boot total (`written run 1.9 GiB · boot 2.4 TiB`, wide `written this run 1.9 GiB · since boot 2.4 TiB`), numbers right-aligned in an 8-cell field (100 GiB and more drop the decimal). With a 30.9/32.0 GiB machine every row is complete from 116 columns in the short-word form and from 139 in the wide-word form (a 8 GiB Mac: 124 and 142); below that the since-boot total goes first, then the run total. The host panel shows both rates and totals at every supported width. Narrow views mark omissions without adding rows.
-    - Neutral `in` and `out` rates are fixed-width fields. Each is averaged over a 5-second window of lifetime counters, and the first frame shows `—` until two samples at least half a refresh interval apart (at most half a second) exist. Missing/invalid/decreasing samples, duplicate timestamps and discontinuities are unknown (`—`, ASCII `?`); measured zero is `0 B/s`. A wall/monotonic disagreement over 5 seconds in either direction or a gap longer than max(30 seconds, 3×configured interval) restarts measurement. `b` does not reset rates. One-shot snapshots contain no rates or Δ.
-    - Linux counters are `/proc/vmstat` `pswpin`/`pswpout` × `SC_PAGE_SIZE`, swap-device activity including zram. Successful zswap hits are excluded; zero-page bypass depends on kernel version. Darwin counters are `host_statistics64` `swapins`/`swapouts` × `host_page_size`: page-rounded compressed segment transfers to/from swap files, including housekeeping. These are not logical app bytes or SSD throughput. Both nullable lifetime counters are in `system` JSON and schema.
-    - The host panel separates Swap used from an Activity table with Read / Written columns and Current rate, Since boot, Since AppMem started rows. Boot values use current native counters; session values subtract the first accepted host snapshot independently for each direction. Initial zero is valid. Missing/invalid initial counters leave that session direction unavailable; later missing/invalid counters make only the current sample unavailable and retain the baseline. Any observed valid decrease invalidates the full-session total permanently, even when above its initial baseline. Neither clock/rate resets, long gaps, b nor navigation reset activity totals. Paused overlays recover differences on resume; failed reads retain stale-labelled data. No persistent history, extra sampling or timers. Never add or subtract zswap writeback from out.
-    - Linux uses the approved disk explanation only when all current `/proc/swaps` entries are recognized ordinary swap files or direct disk partitions. Missing/malformed/empty entries, zram, mixed targets, aliases and unmapped device-mapper targets use generic swap-device wording. Current topology does not prove historical storage targets. Counters include native operations without guessed zram subtraction. Zswap details say `Swap used includes the data held in zswap, even without writing them to disk.` Mac activity remains page-rounded native segment traffic, independent of current swap allocation.
-  - **Zswap:** physical pool / approximate `max_pool_percent × RAM` limit in the gauge and value, `holds` (logical data) and `ratio` in columns 1 and 2, then `limit N% of RAM` and the `writeback` rate in column 3. The gauge is filled from the pool's RAM against its limit, never from the logical data. The limit is a policy, not reserved RAM. Unknown and zero limits have neutral placeholder gauges. A pool above its limit turns the value and the limit item to the error colour and the word reads `above N%` instead of `limit N%`; the item keeps its place either way. Swap used includes the held logical data before compression; RAM used includes the physical pool. Do not add either again or infer disk-only swap by subtraction.
-  - **Pressure:** Linux PSI word or unavailable in the gauge/state column, with `system N [x]` right-aligned at the end of the left part, then the `Δ since` baseline and `elsewhere` (shown from 1 MiB) in the right part. The pressure word is never cut: the long form (`none (was 3.4 %)`) gives way to the short word before the system amount does, and when the left part has no room for the amount (below 80 columns) it leads the right part instead, or is omitted; the word is never cut. Mac shows the native normal/warning/critical/unavailable state, with app scope explicitly `apps: this user` where Linux has `system N [x]`. Pressure is never qualified as current-user only.
-  - **Hidden data:** a normal-foreground `…` immediately after the last visible field means host information was omitted for space; ASCII uses `>`. Unavailable readings are distinct from omitted information. No marker appears when all relevant information fits. Header rows never wrap or grow on a sample. Below 18 terminal rows Linux keeps two rows, RAM with the pressure word and Swap with the system amount, the `Δ since` baseline and the zswapped data, then the usual items as space allows, and marks omitted host data; this is never less than 0.2.0 showed at the same size. The table receives the remaining height.
-  - **Host panel:** `h` is available on either main dashboard at every supported width, including 160. It opens a live host-memory overlay, closed by `h` or Esc. Keyboard and wheel scroll work, resize rewraps content, and refresh preserves scroll. The same dashboard collector, rate history and timer continue while the panel is open; closing it does not add a sample or alter table selection/viewport. Help/theme retain their existing covering behavior. Missing readings remain unavailable; failed refreshes identify the retained sample as stale. Linux details list RAM occupied, approximate Pool limit with configured RAM percentage, Data held, Compression, Compressor and Writeback (rate and since boot) on separate aligned rows, then explain Zswap accounting and its unreserved policy limit, with actual PSI counters. Mac details explain native compression, overlapping wired/purgeable values and dynamic swap without inventing Linux accounting or a compressor limit. The panel is laid out from structured blocks for the current width and never re-reads its own rendered text; a tick that changes nothing does not touch the widget.
-  - **Bars:** theme accent fill, or foreground where the accent lacks contrast, on a dim track; Unicode eighth-block precision and `#`/`.` ASCII fallback preserve the existing theme rules. Ordinary data changes never choose a new gauge width or header row count.
-- The sort marker `▴`/`▾` sits on the sorted column. Default sort: TOTAL descending.
+macOS:
+
+```
+RAM      ██████████████▍░░░░░     11.5/16.0 GiB used │ wired    2.4 GiB    free     926 MiB    file-backed  3.6 GiB · purgeable  310 MiB
+Compress                                 1.3 GiB RAM │ data     4.1 GiB    ratio      3.2:1
+Swap     ████████████░░░░░░░░ 1.2/2.0 GiB used/alloc │ in         0 B/s    out      3 MiB/s    written this run    8 MiB · since boot  5.2 GiB
+Pressure normal                      apps: this user │ Δ since 15:58 (12m)
+ APP                               MEMORY ▾      ΔMEM         RESIDENT      PROCS
+ Google Chrome                          3.8 GiB      +12 MiB       5.3 GiB       24
+ Ghostty                               2.0 GiB*            ?      2.8 GiB*        5
+ com.apple.WebKit.WebContent            850 MiB            ·       1.2 GiB        2
+ ...
+ f d r sort  enter procs  b reset Δ  T theme  h host  ? help  q quit
+```
+
+Both target 105×30, with a compact 80×24 and a wide 160×40 view.
+
+#### Header grid
+
+Both platforms lay out their host rows on one grid.
+
+| Part | Rule |
+|---|---|
+| Rows | Linux: RAM, Zswap (while zswap is enabled, also below 80 columns), Swap, Pressure. macOS: RAM, Compress, Swap, Pressure |
+| Row | `label  left │ right` |
+| Label | 9 cells from 80 columns, 10 below |
+| Left part | a gauge, then the value right-aligned in a slot as wide as `total/total unit word` for this machine's totals (`22.1/30.9 GiB used` has no padding on a 30.9 GiB machine) |
+| Gauge | none below 60 columns, 6 cells from 60, 10 from 80; from 105 the largest of 20, 16 and 12 that leaves every row complete, else 12 |
+| Pressure slot | from 80 columns the left part also fits `unavailable` plus the Linux system amount or the macOS `apps: this user` |
+| Right part | starts with a dim `│` (ASCII `|`); three columns at fixed positions |
+| Columns 1 and 2 | a label as wide as the longest label in that column, then a value right-aligned in a 10-cell field (`1023 KiB/s`: rates are unbounded, so their field is the worst case) |
+| Column 3 | detail items split by a dim `·` (ASCII `/`); cumulative totals in an 8-cell field, 100 GiB and more without the decimal |
+| Word form | chosen after the gauge: wide words (`this run`, `since boot`, `of RAM`) and 4-cell gaps when every row is complete in that form, else short words (`run`, `boot`) and 2-cell gaps |
+| Yielding | items yield whole from the right, so column 3 goes first; an item is never cut |
+| Values | zero is shown as zero, unknown as `—` (ASCII `?`) |
+
+- Every position and fit decision comes from the terminal width, the totals and the worst-case widths, never from the current values: nothing appears, disappears or moves when a number changes. If a total changes (swapon, macOS swap growth) the slots recompute.
+- Examples: a 30.9/32.0 GiB Linux machine is complete from 116 columns with short words and from 139 with wide words; an 8 GiB Mac with 1 GiB swap allocated, from 124 and 142.
+- **Hidden data:** a normal-foreground `…` (ASCII `>`) right after the last visible field means host information was omitted for space; a row whose left part alone does not fit is cropped before it. Unavailable readings are distinct from omitted information.
+- Header rows never wrap or grow on a sample, and data changes never choose a new gauge width or row count. The table gets the remaining height.
+
+#### Header rows
+
+- **RAM:** used/total and a neutral gauge.
+  - Linux: used = `MemTotal - MemAvailable`. `avail` and `shared` fill columns 1 and 2; `free`, `cache` and `slab` follow in column 3 in the total's unit. `shared` is `Shmem`; `free` is `MemFree`, `cache` is `Cached - Shmem` clamped at zero, `slab` is `SReclaimable`. These are not an exact sum of available RAM.
+  - macOS: used is the RAM partition (see Definitions); `wired` and `free`, then `file-backed` and `purgeable`. An unknown partition keeps every field in place with `—` (`—/8.0 GiB used`); with no physical total the value reads `used unavailable`.
+- **Zswap** (Linux): physical pool / approximate `max_pool_percent × RAM` limit in the gauge and value, `holds` (logical data) and `ratio` in columns 1 and 2, then `limit N% of RAM` and the `writeback` rate in column 3. The gauge is filled from the pool's RAM against its limit, never from the logical data. The limit is a policy, not reserved RAM. Unknown and zero limits have neutral placeholder gauges. A pool above its limit turns the value and the limit item to the error colour and the word reads `above N%` instead of `limit N%`; the item keeps its place either way. Swap used includes the held logical data before compression; RAM used includes the physical pool. Do not add either again or infer disk-only swap by subtraction.
+- **Compress** (macOS): the compressor's RAM as the value, no gauge (there is no limit), then `data` (logical bytes) and `ratio` (only when both are above zero).
+- **Swap:** used/total and a neutral gauge. Linux shows `off` with a placeholder gauge when total is zero, and turns the value the theme's error colour above 90% used. macOS divides by the swap allocated now (`used/alloc`); zero allocation reads `0 B; not allocated` with a placeholder gauge, invalid counters `unavailable`.
+  - Columns 1 and 2: the `in` and `out` rates. Column 3: `written` with the total this run and since boot (`written run 1.9 GiB · boot 2.4 TiB`, wide `written this run 1.9 GiB · since boot 2.4 TiB`); since boot yields first.
+  - Rates are averaged over a 5-second window of lifetime counters. The first frame shows `—` until two samples at least half a refresh interval apart (at most half a second) exist. Missing, invalid or decreasing samples, duplicate timestamps and discontinuities are unknown; measured zero is `0 B/s`. A wall/monotonic clock disagreement over 5 seconds, or a gap longer than max(30 seconds, 3×interval), restarts measurement. `b` does not reset rates.
+- **Pressure:** the word, bold, in the theme's success/warning/error colour, or `unavailable`, in the gauge column. `Δ since HH:MM (12m)` (baseline time and compact age, whole days from 100 h on) spans columns 1 and 2.
+  - Linux: `system N [x]` right-aligned at the end of the left part, then `Δ since` and `elsewhere` (shown from 1 MiB). The long form (`none (was 3.4 %)`) gives way to the short word before the system amount does; below 80 columns the amount leads the right part instead, or is omitted. The word is never cut.
+  - macOS: `normal`, `warning` or `critical`, with `apps: this user` where Linux has `system N [x]`. Pressure is the machine's; only the app rows are this user's.
+- **Bars:** `█` fill with an eighth-block edge on a dim `░` track. The fill uses the theme's accent colour, or its foreground where the accent is under 3:1 contrast. A `#`/`.` ASCII form applies when `LC_ALL`/`LC_CTYPE`/`LANG` names a non-UTF-8 locale; a bare `LANG=C` still gets Unicode bars, because Python coerces it to UTF-8 at startup. Bars carry no information that the numbers don't.
+- **Short terminals** (Linux): below 18 terminal rows the header keeps two rows. From 70 columns: RAM with the pressure word leading its right part, then `shared`, `avail` and the breakdown; Swap with the system amount, `Δ since` and the zswapped data (zswapped first below 100 columns), then the activity. Below 70 columns: `RAM u/t  Swap u/t …`, then Pressure with the system amount. The macOS header keeps four rows at every height.
+
+#### Host panel
+
+- `h` on the main view opens a live, scrollable host memory overlay at every supported width; `h` or Esc closes it. It rewraps on resize and keeps its scroll position across refreshes.
+- It runs on the dashboard's own collector, rate history and timer; closing it adds no sample and keeps the table's selection and viewport. After a failed refresh it says it shows the last successful reading.
+- It is laid out from structured blocks for the current width, never by re-reading its own text; a tick that changes nothing does not touch the widget.
+- Both: RAM, Swap used, an Activity table (Read / Written by Current rate, Since boot, This run), Pressure, and when the Δ baseline started.
+- Linux adds the RAM breakdown, a Zswap block (RAM occupied, approximate Pool limit with its RAM percentage, Data held, Compression, Compressor, Writeback rate and since-boot total) with its accounting notes, the PSI percentages, the system services total and `elsewhere`. Writes are called disk writes only when every current `/proc/swaps` entry is a recognised swap file or disk partition; zram, mixed, aliased, device-mapper or unreadable entries get generic swap-device wording.
+- macOS adds file-backed, free, wired, purgeable, compressed data versus its RAM, and that swap space is allocated dynamically.
+
+#### Table
+
+- The sort marker `▴`/`▾` sits on the sorted column. Default sort: TOTAL descending on Linux, MEMORY descending on macOS.
 - Clicking the sorted column again flips the direction.
-- Rows with equal values keep a stable order by app name.
-- At the default 1 s interval, PROCS in the live table refreshes every five seconds (every 5th tick); the memory columns (RAM, SWAP, CACHE, ZSWAP, TOTAL) refresh every tick. A unit seen for the first time is always counted right away.
-- Δ below 1 MiB either way shows as a dim `·`; Δ columns render dim while the baseline is younger than 60 s.
-- With zswap enabled, the ZSWAP column is shown by default, between SWAP and TOTAL.
-- Under 95 columns ΔSWAP and ΔRAM are hidden, and under 85 ZSWAP is hidden too. Sorting by a hidden column falls back to TOTAL descending.
+- Rows with equal values keep a stable order by app name; on macOS unknown values sort last.
+- Sorting by a column a resize hides falls back to the default sort.
+- Δ below 1 MiB either way shows as `·` (dim on Linux).
 - A footer with key caps sits at the bottom of every view and drops its lowest-priority items instead of wrapping. It shows only keys that act in the current view and mode, labelled by what they do there (e.g. `d` is absent while the Δ columns are hidden). `T theme` is the first item to drop, then `b reset Δ`, then `h host`, so `enter procs` survives at 40 columns.
 - Mouse-wheel scrolling stays where the user put it across refreshes: a tick restores the cursor without scrolling the viewport; only explicit actions (sort, toggles, `b`, drill in/out, a resize) scroll the selected row into view.
 
+Columns, in order:
+
+| Platform | Columns | Shown |
+|---|---|---|
+| Linux | APP, RAM, SWAP, CACHE, ZSWAP, TOTAL, ΔRAM, ΔSWAP, PROCS | CACHE only after `c`; ZSWAP by default while zswap is enabled (`w` toggles), from 85 columns; ΔRAM and ΔSWAP from 95 columns |
+| macOS | APP, MEMORY, ΔMEM, RESIDENT, PROCS | ΔMEM from 65 columns; RESIDENT from 100 columns |
+
+- Linux: at the default 1 s interval, PROCS in the live table refreshes every five seconds (every 5th tick); the memory columns (RAM, SWAP, CACHE, ZSWAP, TOTAL) refresh every tick. A unit seen for the first time is always counted right away. Δ columns render dim while the baseline is younger than 60 s.
+- macOS: a partial known sum is marked `*`, a wholly unknown value is `?`. Every group is shown, whatever its size.
+
 ### Process view (after Enter)
+
+Linux:
 
 ```
 ghostty   281 procs   swap 11.2 GiB   RAM 6.6 GiB
@@ -131,10 +197,42 @@ Enter on a command drills into its member processes (title `ghostty › claude`,
 - `g`, Enter into a drill-down and Esc out of it switch only after the new view's data was read; if that read fails, the current view stays as it was.
 - All layouts refresh with the same interval as the main view.
 
+macOS:
+
+```
+Google Chrome  memory 3.8 GiB
+ PID      COMMAND                           MEMORY ▾      RESIDENT      STATE
+     100  Google Chrome                          900 MiB       1.2 GiB  readable
+     101  Google Chrome Helper (Renderer)        130 MiB       182 MiB  readable
+     102  Google Chrome Helper (Renderer)        130 MiB       182 MiB  readable
+ ...
+/Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+ f n p r sort  g group  esc back  T theme  ? help  q quit
+```
+
+With `g` (group by command):
+
+```
+ COMMAND                           MEMORY ▾      RESIDENT      PROCS    UNREADABLE
+ Google Chrome Helper (Renderer)        2.9 GiB       4.1 GiB       23             0
+ Google Chrome                          900 MiB       1.2 GiB        1             0
+23 memory readable, 0 unreadable processes; resident 23/23 readable
+ f n p u r sort  g ungroup  enter members  esc back  T theme  ? help  q quit
+```
+
+- Title: the app name and its MEMORY, or `Application vanished`.
+- Flat: PID, COMMAND, MEMORY, RESIDENT (from 100 columns), STATE (`readable`/`unreadable`, from 75 columns). The status line shows the selected process's executable path, or why its memory is unavailable.
+- Grouped: COMMAND, MEMORY, RESIDENT (from 100 columns), PROCS, UNREADABLE (from 75 columns), with readable/unreadable counts for both metrics in the status line. Enter drills into a command's processes, live; Esc returns to the groups on the same command.
+- All layouts refresh with the same interval as the main view.
+- Sorted by MEMORY descending, unknown last; a hidden sort column falls back to that.
+- No stop commands and no kernel or unattributed rows: nothing is held outside the processes' footprints.
+
 ### Help screen (`?`)
 
-A scrolling screen with the definitions below in plain words, soft-wrapped to the width, with `esc/?/q close` in its title line.
-It covers what RAM, CACHE, SWAP, TOTAL, pressure and the header's shared/free/cache/avail mean (tmpfs files count toward the app that wrote them), why rows don't add up to the header, why a closed app can still have a row, and how to act on what you see, plus `h` for the host panel, the trailing hidden-data marker (`…`, ASCII `>`), and `T` with where the theme is saved. When zswap is enabled, it also defines the physical Zswap gauge, in/out, writeback and logical ZSWAP. It also explains the bar glyphs (`█` used, `░` what's left). It ends with the key list from the "Keys" table below, one line per key; `z` and `w` appear only when zswap is enabled, like the ZSWAP column they act on.
+A scrolling screen with the definitions below in plain words, soft-wrapped to the width, with `esc/?/q close` in its title line, ending with the platform's key list, one line per key.
+
+- Linux: what RAM, CACHE, SWAP, TOTAL, pressure and the header's shared/free/cache/avail mean (tmpfs files count toward the app that wrote them), swap in/out and written totals, why rows don't add up to the header, why a closed app can still have a row, and how to act on what you see, plus `h` for the host panel, the trailing hidden-data marker (`…`, ASCII `>`), and `T` with where the theme is saved. When zswap is enabled, it also defines the physical Zswap gauge and logical ZSWAP, and lists `z` and `w`. It also explains the bar glyphs (`█` used, `░` what's left).
+- macOS: swap in/out, MEMORY, RESIDENT, ΔMEM, `*`/`?`, RAM, file-backed, Compress, Swap, Pressure, grouping, the host panel and the hidden-data marker.
 
 ## Keys
 
@@ -142,22 +240,26 @@ It covers what RAM, CACHE, SWAP, TOTAL, pressure and the header's shared/free/ca
 |---|---|
 | click header | sort by that column, click again to reverse |
 | click a row | select it, double click opens it (process view, or a command's processes when grouped) |
-| `r` / `s` / `t` / `d` / `z` | sort by RAM / SWAP / TOTAL / ΔSWAP / ZSWAP (repeat to reverse); a key whose column is hidden is absent and does nothing; other columns sort by click |
+| `r` / `s` / `t` / `d` / `z` | Linux: sort by RAM / SWAP / TOTAL / ΔSWAP / ZSWAP (repeat to reverse); a key whose column is hidden is absent and does nothing; other columns sort by click |
+| `f` / `d` / `r` | macOS main view: sort by MEMORY / ΔMEM / RESIDENT (repeat to reverse); a hidden column's key does nothing |
+| `f` / `r` / `n` / `p` / `u` | macOS process view: sort by MEMORY / RESIDENT / command / PID (PROCS when grouped) / UNREADABLE |
 | `↑` `↓` `PgUp` `PgDn` | move |
 | `Home` `End` | jump to the first/last row |
 | `Enter` | open the process view for the selected app; in grouped mode, the processes of the selected command |
 | `g` | process view: toggle grouping by command |
-| `Esc` | back to the main view |
-| `c` | toggle the CACHE column |
-| `w` | toggle the ZSWAP column (main view, only while zswap is enabled; the choice lasts for the session) |
-| `x` | toggle system services |
+| `Esc` | back to the main view (from a drill-down, to the groups) |
+| `c` | Linux: toggle the CACHE column |
+| `w` | Linux: toggle the ZSWAP column (main view, only while zswap is enabled; the choice lasts for the session) |
+| `x` | Linux: toggle system services |
 | `b` | reset the Δ baseline to now |
 | `T` / `Ctrl+P` → Theme | theme panel (all views, see "Theme panel"); opening it again while open does nothing |
-| `h` | main dashboards: live host memory panel; `h` or Esc closes it |
+| `h` | main view: live host memory panel; `h` or Esc closes it |
 | `?` | help screen |
 | `q` / `Ctrl+C` | quit |
 
 ## Data sources
+
+### Linux
 
 All reads are plain, world-readable files. No root needed.
 
@@ -176,21 +278,44 @@ All reads are plain, world-readable files. No root needed.
 | Process name | basename of the first whitespace-separated token of the first `/proc/PID/cmdline` field; `/proc/PID/comm` when cmdline is empty, the result is `exe`, or argv[0] starts with `/proc/`. Interpreters and launchers get a label (see "Process names" below) |
 | Private RAM per process (`app NAME` only) | `/proc/PID/smaps_rollup`: `Private_Clean + Private_Dirty`; null when unreadable |
 | Process age | `/proc/PID/stat` field 22 (`starttime`), parsed after the last `)` because names may contain spaces and parentheses |
-| System totals | `/proc/meminfo`: `MemTotal`, `MemAvailable`, `SwapTotal`, `SwapFree` |
+| System totals | `/proc/meminfo`: `MemTotal`, `MemAvailable`, `MemFree`, `Cached`, `Shmem`, `SReclaimable`, `SwapTotal`, `SwapFree` |
+| Swap in/out | `/proc/vmstat` `pswpin`/`pswpout` × `SC_PAGE_SIZE` |
+| Swap targets (panel wording) | `/proc/swaps` |
 | Pressure | `/proc/pressure/memory`, `avg10` and `avg60` of `some` and `full` |
 | Hidden system total | `memory.stat` and `memory.swap.current` of `/sys/fs/cgroup/system.slice` |
 | `elsewhere` | root `/sys/fs/cgroup/memory.stat` minus the `user@$UID.service` tree minus `system.slice` |
 
 PROCS is the line count of `cgroup.procs`, not `pids.current`, which counts threads.
 
+### macOS
+
+Native calls through `ctypes`: no privileges, no subprocesses, only the current user's processes.
+
+| What | Source |
+|---|---|
+| Process list | `proc_listpids` |
+| Parent, owner, short name | `proc_pidinfo` short BSD info |
+| Executable path | `proc_pidpath` |
+| Footprint, resident size, start time | `proc_pid_rusage` `RUSAGE_INFO_V4`: `ri_phys_footprint`, `ri_resident_size`, `ri_proc_start_abstime` |
+| Bundle id (same-named bundles only) | `CFBundleIdentifier` in `<bundle>/Contents/Info.plist`, a regular file of at most 1 MiB |
+| Physical memory | `sysctl hw.memsize` |
+| Swap used and allocated | `sysctl vm.swapusage` |
+| Page counters | `host_statistics64(HOST_VM_INFO64)` × `host_page_size`: free, speculative, external (file-backed), purgeable, wired, compressor pages, uncompressed pages in the compressor, swapins, swapouts |
+| Pressure | `sysctl kern.memorystatus_vm_pressure_level`: 1 normal, 2 warning, 4 critical |
+
+- Each process is read as identity, memory, path, identity again, memory again; a changed parent, owner or start time means the PID was reused mid-sample, and the process is skipped.
+- Per-process failures are `denied`, `vanished`, `unsupported` or `error`; unreadable memory keeps the process in its group with an unknown value. Pressure can fail alone; the other host reads succeed or fail together.
+
 ### Process names
 
-Arguments can hold secrets, so a name never shows one, except for this allowlist, which fails closed.
+Linux arguments can hold secrets, so a name never shows one, except for this allowlist, which fails closed.
 - For `node`, `bun`, `deno`, `npm`, `npx`, `uv`, `uvx` and `python`/`python3`/`python3.N`, with a real NUL-separated argv, the name is `interpreter:target` (`node:mcp-remote`, `npx:@scope/tool`, `python3:http.server`).
 - Walking the arguments skips only known verbs (`npm exec/run/x`, `uv tool/run/install`, `bun`/`deno run`) and known value-less flags (python `-u -B -O -E -s -S -I`; node `--no-warnings --enable-source-maps`; npm/npx `-y --yes`).
 - The target is a script basename, a `-m` module or a package spec with `@version` dropped. A generic script basename (`index.js`, `main.js`, `cli.js`, `__main__.py`) becomes the package: the directory after `node_modules/`, or the nearest meaningful parent.
 - The target must match `[A-Za-z0-9._@/+-]`, at most 40 characters.
 - Any other flag (inline code `-e`/`-c`, options with values), a URL, a query string or a failed check gives the bare interpreter name.
+
+On macOS a name is the executable's basename, never an argument; the 15-character BSD short name, which merges helpers with a shared prefix, is only the fallback when the path is unreadable.
 
 ### Finding units
 
@@ -205,6 +330,8 @@ Roots: `/sys/fs/cgroup/user.slice/user-$UID.slice/user@$UID.service/{app,session
 Login-session scopes (`user-$UID.slice/session-N.scope`: the display manager helper, SSH and VT logins) are not shown in v1.
 
 ### Definitions
+
+Linux:
 
 - **RAM = anon + shmem + kernel.** Memory the app holds that the kernel can't just drop.
   `memory.current` would also count page cache, which makes an app that read a big file look like a hog, even though the kernel frees that cache instantly.
@@ -224,9 +351,28 @@ Login-session scopes (`user-$UID.slice/session-N.scope`: the display manager hel
 
   Big swap with pressure `none` means idle pages were paged out, and memory is not why the machine is slow right now.
 - **App identity** is (scope, name): a user app and a system service with the same name are separate rows, and system rows show as `name [sys]`.
-- **Δ** is the change since the baseline shown in the header: appmem start, or the last `b`. Apps that appear later count from their first sample.
 
-## Grouping: unit → app name
+macOS:
+
+- **MEMORY** sums the readable members' physical footprints: the memory charged to each process, including its compressed pages, as in Activity Monitor's Memory column. It is not resident RAM or what quitting frees, and footprint sums never yield host used, available or `elsewhere`.
+- **RESIDENT** sums the readable members' resident sizes, where shared and file-backed pages count in every process. It is not additive with MEMORY, and their difference is not swap.
+- **Coverage:** each metric counts its own readable and unreadable members. A sum with an unreadable member, or from a partially grouped app, is marked `*`; no readable member is `?` (`unknown` in text), never zero.
+- **Host RAM used = physical − (free − speculative) − file-backed.** Native free includes speculative, which file-backed also includes, so it is subtracted once. Reserved and unaccounted memory stays in used; wired and purgeable overlap used; file-backed is not all immediately available. The partition is unknown when a counter is missing or negative, free or file-backed exceeds physical, speculative exceeds free or file-backed, or used would be below wired plus compressed RAM.
+- It reads higher than Activity Monitor's Memory Used (app memory without purgeable, plus wired, plus compressed) because it keeps purgeable pages and the memory no page counter covers (set aside at boot).
+- **Compress** `data` is the logical bytes the compressor holds; its RAM is already inside RAM used. Zero swap allocation means no swap in use, not swap turned off. **Pressure** is the kernel's level, not PSI or a RAM percentage.
+
+Both:
+
+- **Swap in/out** rates come from lifetime host counters; they are not app bytes or SSD throughput.
+  - Linux: swap-device reads and writes, including zram and zswap writeback (never add or subtract writeback again). Successful zswap hits are excluded; zero-page bypass depends on kernel version.
+  - macOS: page-rounded compressed segments moved to and from swap files, including housekeeping, independent of the current allocation.
+- **Written totals:** `since boot` is the lifetime counter; `this run` subtracts the first accepted sample, per direction. A missing first sample leaves that direction unavailable for the run; a later missing one hides only the current value; any decrease invalidates the run total for good. Rate resets, long gaps, `b` and navigation never reset it.
+- **Δ** is the change since the baseline shown in the header: appmem start, or the last `b`. Apps that appear later count from their first sample.
+  On macOS the baseline must be a complete sample (no unreadable member, grouping not partial); ΔMEM is `?` until then and while the current sample is partial, then compares with the retained baseline again. A vanished group loses its baseline; a bundle reopened with no shared member (PID and start time) starts a new one.
+
+## Grouping
+
+### Linux: unit → app name
 
 Several units can belong to one app: many Ghostty windows, LibreOffice helper units, Chrome launched in two different ways.
 Rows are merged by app name, and the counters are summed.
@@ -289,10 +435,24 @@ Acceptance table (real unit names from the dev machine, used as unit tests):
 | `plasma-powerdevil.service` | `plasma` |
 | `pipewire.service` | `pipewire` |
 
+### macOS: processes → app
+
+Each sample is one immutable process inventory; the process view reuses its members.
+
+1. **Bundle:** a process whose executable lies inside an `.app` belongs to the outermost `.app` on its path, so an app's helpers, frameworks and XPC services count as the app even when launchd started them. A `.framework` before any `.app` on the path means no bundle: that `.app` is a tool the framework ships (the Python framework's `Python.app`).
+2. **Ancestry:** a process outside any bundle joins its nearest ancestor with a bundle (at most 64 levels), so a shell and everything run in Ghostty count as Ghostty.
+3. **Roots:** otherwise the walk stops below launchd or at a parent owned by another user, and the topmost process is the root. Bundleless roots with one name are one app, as Linux merges units; a bundle and a bundleless root with one name stay apart.
+4. **Names:** the bundle's directory name without `.app`, or the root's executable basename. Same-named bundles at different paths add their bundle id when readable, `Name (bundle.id)`; it stays with its bundle when the twin quits. Each app's `id` is the first 12 hex digits of a SHA-256 of its bundle path or root name.
+5. **Partial grouping:** a vanished or unreadable parent, a parent started after its child (PID reuse), a cycle, the depth limit, or an unreadable path or start time.
+
+Services launchd starts outside any app bundle are rows of their own: WebKit's `com.apple.WebKit.WebContent` lives in `WebKit.framework`, so a Safari row does not include the pages it shows.
+
+`app NAME` matches an `id`, a full name, a plain name only one app has, or `Name (bundle.id)` after the twin has gone; a miss hints up to five names containing it.
+
 ### Terminals
 
-Anything started from a terminal lives in the terminal's cgroup, so `claude`, `node` or `python` run from Ghostty count as Ghostty.
-That is how the kernel sees it.
+Anything started from a terminal lives in the terminal's cgroup (on macOS, under its bundle by ancestry), so `claude`, `node` or `python` run from Ghostty count as Ghostty.
+That is how the system sees it.
 The process view with `g` shows what is really inside in one screen.
 Splitting terminal children into their own main-view rows is v2.
 
@@ -300,33 +460,41 @@ Splitting terminal children into their own main-view rows is v2.
 
 - Sizes use binary units and a dot as the decimal separator. GiB gets one decimal, MiB and KiB are integers (`16.8 GiB`, `677 MiB`).
 - Numeric columns are right-aligned with fixed widths, so values changing size don't re-flow the table.
-- Rows with less than 1 MiB TOTAL are hidden. The CACHE toggle doesn't change which rows show.
+- Linux rows with less than 1 MiB TOTAL are hidden. The CACHE toggle doesn't change which rows show.
 - Apps that appear mid-session get a row. Apps that disappear drop out at the next refresh.
 - A unit or process that vanishes between listing and reading is skipped silently. This is normal churn, not an error.
-- A row can have PROCS 0 and memory above 0: the unit outlives its processes while it still holds memory. It shows like any other row, and its process view shows only the `kernel` and `unattributed` rows.
-- A tick whose reads fail transiently (`memory.stat` missing, any `OSError`, a parse error from a half-written `/proc` or `/sys` file) is skipped; the screen keeps the last data and the next tick recovers. Errors while applying the data to the screen are bugs and still end the app. Only a missing user tree ends the app as a runtime failure.
+- A Linux row can have PROCS 0 and memory above 0: the unit outlives its processes while it still holds memory. It shows like any other row, and its process view shows only the `kernel` and `unattributed` rows.
+- Linux: a tick whose reads fail transiently (`memory.stat` missing, any `OSError`, a parse error from a half-written `/proc` or `/sys` file) is skipped; the screen keeps the last data and the next tick recovers. Errors while applying the data to the screen are bugs and still end the app. Only a missing user tree ends the app as a runtime failure.
+- macOS: a failed native read keeps the last data, says `Read unavailable; showing stale values; retrying` in the first header row or the process view's status line, and retries next tick; `b` then resets nothing.
 - The cursor follows the selected app across refreshes and re-sorts. If that app disappears, the cursor stays at the same row index, or on the last row.
 - Names (apps, processes, units, titles, status line) show C0/C1 control characters escaped (`\x1b[41m`), in the live view as in the text reports; nothing a process or unit is called can write to the terminal.
 - Widths count terminal cells, not characters: names are cut at 32 cells with `…` and a wide character is never split. No line of any view wraps at any width. In the main view, the APP column takes only the width left after the numeric columns (capped at 32, never below 8), at every width and again when a scrollbar appears, so numbers are never cut; long names get `…` first.
-- Below about 55 columns in the main view (about 67 with CACHE shown), APP's own floor of 8 no longer leaves room for every numeric column to stay whole; a number can be cut from there down, the same way a name is above that floor.
+- Below about 55 columns in the Linux main view (about 67 with CACHE shown), APP's own floor of 8 no longer leaves room for every numeric column to stay whole; a number can be cut from there down, the same way a name is above that floor.
 - Periodic reads run off the UI thread, one at a time per screen; keys stay responsive while a read is slow, and a result read for a view the user has since left is dropped.
 
 ## Command line
 
 ```
+Linux:
 appmem [-i SECONDS] [--system] [--theme NAME]      live view (TUI)
 appmem snapshot [--system] [--limit N] [--json]     machine state + apps
 appmem app NAME [--scope user|system] [--limit N] [--json]
                                                     one app: units, processes, commands, remainder
+macOS:
+appmem [-i SECONDS] [--theme NAME]                  live view (TUI)
+appmem snapshot [--limit N] [--json]                host memory + app footprints
+appmem app NAME [--scope user] [--limit N] [--json] one app: processes, commands
+Both:
 appmem schema [COMMAND]                             interface description as JSON
 appmem --help | -h
 appmem --version | -V
 ```
 
 The command line conforms to the house CLI Design Standard 0.1.0 (claimed in `appmem schema` under `conformance`).
-`appmem schema` and each command's `--help` are the reference for flags, defaults and output fields; this section only fixes the behaviour.
+`appmem schema` and each command's `--help` are the reference for flags, defaults and output fields on the running platform; this section only fixes the behaviour.
 
-- **Live view** (no command): `-i/--interval` (default 1, ≥ 0.2) and `--system` (start with system services shown). It starts only in a terminal context: stdin and stdout are terminals, no `--json`, `NO_INPUT` unset or empty. Otherwise it exits `1` with `terminal_required` (the call is fine, the context isn't, so it's not a usage error) and `next: ["appmem","snapshot"]`, instead of drawing escape codes into a pipe. `-i` or `--theme` together with a command is `invalid_input`, and so is `--system` before `app` or `schema`.
+- **Live view** (no command): `-i/--interval` (default 1, ≥ 0.2) and, on Linux, `--system` (start with system services shown). It starts only in a terminal context: stdin and stdout are terminals, no `--json`, `NO_INPUT` unset or empty. Otherwise it exits `1` with `terminal_required` (the call is fine, the context isn't, so it's not a usage error) and `next: ["appmem","snapshot"]`, instead of drawing escape codes into a pipe. `-i` or `--theme` together with a command is `invalid_input`, and so is `--system` before `app` or `schema`.
+- On macOS `--system` does not exist and `--scope` accepts only `user`; either is `invalid_input` with the macOS usage in the hint.
 - **Theme** (live view only). The theme is taken from the first valid source in this order:
   1. `--theme NAME`;
   2. `APPMEM_THEME`;
@@ -341,27 +509,47 @@ The command line conforms to the house CLI Design Standard 0.1.0 (claimed in `ap
   - At the bottom are fixed-height lines, which never wrap and don't move the panel: an info line (`your terminal's colours` on `terminal-*`, blank otherwise), then `↑↓ preview` and `enter keep  esc cancel`.
   - The view behind the panel pauses while it's open, the same as under the help screen, and catches up the moment it closes.
 - **Colour contrast.** Table header text reaches at least 4.5:1 against its background in every theme: black or white, whichever contrasts more. In terminal themes, table headers use the terminal's default colours, bold and underlined, since any other pair of palette slots can be unreadable in some palette.
-- **snapshot**: one sample with the same numbers as the main view and header. Apps ≥ 1 MiB TOTAL, sorted by TOTAL, at most `--limit` (default 50) with `has_more`; `next` names the largest app. zswap fields:
-  - `zswap_enabled`;
-  - `zswap_pool_bytes` and `zswapped_bytes`, both null without zswap;
-  - `zswap_writeback_bytes`, cumulative since boot. A one-shot command has no rate, so diff two snapshots. It is null only on kernels without the counter;
-  - `zswap_compressor`, `zswap_max_pool_percent` and `zswap_compression_ratio` (zswapped / pool, null when either is 0), all null without zswap;
-  - `zswapped_bytes` per app.
-
-  Each app item also has `kernel_bytes` (without the zswap pool) and `top_commands`: its 3 largest commands by TOTAL (`name`, `total_bytes`, `procs`, grouped as in `app NAME`), empty for apps with 6 or fewer processes.
-- **app NAME**: resolves (scope, name) exactly like the process view. `units` as `{name, label}` objects (raw name, and the systemd-unescaped label), `processes` (with `private_bytes`) and `commands` (each paged by `--limit`, default 100), `kernel_bytes`, `zswap_pool_bytes` and `unattributed_*`. No match, or every unit gone before it is read: `not_found`, exit 1.
-- **schema**: the index (commands, global flags, format defaults, exit codes, conformance) or one command's detail (flags, args, output schema). Always JSON. Every output field carries a short `description`. This deliberately departs from the 0.1.0 claim, whose O4 allows only the five validation keywords; the 0.2 draft's O4a admits `description` as an annotation, which validators ignore. `conformance.extensions` stays empty: no 0.1.0 extension covers it.
+- **snapshot**: one sample with the same numbers as the main view and header, apps sorted by TOTAL (Linux, apps ≥ 1 MiB) or MEMORY (macOS, unknown last), at most `--limit` (default 50).
+- **app NAME**: one app with `processes` and `commands`, each paged by `--limit` (default 100). No match, or every unit gone before it is read: `not_found`, exit 1, with `next` pointing at `appmem snapshot`. Linux resolves (scope, name) exactly like the process view and adds `units` as `{name, label}` objects (raw name, and the systemd-unescaped label), `private_bytes` per process, `kernel_bytes`, `zswap_pool_bytes` and `unattributed_*`. macOS resolves names and ids as in "Grouping".
+- **schema**: the index (platform, commands, global flags, format defaults, exit codes, conformance) or one command's detail (flags, args, output schema). Always JSON, for the running platform only; the index's `platform` is `linux` or `darwin`. Every output field carries a short `description`. This deliberately departs from the 0.1.0 claim, whose O4 allows only the five validation keywords; the 0.2 draft's O4a admits `description` as an annotation, which validators ignore. `conformance.extensions` stays empty: no 0.1.0 extension covers it.
 - Output: text on a terminal, JSON otherwise; `--json` forces JSON. Sizes are integer bytes (`_bytes`), percentages `_percent`, ages integer `age_seconds`, `taken_at` is RFC 3339 with the local offset. Text reports contain no escape sequences, and names with control characters are shown escaped.
+- macOS text reports show four host lines (RAM, Compress, Swap, Pressure) without gauges, rates or Δ, aligned app or process and command tables, and a footnote when `*` or `unknown` appears.
 - A closed stdout pipe (`| head`) ends quietly with exit `0`.
 - `--help` is a standalone cheat sheet: purpose, commands, flags, keys, how to read pressure, one example. Unknown flags and invalid values fail with exit `2` and the accepted form.
 - Colour is never the only signal: sort direction uses `▴`/`▾`, deltas use `+`/`-` and `·`, pressure is a word. `NO_COLOR` is honoured.
 
-Exit codes:
+### JSON documents
+
+Both platforms share one envelope:
+
+- `taken_at`, `system`, `pressure`, and `apps` as `{items, has_more}`.
+- `next`: the `appmem app` argv for the first (largest) item, omitted without items, repeating `--json` when the call passed it.
+- `app NAME` documents are flat: the app's own fields, then `processes` and `commands`, each `{items, has_more}`.
+- `system.swap_in_bytes` and `swap_out_bytes`: nullable lifetime counters (see Definitions). A one-shot command has no rates; diff two snapshots.
+
+Linux (no `platform` key):
+
+- `system` has the RAM and swap totals, `system_services_*`, `elsewhere_bytes` and the zswap fields:
+  - `zswap_enabled`;
+  - `zswap_pool_bytes` and `zswapped_bytes`, both null without zswap;
+  - `zswap_writeback_bytes`, cumulative since boot, null only on kernels without the counter;
+  - `zswap_compressor`, `zswap_max_pool_percent` and `zswap_compression_ratio` (zswapped / pool, null when either is 0), all null without zswap.
+- Each app item has RAM, SWAP, TOTAL, CACHE and ZSWAP bytes, `kernel_bytes` (without the zswap pool) and `top_commands`: its 3 largest commands by TOTAL (`name`, `total_bytes`, `procs`, grouped as in `app NAME`), empty for apps with 6 or fewer processes.
+- `next` adds `--scope system` for a system service.
+
+macOS (`platform: "darwin"` in every document):
+
+- `system` has the native counters (`free_bytes` keeps its native meaning) and the partition fields `used_excluding_file_backed_bytes` and `free_excluding_speculative_bytes`, null when the partition is unknown.
+- `pressure` is `level` (null when unknown), `source` and `unavailable` (the reason).
+- App items have `id`, `name`, nullable `footprint_bytes` and `resident_bytes`, `procs` and `coverage` (readable/unreadable counts per metric, `partial`, `resident_partial`, `grouping_partial`); `next` uses the `id`.
+- Processes have `pid`, `start_abstime`, `name`, nullable footprint and resident, and `unavailable`; commands have both sums with their own counts.
+
+### Exit codes
 
 | Code | Meaning |
 |---|---|
 | `0` | Success, or quit with `q`/`Ctrl+C` in the live view |
-| `1` | Runtime or context failure: `cgroup_unavailable`, `not_found`, `terminal_required` |
+| `1` | Runtime or context failure: `cgroup_unavailable`, `not_found`, `terminal_required`, `platform_unavailable`, `read_failed` |
 | `2` | Invalid call: `invalid_input` |
 | `130`, `143` | Interrupted by SIGINT or SIGTERM (`interrupted` for `snapshot`/`app`) |
 
@@ -375,37 +563,47 @@ Every failure writes one JSON error object as the last non-empty stderr line, ne
 
 ## Errors
 
-- `cgroup_unavailable`, exit `1`: no cgroup v2 at `/sys/fs/cgroup`, no `user@$UID.service` tree (e.g. run as root), or the memory controller is not enabled there (`memory.stat` missing). The message names the missing path. In the live view this can also happen mid-run, when the user tree disappears; the JSON line is printed after the terminal is restored.
+- `cgroup_unavailable` (Linux), exit `1`: no cgroup v2 at `/sys/fs/cgroup`, no `user@$UID.service` tree (e.g. run as root), or the memory controller is not enabled there (`memory.stat` missing). The message names the missing path. In the live view this can also happen mid-run, when the user tree disappears; the JSON line is printed after the terminal is restored.
+- `platform_unavailable`, exit `1`: neither Linux nor macOS, or a Mac without Apple Silicon, a native arm64 Python or macOS 15.
+- `read_failed` (macOS), exit `1`: host counters or the process list could not be read for `snapshot`, `app` or the live view's start; a retry may succeed. In a running live view it is a stale tick instead.
 - `SIGINT`/`SIGTERM` from outside (e.g. `kill`) in the live view: restore the terminal and exit promptly (not at the next tick) with the usual `128 + signal` code, with no JSON line. A signal that lands during a read exits once that read returns.
-- Swap disabled: SWAP columns show `0` and the header says `Swap off`. The tool still runs.
+- Swap disabled on Linux: SWAP columns show `0` and the Swap row says `off`. The tool still runs.
 
 ## Tech
 
 - Python ≥ 3.12, `uv`, [Textual](https://textual.textualize.io/).
-- `model` holds shared immutable collection values and pure process/grouping math. `backend` defines the collection operations. `LinuxBackend` in `collect` reads `/sys` and `/proc` through a fixture-injectable root path.
-- CLI reports and both TUI screens use the same backend instance for collection. The screens keep refresh timing and display state; Linux accounting and grouping stay in `LinuxBackend`. Existing Linux accounting remains unchanged; host in/out counters are additive.
+- Modules:
+  - `cli`: per-platform parsers, dispatch, error line, exit codes; `schema` and `darwin_schema`: the descriptors and output schemas they and `appmem schema` are built from.
+  - Linux: `backend` (collection protocol, `select_backend`), `collect` (`LinuxBackend`, reading `/sys` and `/proc` under a fixture-injectable root), `model` (immutable values, grouping math), `naming`, `command_name`, `report` and `render` (documents, text reports).
+  - macOS: `darwin_native` (`ctypes` reads, no OS call on import), `darwin_backend` (`DarwinBackend`, inventory and grouping, native reader injected), `darwin_report`.
+  - Shared: `rate` (rate window), `total` (run totals), `fmt`, `theme`.
+  - UI: `ui/app.py`; `ui/screens/main.py`, `processes.py`, `help.py` (Linux) and `darwin.py` (macOS); `ui/screens/live.py` (shared refresh lifecycle); `ui/host_grid.py` (the grid), `ui/header.py` and `ui/darwin_header.py` (rows), `ui/host_panel.py`; `ui/table.py`, `ui/rows.py`, `ui/process_rows.py`, `ui/darwin_rows.py`, `ui/layout.py`, `ui/theme_picker.py`.
+- CLI reports and the TUI screens use the same backend instance. The screens keep refresh timing and display state; accounting and grouping stay in the backends.
 - Textual notes for the implementer:
   - `RowTable` (`appmem.ui.table`) posts a `HeaderSelected` event on a header click; `reorder(ordered_keys)` puts rows in that order without rebuilding them. Sort state, the `▴`/`▾` marker and flip-on-second-click are ours to write.
   - Update cells in place with `update_cell`, and add or remove rows only for apps that appeared or vanished. Rebuilding the table every tick causes flicker and loses the cursor.
   - After a sort, `move_cursor` to the selected app's row key.
   - Textual binds `Ctrl+C` to a "no longer quits" notice by default. Rebind it to quit.
   - Exit with `sys.exit(app.return_code or 0)`.
-  - Both screens' tables (`appmem.ui.table.RowTable`) are a hand-written `ScrollView` (Line API), not a `DataTable` subclass: `DataTable` renders every cell through Rich with an `_update_count`-keyed cache, so one changed cell invalidates the whole render cache and every `render_line` call redoes the cell/row/line lookups regardless. `RowTable` caches one `Strip` per row (built once from each cell's `.plain`/`.justify`/`.style`, never through markup) and keeps it across frames; `update_cell` invalidates only that row's strip and refreshes one screen line, `add_row`/`remove_row`/`reorder` never rebuild an unrelated row's strip. The cursor row is rebuilt on every `render_line` instead of cached, since it is the one row whose look depends on focus. A Linux spike (43 rows, 9 columns, one tick per second) measured this against `CellTable`: at appmem's real median of 6 changed cells/tick, 1.25 % vs 0.27 % of one core; at 30, 2.55 % vs 0.83 %; at 100, 3.15 % vs 1.22 %. The shipped app's numbers are in the performance paragraph below. `RowTable` never depends on `DataTable`'s private attributes, so it can't fall out of sync with a Textual minor the way `CellTable` could.
+  - All tables are `RowTable`, a hand-written `ScrollView` (Line API), not a `DataTable`, whose single render cache any changed cell invalidates. `RowTable` caches one `Strip` per row, built from each cell's `.plain`/`.justify`/`.style`, never markup; `update_cell` rebuilds only that row, and the cursor row is rebuilt on every `render_line`, since its look depends on focus. It uses no private `DataTable` attribute.
 
-Linux performance budget: the collector stays under 1 % of one CPU core at a 1 s interval.
-Measured on the Linux dev machine: 4.5 ms per tick for 146 units, 10 ms for `/proc/PID/status` of all 542 user processes.
-Measured with the Linux UI at `-i 1` on the dev machine: 2026-09-23 (~310 processes, small terminal) main view about 4 %, process views about 5 % of one core; 2026-09-25 (43 apps, 481 processes) 7.8 % at 200x50 in both views and 11.6 % at 120x86, the same before and after the memory fixes of 2026-09-24. The cost is the table repaint, so it grows with the number of visible rows; the README said 4 to 12 % before `RowTable` (now 3 to 12 %, see below). `-i 2` measured 4.0 % at 200x50 the same day, half of `-i 1`. With `CellTable`'s per-cell cache invalidation, 2026-09-25 (same terminal size, live desktop, so not the exact same app/process count as the 7.8 % run): main view 5.3 %, process view 6.9 % of one core. `appmem snapshot` takes about 0.25 s including interpreter start. With the collector-cost fixes (no `Path` rebuilt per tick, one `os.read` per small file, PROCS every 5th tick instead of every tick): 2026-09-25, private tmux sessions at 200x50 on the live desktop, 60 s each, released `0.1.0` vs the fix branch back to back: main view 4.02 % of one core before, 3.40 % after. With `RowTable` replacing `CellTable`: 2026-09-26, private tmux sessions at 200x50 on the live desktop (real apps and processes, not fixtures), 60 s each after an 8 s warm-up, `CellTable`'s `0.1.0` vs this branch back to back, two runs each: main view 4.3-4.9 % of one core before, 2.7-3.1 % after; process view (drilled into the top app) 6.6-8.6 % before, 5.0-5.3 % after -- consistent with the spike's own numbers above, and with `CellTable`'s own share of the total (5.3 %/6.9 % on 2026-09-25) roughly halved.
+Performance budget: the Linux collector stays under 1 % of one CPU core at a 1 s interval; `appmem snapshot` takes about 0.25 s including interpreter start.
+The live view's cost is mostly the table repaint, so it grows with the number of visible rows.
 
 ## Tests
 
-- Grouping: the acceptance table, plus escapes, unknown shapes and empty names.
+No test reads the live system or the real config: Linux tests use fixture trees under an injected root, macOS tests a fake native reader.
+
+- Grouping: the Linux acceptance table, plus escapes, unknown shapes and empty names; macOS bundles, the `.framework` rule, ancestry, merged roots, twins, PID reuse and partial grouping.
 - Unit walk: fixture tree with nested sub-cgroups (Konsole tabs, `system-cups.slice/cups.service`) and ignored `*.socket`/`*.mount` directories.
-- Collectors: fixture trees for `memory.stat`, `memory.swap.current`, `/proc/PID/*` (including names with spaces and parentheses), missing files, a process vanishing mid-read.
+- Collectors: fixture trees for `memory.stat`, `memory.swap.current`, `/proc/PID/*` (including names with spaces and parentheses), missing files, a process vanishing mid-read; macOS native decoding and failure classification.
 - Process view math: the `kernel`, `zswap pool` and `unattributed` rows, clamping at 0, grouping by command.
 - Formatting: unit boundaries (1023 KiB, 1 MiB, 1023 MiB, 1 GiB) and pressure word thresholds.
-- UI: Textual pilot tests for sorting, the process view, `g`, drill-down, the status line, narrow layouts (80x24, 60 columns) and the help screen.
+- Header and panel: grid positions per width and totals, the RAM partition, rates, run totals and the Zswap gauge.
+- UI: Textual pilot tests on both platforms for sorting, the process view, `g`, drill-down, the status line, narrow layouts (80x24, 60 columns), the help screen and the host panel.
 - CLI: exit codes and the JSON error line for every kind; the terminal-context rules; parser-versus-descriptor parity; every emitted document validated against its published output schema.
 - Docs: README and the skill name only commands, flags and error kinds that exist; the skill defines no fields, every output field described.
+- macOS CI runs the suite on macOS 15 ARM64, a probe checking the `ctypes` layouts against a compiled C helper, and an installed-wheel run on Python 3.12 and 3.14 that drives `schema`, `snapshot`, `app`, paging, unsupported flags and the live view in a pseudo-terminal against real processes.
 
 ## Later (not v1)
 

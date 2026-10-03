@@ -1,7 +1,7 @@
 """`scripts/screenshots.py`, the README screenshots' generator, keeps working.
 
 Runs the script as a subprocess -- it's a standalone dev script, not part of
-the package -- into `tmp_path` and checks the three SVGs land and look sane.
+the package -- into `tmp_path` and checks the four SVGs land and look sane.
 Never touches the real `/sys`, `/proc` or `~/.config`; the script itself
 builds its own fixture tree and points `XDG_CONFIG_HOME` at a temp dir.
 """
@@ -16,7 +16,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 _SCRIPT = _REPO_ROOT / "scripts" / "screenshots.py"
 
 
-def test_screenshots_script_writes_three_plausible_svgs(tmp_path: Path) -> None:
+def test_screenshots_script_writes_four_plausible_svgs(tmp_path: Path) -> None:
     result = subprocess.run(
         [sys.executable, str(_SCRIPT), str(tmp_path)],
         cwd=_REPO_ROOT,
@@ -27,12 +27,23 @@ def test_screenshots_script_writes_three_plausible_svgs(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
 
     main_svg = (tmp_path / "main.svg").read_text(encoding="utf-8")
+    macos_svg = (tmp_path / "main-macos.svg").read_text(encoding="utf-8")
     processes_svg = (tmp_path / "processes.svg").read_text(encoding="utf-8")
     theme_panel_svg = (tmp_path / "theme-panel.svg").read_text(encoding="utf-8")
 
     assert "RAM" in main_svg
     assert "Swap" in main_svg
     assert "ghostty" in main_svg
+    # The four-row header at the shot's width: nothing omitted (`…`), swap activity measured.
+    assert "Zswap" in main_svg and "Pressure" in main_svg
+    assert "…" not in main_svg and "unavailable" not in main_svg and "—" not in main_svg
+    assert "KiB/s" in main_svg and "MiB/s" in main_svg
+    # The macOS main view from fixture data: its four header rows, invented apps, the
+    # footprint columns, measured swap rates, nothing omitted or unavailable.
+    for word in ("RAM", "Compress", "Swap", "Pressure", "Harbor", "MEMORY", "ΔMEM", "RESIDENT"):
+        assert word in macos_svg, word
+    assert "…" not in macos_svg and "unavailable" not in macos_svg and "—" not in macos_svg
+    assert "KiB/s" in macos_svg and "MiB/s" in macos_svg and "+310" in macos_svg
     assert "ghostty" in processes_svg  # the process view's own title
     assert "claude" in processes_svg
     assert "Theme" in theme_panel_svg
