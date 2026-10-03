@@ -5,8 +5,10 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable
 
+from rich.text import Text
 from textual.screen import Screen
 from textual.timer import Timer
+from textual.widgets import Static
 
 from appmem.ui.host_panel import HostPanel
 
@@ -20,6 +22,12 @@ class LiveScreen(Screen[None]):
         self._tick_in_flight = False
         self._generation = 0
         self._host_panel_open = False
+
+    def _set_static(self, selector: str, content: Text | str) -> None:
+        """`Static.update` schedules a layout pass; skip it for unchanged content."""
+        widget = self.query_one(selector, Static)
+        if widget.content != content:
+            widget.update(content)
 
     def _start_live_timer(self, interval: float, callback: Callable[[], None]) -> None:
         self._timer = self.set_interval(interval, callback)

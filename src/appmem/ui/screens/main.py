@@ -38,7 +38,7 @@ from appmem.rate import Sample, update_rate
 from appmem.render import escape_control_chars
 from appmem.total import SessionCounter
 from appmem.ui.header import ThemeColors, render_header
-from appmem.ui.host_panel import HostPanel, linux_details
+from appmem.ui.host_panel import Block, Entry, HostPanel, Prose, linux_details
 from appmem.ui.layout import build_footer
 from appmem.ui.process_rows import initial_process_sort
 from appmem.ui.rows import (
@@ -60,15 +60,16 @@ from appmem.ui.table import RowTable
 
 # Key caps (reverse video); at full width the plain text is exactly
 # " r s t d z sort  enter procs  x system  c cache  w zswap  b reset Δ  T theme
-# ? help  q quit" (the "z" sort key and the "w zswap" item only where the
+# h host  ? help  q quit" (the "z" sort key and the "w zswap" item only where the
 # ZSWAP column is shown/enabled). `d` (sort by ΔSWAP) and `z` (sort by ZSWAP)
 # each drop out of the "sort" item's own key caps -- not the whole item --
 # while their column is hidden, whether by width or (for ZSWAP) by `w` or by
 # zswap being off (SPEC.md "Main view": a key that does nothing in the
 # current view doesn't appear). `theme` is the lowest priority of all,
-# dropped before `reset Δ` (SPEC.md "Command line"); `zswap` drops right
-# after `cache` (SPEC.md "Main view").
-_FOOTER_DROP_ORDER = ("theme", "reset Δ", "cache", "zswap", "system", "procs", "sort")
+# dropped before `reset Δ` (SPEC.md "Command line"); `host` goes next, so
+# every item the footer showed before `h` existed keeps its place; `zswap`
+# drops right after `cache` (SPEC.md "Main view").
+_FOOTER_DROP_ORDER = ("theme", "reset Δ", "host", "cache", "zswap", "system", "procs", "sort")
 
 # Below this width, ΔSWAP/ΔRAM are hidden (SPEC.md "Main view"). Re-shown
 # above it.
@@ -621,29 +622,32 @@ class MainScreen(LiveScreen):
         self._host_stale = False
         self._notify_host_panel()
 
-    def _host_content(self) -> str:
+    def _host_content(self) -> list[Block]:
         if self._last_stats is None:
-            return "Host memory unavailable; waiting for a successful reading."
-        stale = "Read failed; showing last successful reading.\n\n" if self._host_stale else ""
-        changes = (
-            f"Changes   Δ shows memory changes since {self._baseline_time:%H:%M}"
-            f" ({format_elapsed(self._baseline_age())} ago)."
+            return [Prose(("Host memory unavailable; waiting for a successful reading.",))]
+        stale = (
+            [Prose(("Read failed; showing last successful reading.",))] if self._host_stale else []
         )
-        content = (
-            stale
-            + linux_details(
-                self._last_stats,
-                (self._swap_in_rate, self._swap_out_rate),
-                (self._swap_in_session.total, self._swap_out_session.total),
-            )
-            + "\n"
-            + changes
+        changes = Entry(
+            "Changes",
+            (
+                f"Δ shows memory changes since {self._baseline_time:%H:%M}"
+                f" ({format_elapsed(self._baseline_age())} ago).",
+            ),
         )
-        return content.replace("·", "|").replace("Δ", "delta") if self._ascii_bars else content
+        details = linux_details(
+            self._last_stats,
+            (self._swap_in_rate, self._swap_out_rate),
+            (self._swap_in_session.total, self._swap_out_session.total),
+            self._writeback_rate,
+        )
+        return [*stale, *details, changes]
 
     def action_host(self) -> None:
         self._host_panel_open = True
-        self.app.push_screen(HostPanel(self, self._host_content, self.action_help))  # pyright: ignore[reportUnknownMemberType]
+        self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
+            HostPanel(self, self._host_content, self.action_help, ascii_bars=self._ascii_bars)
+        )
 
     def _fail_cgroup_unavailable(self, exc: CgroupUnavailableError) -> None:
         # No traceback, exit 1, JSON line after the terminal is restored

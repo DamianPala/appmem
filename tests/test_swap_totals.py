@@ -1,6 +1,8 @@
 """Cumulative boot/session activity with synthetic platform samples only."""
 
+import re
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from typing import cast
 
@@ -15,11 +17,16 @@ from appmem.rate import Sample, update_rate
 from appmem.total import SessionCounter, total_amount
 from appmem.ui.app import AppMemApp
 from appmem.ui.darwin_header import render_host_header
-from appmem.ui.host_panel import darwin_details, linux_details, wrap_details
+from appmem.ui.header import render_header
+from appmem.ui.host_panel import Block, darwin_details, linux_details, render_blocks
 from appmem.ui.screens.darwin import DarwinMainScreen
 from appmem.ui.screens.main import MainScreen
 from test_darwin_header import HOST
 from test_swap_activity import COLORS, GIB, STATS, header
+
+
+def text_of(blocks: list[Block], width: int = 200) -> str:
+    return render_blocks(blocks, width)
 
 
 def test_session_is_exact_difference_and_initial_zero_is_valid() -> None:
@@ -85,8 +92,8 @@ def test_cumulative_units_handle_since_boot_sizes(value: int, text: str) -> None
     assert total_amount(value) == text
     linux = header(replace(STATS, swap_out_bytes=value), width=160)[2]
     mac = render_host_header(replace(HOST, swap_out_bytes=value), 160, colors=COLORS)[2]
-    assert f"({text} since boot)" in linux.plain
-    assert f"({text} since boot)" in mac.plain
+    for line in (linux, mac):
+        assert re.search(rf"since boot\s+{re.escape(text)}$", line.plain)
     assert linux.cell_len <= 160 and mac.cell_len <= 160
 
 
@@ -94,10 +101,11 @@ def test_zero_mac_allocation_does_not_erase_nonzero_native_activity() -> None:
     host = replace(
         HOST, swap_used_bytes=0, swap_total_bytes=0, swap_in_bytes=GIB, swap_out_bytes=2 * GIB
     )
-    text = darwin_details(host, (0, 0), (0, 0))
+    text = text_of(darwin_details(host, (0, 0), (0, 0)))
     assert "0/0 B used / allocated now" in text
     assert "Since boot              1.0 GiB         2.0 GiB" in text
-    assert "(2.0 GiB since boot)" in render_host_header(host, 160, colors=COLORS)[2].plain
+    header_swap = render_host_header(host, 160, colors=COLORS)[2].plain
+    assert re.search(r"since boot\s+2\.0 GiB$", header_swap)
 
 
 @pytest.mark.parametrize(
@@ -128,7 +136,7 @@ def test_current_topology_fails_closed_for_zram_mixed_and_unknown(
     (tmp_path / "proc/swaps").write_text("Filename Type Size Used Priority\n" + entry + "\n")
     stats = read_system(tmp_path, 1000, page_size=4096)
     assert stats.swap_disk_only is disk
-    text = linux_details(stats, (0, 0))
+    text = text_of(linux_details(stats, (0, 0)))
     assert ("Writes count data sent to disk for swap." in text) is disk
     assert ("swap devices" in text) is not disk
 
@@ -146,29 +154,21 @@ def test_missing_empty_or_malformed_topology_cannot_assert_disk(
 @pytest.mark.parametrize("platform", ["linux", "darwin"])
 @pytest.mark.parametrize("width", [40, 60, 80, 120, 160, 200])
 @pytest.mark.parametrize("ascii_bars", [False, True])
-def test_session_and_boot_totals_are_secondary_and_no_loss_or_overflow(
+def test_totals_are_secondary_and_never_overflow(
     platform: str, width: int, ascii_bars: bool
 ) -> None:
     if platform == "linux":
-        # Existing wrapper also supplies measured rates.
-        if not ascii_bars:
-            lines = header(replace(STATS, swap_out_bytes=round(41.6 * GIB)), width=width)
-        else:
-            from datetime import datetime
-
-            from appmem.ui.header import render_header
-
-            lines = render_header(
-                replace(STATS, swap_out_bytes=round(41.6 * GIB)),
-                width,
-                30,
-                colors=COLORS,
-                baseline_time=datetime(2026, 1, 1),
-                now=datetime(2026, 1, 1),
-                ascii_bars=True,
-                swap_in_rate=0,
-                swap_out_rate=1024,
-            )
+        lines = render_header(
+            replace(STATS, swap_out_bytes=round(41.6 * GIB)),
+            width,
+            30,
+            colors=COLORS,
+            baseline_time=datetime(2026, 1, 1),
+            now=datetime(2026, 1, 1),
+            ascii_bars=ascii_bars,
+            swap_in_rate=0,
+            swap_out_rate=1024,
+        )
     else:
         lines = render_host_header(
             replace(HOST, swap_out_bytes=round(41.6 * GIB)),
@@ -179,20 +179,16 @@ def test_session_and_boot_totals_are_secondary_and_no_loss_or_overflow(
             swap_out_rate=1024,
         )
     swap = next(line for line in lines if line.plain.startswith("Swap"))
-    assert all(line.cell_len <= width for line in lines)
+    assert all(line.cell_len <= width and line.no_wrap for line in lines)
     assert len(lines) == 4
-    assert ("(unavailable this run)" in swap.plain) is (width >= 105)
-    assert ("(41.6 GiB since boot)" in swap.plain) is (width >= 160)
-    if width == 80:
-        assert swap.plain.endswith(">" if ascii_bars else "…")
-        assert "in 0 B/s" in swap.plain
-        if platform == "linux":
-            assert "out 1 KiB/s" in swap.plain
-        else:
-            assert "used/alloc" in swap.plain
+    # Column 3 is the first thing to go; the rates stay while they fit.
+    assert ("since boot" in swap.plain) is (width >= 160)
+    if width >= 120:
+        assert re.search(r"in\s+0 B/s", swap.plain)
+        assert re.search(r"out\s+1 KiB/s", swap.plain)
     if width >= 160:
-        assert "in 0 B/s" in swap.plain and "out 1 KiB/s" in swap.plain
-        assert "(unavailable this run)" in swap.plain
+        assert re.search(r"written this run\s+(—|\?)", swap.plain)
+        assert re.search(r"since boot\s+41\.6 GiB", swap.plain)
 
 
 @pytest.mark.parametrize("platform", ["linux", "darwin"])
@@ -203,12 +199,12 @@ def test_activity_table_labels_and_values_survive_wrapping(platform: str, width:
         swap_in_bytes=3 * GIB,
         swap_out_bytes=round(41.6 * GIB),
     )
-    text = (
+    blocks = (
         linux_details(cast(SystemStats, host), (0, 1024), (1024, 2048))
         if platform == "linux"
         else darwin_details(cast(HostMemory, host), (0, 1024), (1024, 2048))
     )
-    rendered = wrap_details(text, width)
+    rendered = render_blocks(blocks, width)
     assert all(len(line) <= width for line in rendered.splitlines())
     words = " ".join(rendered.split())
     for label in (
@@ -231,10 +227,12 @@ def test_activity_table_labels_and_values_survive_wrapping(platform: str, width:
 
 
 def test_linux_approved_copy_and_boot_counter_is_not_adjusted_by_writeback() -> None:
-    text = linux_details(
-        replace(STATS, swap_disk_only=True, swap_out_bytes=3 * GIB, zswap_writeback_bytes=GIB),
-        (0, 0),
-        (0, 0),
+    text = text_of(
+        linux_details(
+            replace(STATS, swap_disk_only=True, swap_out_bytes=3 * GIB, zswap_writeback_bytes=GIB),
+            (0, 0),
+            (0, 0),
+        )
     )
     assert "Writes count only data sent to disk, directly or from zswap." in text
     assert "Swap used includes the data held in zswap, even without writing them to disk." in text
@@ -244,7 +242,9 @@ def test_linux_approved_copy_and_boot_counter_is_not_adjusted_by_writeback() -> 
 
 @pytest.mark.parametrize("zswap_enabled", [False, True])
 def test_generic_topology_copy_only_explains_zswap_when_enabled(zswap_enabled: bool) -> None:
-    text = linux_details(replace(STATS, swap_disk_only=False, zswap_enabled=zswap_enabled), (0, 0))
+    text = text_of(
+        linux_details(replace(STATS, swap_disk_only=False, zswap_enabled=zswap_enabled), (0, 0))
+    )
     assert "Writes count data sent to swap devices." in text
     assert ("Data kept only in zswap is not counted." in text) is zswap_enabled
     assert "RAM-backed zram" not in text and "zswap hits" not in text
@@ -284,7 +284,7 @@ async def test_session_survives_baseline_navigation_pause_clock_shift_and_indepe
         assert owner._swap_in_session.total == 0  # pyright: ignore[reportPrivateUsage]
         assert owner._swap_out_session.total == 0  # pyright: ignore[reportPrivateUsage]
         first_header = owner.query_one("#header3", Static).content
-        assert "(0 B this run)" in str(first_header)
+        assert re.search(r"run\s+0 B", str(first_header))
         readings[0] = replace(initial, swap_in_bytes=12345, swap_out_bytes=123456)
         await pilot.press("b", "?", "escape", "T", "escape")
         await pilot.resize_terminal(80, 24)
@@ -294,8 +294,8 @@ async def test_session_survives_baseline_navigation_pause_clock_shift_and_indepe
         await pilot.resize_terminal(160, 24)
         await pilot.pause()
         header = str(owner.query_one("#header3", Static).content)
-        assert "(120 KiB this run)" in header
-        content = owner._host_content()  # pyright: ignore[reportPrivateUsage]
+        assert re.search(r"run\s+120 KiB", header)
+        content = text_of(owner._host_content())  # pyright: ignore[reportPrivateUsage]
         assert "Since AppMem started" in content and "120 KiB" in content
         await pilot.press("h")
         panel = str(app.screen.query_one("#host-text", Static).content)
@@ -311,4 +311,4 @@ async def test_session_survives_baseline_navigation_pause_clock_shift_and_indepe
         owner.refresh_now()
         assert owner._swap_in_session.total == 20000  # pyright: ignore[reportPrivateUsage]
         assert owner._swap_out_session.total is None  # pyright: ignore[reportPrivateUsage]
-        assert "117 KiB" in owner._host_content()  # pyright: ignore[reportPrivateUsage]
+        assert "117 KiB" in text_of(owner._host_content())  # pyright: ignore[reportPrivateUsage]

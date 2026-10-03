@@ -66,10 +66,10 @@ _ZSWAP_HEADER_NOTE = (
 
 _SWAP_ACTIVITY_NOTE = (
     "Swap in/out measure host swap-device activity, including zram. Successful zswap hits "
-    "are excluded; zero-page bypass depends on kernel version. Rates average about 10 seconds "
+    "are excluded; zero-page bypass depends on kernel version. Rates average about 5 seconds "
     "in this session. Unknown means insufficient or unavailable samples, while 0 B/s is "
     "measured zero. Clock discontinuities reset measurement; b resets growth only. These "
-    "rates are not SSD throughput. From 105 columns, headers show out with rates then the "
+    "rates are not SSD throughput. The Swap line keeps in and out in fixed columns, then the "
     "exact total written this run; the since-boot total follows when space permits. Rates "
     "have priority over both totals, and the session total has priority over the boot total. "
     "h shows Read/Written rates, boot totals and exact totals since AppMem started. Session totals "

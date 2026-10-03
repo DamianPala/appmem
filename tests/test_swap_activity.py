@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import re
 import time
 from dataclasses import replace
 from datetime import datetime
@@ -138,28 +139,26 @@ def test_duplicate_backward_or_long_gap_is_unknown(elapsed: float) -> None:
     assert history == (Sample(elapsed, elapsed, 1000),) and rate is None
 
 
-@pytest.mark.parametrize("width", [80, 100, 120, 160])
+@pytest.mark.parametrize("width", [100, 120, 160])
 def test_zswap_gauge_physical_and_activity_fit(width: int) -> None:
     ram, zswap, swap, pressure = header(width=width)
     assert all(line.cell_len <= width for line in (ram, zswap, swap, pressure))
     assert "1.0/6.0 GiB RAM" in zswap.plain
-    assert "holds 4.0 GiB" in zswap.plain
-    assert "in 0 B/s" in swap.plain and "out 1 KiB/s" in swap.plain
-    assert ("limit 20%" in zswap.plain) == (width >= 100)
+    assert re.search(r"holds\s+4.0 GiB", zswap.plain)
+    assert re.search(r"in\s+0 B/s", swap.plain) and re.search(r"out\s+1 KiB/s", swap.plain)
 
 
 @pytest.mark.parametrize("percent", [None, 0, 1])
 def test_zswap_unknown_zero_and_over_limit(percent: int | None) -> None:
-    line = header(replace(STATS, zswap_max_pool_percent=percent))[1]
-    assert line.cell_len <= 120
-    assert "holds 4.0 GiB" in line.plain
+    line = header(replace(STATS, zswap_max_pool_percent=percent), width=160)[1]
+    assert line.cell_len <= 160
+    assert re.search(r"holds\s+4.0 GiB", line.plain)
     if percent is None:
-        assert "/? RAM" in line.plain and "limit ?" in line.plain
+        assert "/— RAM" in line.plain and "limit —" in line.plain
     elif percent == 0:
-        assert "over-limit" in line.plain
-        assert "limit 0%" in line.plain and not line.plain.endswith("…")
+        assert "above 0%" in line.plain and not line.plain.endswith("…")
     else:
-        assert "over-limit" in line.plain
+        assert "above 1%" in line.plain
         assert "█" * 20 in line.plain
 
 

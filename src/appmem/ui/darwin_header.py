@@ -1,34 +1,178 @@
-"""Host header with native Darwin meanings and shared fixed geometry."""
+"""Host header with native Darwin meanings on the shared grid."""
 
 from __future__ import annotations
 
 from rich.text import Text
 
 from appmem.darwin_native import HostMemory
-from appmem.fmt import format_elapsed, format_pair, size
-from appmem.ui.header import (  # pyright: ignore[reportPrivateUsage]
-    ThemeColors,
-    _bar_text,  # pyright: ignore[reportPrivateUsage] - shared gauge style
-    swap_activity,
+from appmem.fmt import format_elapsed, size, size_in_unit, unit_of
+from appmem.ui.header import ThemeColors, activity_items, bar_text, placeholder_bar
+from appmem.ui.host_grid import (
+    Item,
+    Layout,
+    Slots,
+    State,
+    amount,
+    choose,
+    field_width,
+    gauge_left,
+    grid_row,
+    pair,
+    pair_width,
+    parts,
+    spaces,
+    span,
+    state_left,
+    unknown,
+    value_text,
 )
-from appmem.ui.host_grid import geometry, grid_row
+
+_PRESSURE_WORD = len("unavailable")
+_SCOPE = "apps: this user"
+_BASELINE_NEED = len("Δ since 00:00 (99h59m)")
+_LABELS = (5, 5)  # wired / data / in, free / ratio / out
+_NOT_ALLOCATED = "0 B; not allocated"
+_USED_UNAVAILABLE = "used unavailable"
 
 
-def _nonnegative(value: int) -> bool:
+def _nonnegative(value: int | None) -> bool:
     return type(value) is int and value >= 0
 
 
-def _amount(value: int | None) -> str:
-    return size(value) if type(value) is int and value >= 0 else "unavailable"
+def _known(value: int | None) -> int | None:
+    return value if type(value) is int and value >= 0 else None
 
 
-def _pressure(host: HostMemory, colors: ThemeColors) -> Text:
+def _slots(host: HostMemory) -> Slots:
+    """Slot widths from the host's physical memory and swap allocation."""
+    physical = _known(host.physical_bytes) or 0
+    swap = _known(host.swap_total_bytes)
+    values = [pair_width(physical, "used"), len(_USED_UNAVAILABLE)]
+    if swap:
+        values.append(pair_width(swap, "used/alloc"))
+    elif swap == 0:
+        values.append(len(_NOT_ALLOCATED))
+    return Slots(*_LABELS, max(values), field_width(physical), _PRESSURE_WORD + 1 + len(_SCOPE))
+
+
+def _pressure_state(host: HostMemory, colors: ThemeColors) -> State:
     level = host.pressure_level if type(host.pressure_level) is int else None
     word = {1: "normal", 2: "warning", 4: "critical"}.get(level or 0)
     if host.pressure_unavailable is not None:
         word = None
     color = {"normal": colors.success, "warning": colors.warning, "critical": colors.error}
-    return Text(word or "unavailable", style=f"bold {color[word]}" if word else "dim")
+    text = Text(word or "unavailable", style=f"bold {color[word]}" if word else "dim")
+    return State(text, _PRESSURE_WORD, text, _PRESSURE_WORD)
+
+
+def _ram_row(host: HostMemory, lay: Layout, colors: ThemeColors, *, ascii_bars: bool) -> Text:
+    """An unknown partition keeps all four fields and shows `—` in the unknown ones."""
+    used, backed, free = host.ram_partition or (None, None, None)
+    physical = _known(host.physical_bytes)
+    bar: Text | None = None
+    if not physical:
+        value = _USED_UNAVAILABLE
+    else:
+        unit = unit_of(physical)
+        number = size_in_unit(physical, unit)
+        if used is None:
+            value = f"{unknown(ascii_bars):>{len(number)}}/{number} {unit} used"
+        else:
+            value = value_text(used, physical, "used", unit, number)
+            bar = bar_text(used, physical, lay.gauge, colors, ascii_bars=ascii_bars)
+    field = lay.slots.amount
+    backed_text = Text("file-backed " + amount(backed, ascii_bars=ascii_bars).rjust(field))
+    purgeable = amount(_known(host.purgeable_bytes), ascii_bars=ascii_bars)
+    purgeable_text = Text("purgeable " + purgeable.rjust(field))
+    return grid_row(
+        "RAM",
+        gauge_left(lay, bar, Text(value)),
+        lay,
+        [
+            pair("wired", amount(_known(host.wired_bytes), ascii_bars=ascii_bars), 1, lay),
+            pair("free", amount(free, ascii_bars=ascii_bars), 2, lay),
+            *parts(
+                [
+                    (backed_text, len("file-backed ") + field),
+                    (purgeable_text, len("purgeable ") + field),
+                ],
+                ascii_bars=ascii_bars,
+            ),
+        ],
+        ascii_bars=ascii_bars,
+    )
+
+
+def _compression_row(host: HostMemory, lay: Layout, *, ascii_bars: bool) -> Text:
+    logical, physical = host.compressor_logical_bytes, host.compressor_physical_bytes
+    valid = _nonnegative(logical) and _nonnegative(physical)
+    value = Text(f"{size(physical)} RAM" if valid else "unavailable")
+    ratio = f"{logical / physical:.1f}:1" if valid and logical > 0 and physical > 0 else None
+    return grid_row(
+        "Compress",
+        gauge_left(lay, None, value),
+        lay,
+        [
+            pair("data", amount(_known(logical), ascii_bars=ascii_bars), 1, lay),
+            pair("ratio", unknown(ascii_bars) if ratio is None else ratio, 2, lay),
+        ],
+        ascii_bars=ascii_bars,
+    )
+
+
+def _swap_row(
+    host: HostMemory,
+    lay: Layout,
+    colors: ThemeColors,
+    rates: tuple[int | None, int | None],
+    session_written: int | None,
+    *,
+    ascii_bars: bool,
+) -> Text:
+    used, total = host.swap_used_bytes, host.swap_total_bytes
+    valid = _nonnegative(used) and _nonnegative(total) and used <= total
+    if not valid:
+        value, bar = "unavailable", None
+    elif total:
+        unit = unit_of(total)
+        value = value_text(used, total, "used/alloc", unit, size_in_unit(total, unit))
+        bar = bar_text(used, total, lay.gauge, colors, ascii_bars=ascii_bars)
+    else:
+        value, bar = _NOT_ALLOCATED, placeholder_bar(lay.gauge)
+    return grid_row(
+        "Swap",
+        gauge_left(lay, bar, Text(value)),
+        lay,
+        activity_items(
+            lay,
+            incoming=rates[0],
+            outgoing=rates[1],
+            session_written=session_written,
+            boot_written=host.swap_out_bytes,
+            ascii_bars=ascii_bars,
+        ),
+        ascii_bars=ascii_bars,
+    )
+
+
+def _pressure_row(
+    host: HostMemory,
+    lay: Layout,
+    colors: ThemeColors,
+    baseline_time: str | None,
+    baseline_elapsed: int,
+    *,
+    ascii_bars: bool,
+) -> Text:
+    left, hidden = state_left(lay, _pressure_state(host, colors), Text(_SCOPE), len(_SCOPE))
+    items: list[Item] = []
+    if hidden:  # no room beside the word below 80 columns: it leads the right part, as on Linux
+        items, hidden = [Item(Text(_SCOPE), len(_SCOPE), spaces(lay.gap))], False
+    if baseline_time:
+        word = "delta" if ascii_bars else "Δ"
+        text = f"{word} since {baseline_time[:5]} ({format_elapsed(max(0, baseline_elapsed))})"
+        items.append(span(Text(text), _BASELINE_NEED + (4 if ascii_bars else 0), lay))
+    return grid_row("Pressure", left, lay, items, ascii_bars=ascii_bars, hidden=hidden)
 
 
 def render_host_header(  # noqa: PLR0913 - independent keyword-only render inputs
@@ -49,100 +193,22 @@ def render_host_header(  # noqa: PLR0913 - independent keyword-only render input
     percentage. Growth timing identifies the session/reset epoch; app baselines
     can be newer when identity or coverage changes.
     """
-    _, bar_width, value_width = geometry(width)
-    used, total = host.swap_used_bytes, host.swap_total_bytes
-    valid_swap = _nonnegative(used) and _nonnegative(total) and used <= total
-    swap_value = (
-        (format_pair(used, total) + " used/alloc" if total else "0 B; not allocated")
-        if valid_swap
-        else "unavailable"
-    )
-    partition = host.ram_partition
-    ram_value = (
-        format_pair(partition[0], host.physical_bytes) + " used"
-        if partition is not None
-        else "used unavailable"
-    )
-    # Grow the shared primary slot only when complete values require it;
-    # optional metadata gives way before native allocation qualifications.
-    value_width = max(value_width, Text(swap_value).cell_len, Text(ram_value).cell_len)
 
-    def row(
-        label: str,
-        value: Text,
-        bar: Text | None = None,
-        metadata: tuple[tuple[int, Text], ...] = (),
-    ) -> Text:
-        return grid_row(
-            label,
-            value,
-            width,
-            gauge=bar,
-            metadata=metadata,
-            ascii_bars=ascii_bars,
-            primary_width=value_width,
-        )
-
-    if partition is None:
-        ram = row(
-            "RAM",
-            Text(ram_value),
-            metadata=((24, Text(f"total {_amount(host.physical_bytes)}")),),
-        )
-    else:
-        ram_used, backed, free = partition
-        ram = row(
-            "RAM",
-            Text(ram_value),
-            _bar_text(ram_used, host.physical_bytes, bar_width, colors, ascii_bars=ascii_bars),
-            (
-                (20, Text(f"file-backed {size(backed)}")),
-                (12, Text(f"free {size(free)}")),
-                (14, Text(f"wired {_amount(host.wired_bytes)}")),
-                (17, Text(f"purgeable {_amount(host.purgeable_bytes)}")),
+    def rows(lay: Layout) -> tuple[Text, Text, Text, Text]:
+        return (
+            _ram_row(host, lay, colors, ascii_bars=ascii_bars),
+            _compression_row(host, lay, ascii_bars=ascii_bars),
+            _swap_row(
+                host,
+                lay,
+                colors,
+                (swap_in_rate, swap_out_rate),
+                swap_out_session_total,
+                ascii_bars=ascii_bars,
+            ),
+            _pressure_row(
+                host, lay, colors, baseline_time, baseline_elapsed, ascii_bars=ascii_bars
             ),
         )
-    logical, physical = host.compressor_logical_bytes, host.compressor_physical_bytes
-    valid = _nonnegative(logical) and _nonnegative(physical)
-    arrow = ">" if ascii_bars else "→"
-    ratio = f"({logical / physical:.1f}:1)" if valid and logical > 0 and physical > 0 else "ratio ?"
-    compression = row(
-        "Compress",
-        Text(_amount(physical) + " RAM" if valid else "unavailable"),
-        metadata=((35, Text(f"{_amount(logical)} data {arrow} RAM {ratio}")),),
-    )
-    swap_bar = (
-        _bar_text(used, total, bar_width, colors, ascii_bars=ascii_bars)
-        if total and valid_swap
-        else Text("-" * bar_width, style="dim")
-    )
-    swap = row(
-        "Swap",
-        Text(swap_value),
-        swap_bar if valid_swap else None,
-        swap_activity(
-            swap_in_rate,
-            swap_out_rate,
-            swap_out_session_total,
-            host.swap_out_bytes,
-            ascii_bars=ascii_bars,
-        ),
-    )
-    baseline = (
-        f"{'delta' if ascii_bars else 'Δ'} since {baseline_time[:5]} "
-        f"({format_elapsed(max(0, baseline_elapsed))})"
-        if baseline_time
-        else ""
-    )
-    if width < 110:
-        baseline = baseline.replace(" since ", " ")
-    pressure = row(
-        "Pressure",
-        Text(),
-        _pressure(host, colors),
-        metadata=(
-            (15, Text("apps: this user")),
-            *(((25 if width >= 110 else 19, Text(baseline)),) if baseline else ()),
-        ),
-    )
-    return ram, compression, swap, pressure
+
+    return rows(choose(width, _slots(host), rows))

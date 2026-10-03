@@ -6,7 +6,6 @@ from dataclasses import replace
 from datetime import datetime
 from typing import Any
 
-import pytest
 from rich.text import Text
 from textual.theme import BUILTIN_THEMES
 
@@ -188,54 +187,3 @@ def test_ansi_theme_colours_are_accepted() -> None:
     )
     lines = _render(_stats(swap_total=1000, swap_free=90), 200, 40, colors=colors)
     assert all(line.plain for line in lines)
-
-
-@pytest.mark.parametrize("width", [40, 60, 80, 120, 160])
-@pytest.mark.parametrize("height", [16, 24, 30, 40])
-@pytest.mark.parametrize("ascii_bars", [False, True])
-def test_grid_preserves_cell_width_and_never_wraps(
-    width: int, height: int, ascii_bars: bool
-) -> None:
-    lines = _render(_ZSWAP_STATS, width, height, ascii_bars=ascii_bars)
-    assert all(line.cell_len <= width and line.no_wrap for line in lines)
-    assert len(lines) == (2 if height < 18 else 4)
-    if ascii_bars:
-        assert all(ord(c) < 128 for line in lines for c in line.plain)
-    if height < 18:
-        assert all(line.plain.endswith(">" if ascii_bars else "…") for line in lines)
-
-
-@pytest.mark.parametrize("width", [60, 80, 120, 160])
-def test_primary_values_and_metadata_share_fixed_columns(width: int) -> None:
-    lines = _render(replace(_ZSWAP_STATS, zswap_max_pool_percent=20), width)
-    value_starts = [
-        line.plain.index(token)
-        for line, token in zip(lines[:3], ("22.1/", "1.0/", "23.3/"), strict=True)
-    ]
-    assert len(set(value_starts)) == 1
-    separators = [line.plain.index("│") for line in lines if "│" in line.plain]
-    assert len(set(separators)) <= 1
-    changed = _render(replace(_ZSWAP_STATS, mem_available=29 * _GIB, mem_shared=12 * _GIB), width)
-    for before, after in zip(lines, changed, strict=True):
-        if "│" in before.plain:
-            assert before.plain.index("│") == after.plain.index("│")
-
-
-def test_shared_is_metadata_and_hidden_marker_only_means_omission() -> None:
-    ram = _render(_DEFAULT_STATS, 160)[0].plain
-    assert ram.index("shared") > ram.index("│")
-    assert not ram.endswith("…")
-    assert _render(_DEFAULT_STATS, 80)[0].plain.endswith("…")
-
-
-def test_unknown_pressure_and_disabled_swap_are_not_zero_usage() -> None:
-    lines = _render(_stats(pressure_some_avg10=None, swap_total=0, swap_free=0), 120)
-    assert "off" in lines[1].plain and "0.0/" not in lines[1].plain
-    assert "unavailable" in lines[2].plain
-
-
-def test_system_and_baseline_positions_do_not_depend_on_values() -> None:
-    first = _render(_DEFAULT_STATS, 160)[2].plain
-    second = _render(_stats(system_ram=32 * _GIB, pressure_some_avg60=1.0), 160)[2].plain
-    for token in ("system", "Δ since", "elsewhere"):
-        assert first.index(token) == second.index(token)

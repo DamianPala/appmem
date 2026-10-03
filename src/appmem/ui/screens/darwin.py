@@ -26,7 +26,7 @@ from appmem.total import SessionCounter
 from appmem.ui.darwin_header import render_host_header
 from appmem.ui.darwin_rows import DarwinRow, build_rows, sort_rows, update_baseline
 from appmem.ui.header import ThemeColors
-from appmem.ui.host_panel import HostPanel, darwin_details
+from appmem.ui.host_panel import Block, Entry, HostPanel, Prose, darwin_details
 from appmem.ui.layout import build_footer
 from appmem.ui.screens.live import LiveScreen
 
@@ -193,8 +193,8 @@ class DarwinMainScreen(LiveScreen):
     def _render_header(self) -> None:
         self._notify_host_panel()
         if self._read_failed:
-            self.query_one("#header1", Static).update(
-                truncate_name(_read_error(self._host is not None), self.size.width)
+            self._set_static(
+                "#header1", truncate_name(_read_error(self._host is not None), self.size.width)
             )
             return
         if self._host is None:
@@ -218,7 +218,7 @@ class DarwinMainScreen(LiveScreen):
             baseline_elapsed=max(0, int(monotonic() - self._baseline_started)),
         )
         for index, line in enumerate(lines, 1):
-            self.query_one(f"#header{index}", Static).update(line)
+            self._set_static(f"#header{index}", line)
 
     def refresh_theme(self) -> None:
         self._render_header()
@@ -240,38 +240,38 @@ class DarwinMainScreen(LiveScreen):
             (("?",), "help"),
             (("q",), "quit"),
         ]
-        self.query_one("#footer", Static).update(
+        self._set_static(
+            "#footer",
             build_footer(
                 tuple(items),
                 width=self.size.width,
-                drop_order=("theme", "reset Δ", "procs", "sort"),
-            )
+                drop_order=("theme", "reset Δ", "host", "procs", "sort"),
+            ),
         )
 
-    def _host_content(self) -> str:
+    def _host_content(self) -> list[Block]:
         if self._host is None:
-            return "Host memory unavailable; waiting for a successful reading."
-        stale = "Read failed; showing last successful reading.\n\n" if self._read_failed else ""
+            return [Prose(("Host memory unavailable; waiting for a successful reading.",))]
+        stale = (
+            [Prose(("Read failed; showing last successful reading.",))] if self._read_failed else []
+        )
         elapsed = format_elapsed(max(0, int(monotonic() - self._baseline_started)))
-        changes = (
-            f"Changes   Δ shows memory changes since {(self._baseline_time or '?')[:5]}"
-            f" ({elapsed} ago)."
+        changes = Entry(
+            "Changes",
+            (f"Δ shows memory changes since {(self._baseline_time or '?')[:5]} ({elapsed} ago).",),
         )
-        content = (
-            stale
-            + darwin_details(
-                self._host,
-                (self._swap_in_rate, self._swap_out_rate),
-                (self._swap_in_session.total, self._swap_out_session.total),
-            )
-            + "\n"
-            + changes
+        details = darwin_details(
+            self._host,
+            (self._swap_in_rate, self._swap_out_rate),
+            (self._swap_in_session.total, self._swap_out_session.total),
         )
-        return content.replace("·", "|").replace("Δ", "delta") if self._ascii_bars else content
+        return [*stale, *details, changes]
 
     def action_host(self) -> None:
         self._host_panel_open = True
-        self.app.push_screen(HostPanel(self, self._host_content, self.action_help))  # pyright: ignore[reportUnknownMemberType]
+        self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
+            HostPanel(self, self._host_content, self.action_help, ascii_bars=self._ascii_bars)
+        )
 
     def _specs(self, table: RowTable) -> list[tuple[str, str, int | None]]:
         specs: list[tuple[str, str, int | None]] = [
@@ -542,6 +542,11 @@ class DarwinProcessesScreen(LiveScreen):
         self._read_failed = False
         self._render_detail(scroll=scroll)
 
+    @property
+    def _showing_groups(self) -> bool:
+        """Grouped by command and not drilled into one: the table of command groups."""
+        return self._grouped and self._command is None
+
     def _visible_processes(self) -> tuple[DarwinProcess, ...]:
         if self._app is None:
             return ()
@@ -550,7 +555,7 @@ class DarwinProcessesScreen(LiveScreen):
         return tuple(p for p in self._app.members if p.command == self._command)
 
     def _build_rows(self) -> list[_DetailRow]:
-        if self._grouped and self._command is None:
+        if self._showing_groups:
             grouped: dict[str, list[DarwinProcess]] = {}
             for process in self._visible_processes():
                 grouped.setdefault(process.command, []).append(process)
@@ -597,10 +602,7 @@ class DarwinProcessesScreen(LiveScreen):
         if self._sort_key == "count":
             return sorted(
                 rows,
-                key=lambda row: (
-                    row.procs if self._grouped and self._command is None else row.pid or 0,
-                    row.name,
-                ),
+                key=lambda row: (row.procs if self._showing_groups else row.pid or 0, row.name),
                 reverse=self._reverse,
             )
         if self._sort_key == "unreadable":
@@ -612,7 +614,7 @@ class DarwinProcessesScreen(LiveScreen):
         return known + sorted(unknown, key=lambda row: row.name)
 
     def _specs(self, table: RowTable) -> list[tuple[str, str, int | None]]:
-        grouped = self._grouped and self._command is None
+        grouped = self._showing_groups
         specs: list[tuple[str, str, int | None]] = []
         if not grouped:
             specs.append(("pid", "PID", 7))
@@ -633,7 +635,9 @@ class DarwinProcessesScreen(LiveScreen):
     def _rebuild_columns(self, table: RowTable) -> None:
         table.clear(columns=True)
         specs = self._specs(table)
-        sort_column = "pid" if self._sort_key == "count" and not self._grouped else self._sort_key
+        sort_column = (
+            "pid" if self._sort_key == "count" and not self._showing_groups else self._sort_key
+        )
         for key, label, width in specs:
             marker = " ▾" if self._reverse else " ▴"
             table.add_column(label + marker if key == sort_column else label, key=key, width=width)
@@ -730,7 +734,7 @@ class DarwinProcessesScreen(LiveScreen):
             if app is None
             else f"{escape_control_chars(app.name)}  memory {_amount(app.footprint_bytes)}"
         )
-        self.query_one("#title", Static).update(truncate_name(title, self.size.width))
+        self._set_static("#title", truncate_name(title, self.size.width))
         self._apply_rows(self._build_rows(), force_columns=force_columns, scroll=scroll)
         self._render_status()
         sort_keys = ("f", "n", "p", "u") if "unreadable" in self._column_keys else ("f", "n", "p")
@@ -740,18 +744,19 @@ class DarwinProcessesScreen(LiveScreen):
             (sort_keys, "sort"),
             (("g",), "ungroup" if self._grouped else "group"),
         ]
-        if self._grouped and self._command is None and self._rows:
+        if self._showing_groups and self._rows:
             footer.append((("enter",), "members"))
         footer.extend(((("esc",), "back"), (("T",), "theme"), (("?",), "help"), (("q",), "quit")))
-        self.query_one("#footer", Static).update(
-            build_footer(footer, width=self.size.width, drop_order=("theme", "members", "sort"))
+        self._set_static(
+            "#footer",
+            build_footer(footer, width=self.size.width, drop_order=("theme", "members", "sort")),
         )
 
     def _render_status(self) -> None:
         table = self._table()
         if self._read_failed:
-            self.query_one("#status", Static).update(
-                truncate_name(_read_error(self._app is not None), self.size.width)
+            self._set_static(
+                "#status", truncate_name(_read_error(self._app is not None), self.size.width)
             )
             return
         status = "Captured process memory; ? means unreadable"
@@ -761,13 +766,13 @@ class DarwinProcessesScreen(LiveScreen):
             selected, _ = self._selection(table)
             if selected is not None and selected in self._rows:
                 status = self._rows[selected].status
-        self.query_one("#status", Static).update(truncate_name(status, self.size.width))
+        self._set_static("#status", truncate_name(status, self.size.width))
 
     def on_row_table_row_highlighted(self, event: RowTable.RowHighlighted) -> None:
         self._render_status()
 
     def on_row_table_row_selected(self, event: RowTable.RowSelected) -> None:
-        if self._grouped and self._command is None and event.row_key in self._rows:
+        if self._showing_groups and event.row_key in self._rows:
             self._command = event.row_key
             self._invalidate_tick()
             self._render_detail(force_columns=True, scroll=True)
@@ -851,12 +856,12 @@ class DarwinHelpScreen(Screen[None]):
         definitions = (
             (
                 "Swap in/out",
-                "Host activity averaged over about 10 seconds in this session. "
+                "Host activity averaged over about 5 seconds in this session. "
                 "Native counters count page-rounded compressed segments transferred to/from swap "
                 "files, including housekeeping, not logical app bytes or SSD throughput. "
                 "Unknown means insufficient/unavailable samples; 0 B/s is measured zero. "
                 "Clock discontinuities reset rates; b resets growth only. "
-                "From 105 columns, headers show out with rates then the exact total written "
+                "The Swap line keeps in and out in fixed columns, then the exact total written "
                 "this run; the since-boot total follows when space permits. Rates have priority "
                 "over both totals, and the session total has priority over the boot total. "
                 "h shows Read/Written rates, "

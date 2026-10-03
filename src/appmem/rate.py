@@ -1,9 +1,14 @@
-"""Pure cumulative-counter rates with a ten-second window and paired clocks."""
+"""Pure cumulative-counter rates with a five-second window and paired clocks."""
 
 from dataclasses import dataclass
 from math import isfinite
 
-WINDOW_SECONDS = 10.0
+WINDOW_SECONDS = 5.0
+# A rate over a shorter span than this is noise: the two samples taken at
+# start-up (mount, then resume) are 10 to 20 ms apart and would show a
+# spike from a single page. Capped at half a second so a long refresh
+# interval does not delay the first rate beyond its second tick.
+_MIN_SPAN_SECONDS = 0.5
 
 
 @dataclass(frozen=True)
@@ -24,6 +29,8 @@ def update_rate(
     """Unknown on invalid/reset/discontinuous samples; zero only after measurement.
 
     Keep the sample immediately before the window boundary to cover sparse ticks.
+    Unknown until the oldest kept sample is at least half an interval (at most
+    half a second) behind the newest.
     Long gaps allow three configured refresh intervals, including sixty-second ticks.
     """
     if type(cumulative_bytes) is not int or cumulative_bytes < 0:
@@ -49,4 +56,6 @@ def update_rate(
     if len(history) < 2:
         return history, None
     elapsed = now - history[0].monotonic
+    if elapsed < min(0.5 * interval, _MIN_SPAN_SECONDS):
+        return history, None
     return history, round((cumulative_bytes - history[0].value) / elapsed)

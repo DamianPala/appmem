@@ -14,7 +14,14 @@ from appmem.darwin_backend import DarwinApp, DarwinBackend
 from appmem.darwin_native import HostMemory
 from appmem.model import AppStats, SystemStats
 from appmem.ui.app import AppMemApp
-from appmem.ui.host_panel import HostPanel, darwin_details, linux_details
+from appmem.ui.host_panel import (
+    Block,
+    Entry,
+    HostPanel,
+    darwin_details,
+    linux_details,
+    render_blocks,
+)
 from appmem.ui.screens.darwin import DarwinMainScreen
 from appmem.ui.screens.main import MainScreen
 from appmem.ui.table import RowTable
@@ -29,8 +36,12 @@ def test_enabled_zswap_remains_visible_below_eighty_columns() -> None:
     assert any(line.plain.endswith("…") for line in lines)
 
 
+def _text(blocks: list[Block], width: int = 200) -> str:
+    return render_blocks(blocks, width)
+
+
 def test_panel_linux_accounting_and_unknowns_are_current_sample() -> None:
-    text = linux_details(STATS, (1023, 243 * 1024))
+    text = _text(linux_details(STATS, (1023, 243 * 1024)))
     assert "Data held                  4.0 GiB" in text
     assert "Compression                4.0:1" in text
     assert "Swap used includes the data held in zswap" in text
@@ -38,13 +49,34 @@ def test_panel_linux_accounting_and_unknowns_are_current_sample() -> None:
     assert "Pool limit                 ~6.0 GiB · 20% of RAM" in text
     assert "Current rate            1023 B/s        243 KiB/s" in text
     assert "18.8" not in text and "19.4" not in text
-    assert "unavailable" in linux_details(replace(STATS, zswap_pool_bytes=None), (None, None))
-    assert "disabled or unavailable" in linux_details(replace(STATS, zswap_enabled=False), (0, 0))
-    assert "(0.0:1)" not in linux_details(replace(STATS, zswap_pool_bytes=0), (0, 0))
+    unknown = _text(linux_details(replace(STATS, zswap_pool_bytes=None), (None, None)))
+    assert "unavailable" in unknown
+    off = _text(linux_details(replace(STATS, zswap_enabled=False), (0, 0)))
+    assert "disabled or unavailable" in off
+    assert "(0.0:1)" not in _text(linux_details(replace(STATS, zswap_pool_bytes=0), (0, 0)))
+
+
+def test_panel_names_the_zswap_compressor_and_writeback() -> None:
+    stats = replace(STATS, zswap_compressor="zstd", zswap_writeback_bytes=3 * 1024**3)
+    text = _text(linux_details(stats, (0, 0), writeback_rate=2048))
+    assert "Compressor                 zstd" in text
+    assert "Writeback                  2 KiB/s now · 3.0 GiB since boot" in text
+    unknown = _text(linux_details(STATS, (0, 0)))
+    assert "Compressor                 unavailable" in unknown
+    assert "Writeback                  unavailable · unavailable since boot" in unknown
+
+
+def test_panel_blocks_are_laid_out_from_structure_not_reparsed_text() -> None:
+    # A value that looks like a table row or a heading must not be re-read as one.
+    blocks: list[Block] = [Entry("RAM", ("Activity  Read  Written", "          Since boot  1  2"))]
+    narrow = _text(blocks, 30)
+    assert "Activity (Read / Written)" not in narrow
+    assert "Since boot: Read" not in narrow
+    assert "Activity" in narrow and "Since boot" in narrow
 
 
 def test_panel_mac_accounting_remains_native() -> None:
-    text = darwin_details(HOST, (0, None))
+    text = _text(darwin_details(HOST, (0, None)))
     assert "3.0 GiB of data compressed into 1.0 GiB of RAM (3.0:1)" in text
     assert "RAM used includes the physical compressed size: 1.0 GiB" in text
     assert "allocated now" in text and "dynamically" in text
@@ -57,7 +89,7 @@ def test_panel_mac_accounting_remains_native() -> None:
 
 def test_panel_pressure_keeps_available_fields_with_partial_readings() -> None:
     stats = replace(STATS, pressure_some_avg10=None, pressure_full_avg60=2.5)
-    text = linux_details(stats, (None, None))
+    text = _text(linux_details(stats, (None, None)))
     assert "Pressure  unavailable" in text
     assert "Time waiting for memory, last 10 seconds / 60 seconds:" in text
     assert f"At least one task: unavailable / {stats.pressure_some_avg60:.1f}%." in text
@@ -88,7 +120,9 @@ async def test_overlay_live_scroll_resize_focus_and_close(
         table_state = (table.cursor_row, table.scroll_y)
         before = len(calls)
         footer = owner.query_one("#footer", Static).content
-        assert "host" in str(footer)
+        # `h host` is the first hint to go, so `enter procs` survives at 40 columns.
+        assert ("host" in str(footer)) is (width >= 60)
+        assert "enter procs" in str(footer)
         await pilot.press("h")
         await pilot.pause()
         panel = app.screen

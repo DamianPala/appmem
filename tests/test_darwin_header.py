@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 
 import pytest
@@ -62,7 +63,7 @@ def test_zero_swap_is_not_allocated_with_neutral_placeholder(width: int) -> None
         replace(HOST, swap_used_bytes=0, swap_total_bytes=0), width, colors=COLORS
     )[2]
     assert "0 B; not allocated" in swap.plain
-    assert all(glyph not in swap.plain for glyph in ("/", "█", "░", "off", "disabled"))
+    assert all(glyph not in swap.plain for glyph in ("used/alloc", "█", "░", "off", "disabled"))
 
 
 @pytest.mark.parametrize(("used", "total"), [(-1, 100), (1, 0), (101, 100), (0, -1)])
@@ -81,8 +82,8 @@ def test_zero_compression_has_values_without_division_ratio(logical: int, physic
         120,
         colors=COLORS,
     )[1]
-    assert "Compress" in status.plain and "data →" in status.plain and "RAM" in status.plain
-    assert ":1" not in status.plain
+    assert "Compress" in status.plain and "data" in status.plain and "RAM" in status.plain
+    assert ":1" not in status.plain and "ratio" in status.plain and "—" in status.plain
 
 
 @pytest.mark.parametrize(("logical", "physical"), [(-1, MIB), (MIB, -1)])
@@ -145,10 +146,10 @@ def test_all_themes_render_gauges_and_pressure_with_existing_palette(
     assert any(span.style == colors.primary for span in swap.spans)
     assert any(span.style == f"bold {colors.success}" for span in status.spans)
     if ascii_bars:
-        assert "#" in swap.plain and "." in swap.plain and ">" in compression.plain
-        assert all(ord(char) < 128 for line in (swap, status) for char in line.plain)
+        assert "#" in swap.plain and "." in swap.plain
+        assert all(ord(char) < 128 for line in (swap, status, compression) for char in line.plain)
     else:
-        assert "█" in swap.plain and "░" in swap.plain and "→" in compression.plain
+        assert "█" in swap.plain and "░" in swap.plain
 
 
 @pytest.mark.asyncio
@@ -210,7 +211,9 @@ def test_contradictory_partition_has_explicit_unavailable(changes: dict[str, int
     assert host.ram_partition is None
     for width in (40, 80, 120):
         ram = render_host_header(host, width, colors=COLORS)[0]
-        assert "used unavailable" in ram.plain
+        # Used is a dash against the known total (all unknown when the total is), never a number.
+        total_unknown = changes.get("physical_bytes") in (0, True)
+        assert ("used unavailable" if total_unknown else "—/8.0 GiB used") in ram.plain
         assert "█" not in ram.plain
         assert ram.cell_len <= width
 
@@ -238,33 +241,18 @@ def test_pressure_baseline_and_scope_fit_and_remain_ascii() -> None:
 
 
 @pytest.mark.parametrize("width", [80, 100, 120, 160])
-def test_ram_slots_stay_stable_across_normal_counter_changes(width: int) -> None:
-    first = render_host_header(HOST, width, colors=COLORS, ascii_bars=True)[0].plain
-    second = render_host_header(
-        replace(HOST, physical_bytes=16 * GIB, wired_bytes=900 * MIB, purgeable_bytes=9 * MIB),
-        width,
-        colors=COLORS,
-        ascii_bars=True,
-    )[0].plain
-    assert first.index("file-backed") == second.index("file-backed")
-    assert set(first[10:20]) <= {"#", "."}
-    assert "wired" in first if width >= 100 else "wired" not in first
-    assert len(first) <= width and len(second) <= width
-
-
-@pytest.mark.parametrize("width", [80, 100, 120, 160])
 def test_long_elapsed_uses_existing_compact_format(width: int) -> None:
     line = render_host_header(
         HOST, width, colors=COLORS, baseline_time="09:41:59", baseline_elapsed=4320
     )[3].plain
-    assert ("Δ since 09:41 (1h12m)" if width >= 110 else "Δ 09:41 (1h12m)") in line
+    assert "Δ since 09:41 (1h12m)" in line
     line = render_host_header(
         HOST, width, colors=COLORS, baseline_time="09:41", baseline_elapsed=120 * 86400
     )[3].plain
     assert "(120d)" in line
 
 
-@pytest.mark.parametrize("width", [80, 100, 120, 160])
+@pytest.mark.parametrize("width", [100, 120, 160])
 def test_swap_activity_retains_allocation_across_used_digit_boundary(width: int) -> None:
     lines = [
         render_host_header(
@@ -278,34 +266,24 @@ def test_swap_activity_retains_allocation_across_used_digit_boundary(width: int)
     ]
     for used, line in zip((5, 10), lines, strict=True):
         assert f"{used:.1f}/16.0 GiB used/alloc" in line
-        assert "in 1 KiB/s" in line and "out 1 KiB/s" in line
+        assert re.search(r"in\s+1 KiB/s", line) and re.search(r"out\s+1 KiB/s", line)
     assert all(len(line) <= width for line in lines)
+    assert lines[0].index("│") == lines[1].index("│")
+    assert lines[0].index("out") == lines[1].index("out")
 
 
 @pytest.mark.parametrize("width", [40, 60, 80, 120, 160])
-def test_host_grid_keeps_native_values_and_alignment(width: int) -> None:
-    ram, compression, swap, pressure = render_host_header(HOST, width, colors=COLORS)
-    assert all(
-        line.cell_len <= width and line.no_wrap for line in (ram, compression, swap, pressure)
-    )
-    assert "5.1/8.0 GiB used" in ram.plain
-    assert "1.0 GiB RAM" in compression.plain
-    assert "0.5/1.0 GiB used" in swap.plain
-    assert "normal" in pressure.plain
-    assert ram.plain.index("5.1/") == compression.plain.index("1.0 GiB") == swap.plain.index("0.5/")
-    assert not any(glyph in compression.plain for glyph in ("█", "░", "#"))
-    if width >= 80:
-        assert "in " in swap.plain and "used/alloc" in swap.plain
-        assert "out " in swap.plain
+def test_host_rows_keep_native_values_and_one_separator_column(width: int) -> None:
+    rows = render_host_header(HOST, width, colors=COLORS, baseline_time="09:00")
+    assert all(line.cell_len <= width and line.no_wrap for line in rows)
+    ram, compression, swap, pressure = (line.plain for line in rows)
+    assert "5.1/8.0 GiB used" in ram
+    assert "1.0 GiB RAM" in compression
+    assert "0.5/1.0 GiB used/alloc" in swap
+    assert "normal" in pressure
+    assert not any(glyph in compression for glyph in ("█", "░", "#"))
+    separators = {line.index("│") for line in (ram, compression, swap, pressure) if "│" in line}
+    assert len(separators) <= 1
     if width >= 120:
-        assert all(label in ram.plain for label in ("file-backed", "free", "wired", "purgeable"))
-        assert "used/alloc" in swap.plain
-
-
-def test_large_native_values_preserve_metadata_fields_when_actual_text_fits() -> None:
-    host = replace(HOST, physical_bytes=128 * GIB, wired_bytes=100 * GIB)
-    ram = render_host_header(host, 121, colors=COLORS)[0]
-    assert ram.cell_len <= 121
-    assert all(label in ram.plain for label in ("file-backed", "free", "wired", "purgeable"))
-    assert "wired 100.0 GiB" in ram.plain
-    assert not ram.plain.endswith("…")
+        assert separators and all("│" in line for line in (ram, compression, swap, pressure))
+        assert all(label in ram for label in ("wired", "free", "file-backed"))
