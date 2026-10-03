@@ -186,3 +186,15 @@ async def test_double_click_outside_theme_panel_closes_it_once(tmp_path: Path) -
         assert isinstance(pilot.app.screen, MainScreen)
         assert pilot.app.is_running
         assert pilot.app.query_one("#header1", Static)
+
+
+@pytest.mark.asyncio
+async def test_command_palette_offers_only_theme_and_quit(tmp_path: Path) -> None:
+    """Textual's Keys panel can end the app on a mouse press and its
+    Screenshot command writes to `~/Downloads`; neither is offered."""
+    _linux_tree(tmp_path)
+    app = AppMemApp(backend=LinuxBackend(tmp_path, 1000), interval=3600, include_system=False)
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        titles = [command.title for command in app.get_system_commands(app.screen)]
+        assert titles == ["Theme", "Quit"]

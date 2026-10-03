@@ -942,7 +942,7 @@ class DarwinHelpScreen(Screen[None]):
             ("Esc", "back"),
             ("b", "reset Δ and the displayed baseline clock"),
             ("T / Ctrl+P", "theme"),
-            ("h", "main dashboard: live host memory; h/Esc close"),
+            ("h", "main view: live host memory panel; h/Esc close"),
             ("?", "help"),
             ("q / Ctrl+C", "quit live view; esc/?/q close help"),
         )

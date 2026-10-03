@@ -105,7 +105,7 @@ Keys:
   b                    reset the Δ baseline to now
   T / Ctrl+P           change the theme (opens on the current theme, remembered in the
                        config file)
-  h                    main dashboards: live host memory; h/Esc close
+  h                    main view: live host memory panel; h/Esc close
   ?                    help screen
   q / Ctrl+C           quit
 

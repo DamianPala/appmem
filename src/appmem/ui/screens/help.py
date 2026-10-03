@@ -196,7 +196,7 @@ _KEYS: tuple[tuple[str, str], ...] = (
     ("x", "toggle system services"),
     ("b", "reset the Δ baseline to now"),
     ("T / Ctrl+P", "change the theme"),
-    ("h", "main dashboards: live host memory; h/Esc close"),
+    ("h", "main view: live host memory panel; h/Esc close"),
     ("?", "this screen"),
     ("q / Ctrl+C", "quit"),
 )

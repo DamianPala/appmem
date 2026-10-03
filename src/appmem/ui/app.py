@@ -12,10 +12,10 @@ choice, and re-rendering the main view's header when it changes (SPEC.md
 from __future__ import annotations
 
 import gc
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from typing import ClassVar
 
-from textual.app import App
+from textual.app import App, SystemCommand
 from textual.binding import Binding, BindingType
 from textual.screen import Screen
 
@@ -134,6 +134,14 @@ class AppMemApp(App[None]):
         # live heap rather than the garbage, so collecting more often
         # wouldn't make each pass cheaper.
         gc.collect()
+
+    def get_system_commands(self, screen: Screen[object]) -> Iterable[SystemCommand]:
+        # Ctrl+P offers Theme and Quit only. Textual's other entries are not
+        # ours to support: Keys opens a panel in which a mouse press during
+        # its recompose ends the app (`screen.py` `select_widget` is None),
+        # and Screenshot writes a file to `~/Downloads`.
+        yield SystemCommand("Theme", "Change the current theme", self.action_change_theme)
+        yield SystemCommand("Quit", "Quit appmem", self.action_quit)
 
     def search_themes(self) -> None:
         # Overrides `App.search_themes`, which `action_change_theme` (`T`,
