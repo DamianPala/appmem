@@ -2,8 +2,6 @@
 
 from dataclasses import dataclass
 
-from appmem.fmt import size
-
 
 @dataclass
 class SessionCounter:
@@ -31,13 +29,3 @@ class SessionCounter:
             self.baseline = None
         self.previous = value
         self.total = None if self.baseline is None else value - self.baseline
-
-
-def total_amount(value: int | None) -> str:
-    """Cumulative traffic can reach TiB and beyond while memory sizes stay small."""
-    if type(value) is not int or value < 0:
-        return "unavailable"
-    for power, unit in ((60, "EiB"), (50, "PiB"), (40, "TiB")):
-        if value >= 2**power:
-            return f"{value / 2**power:.1f} {unit}"
-    return size(value)

@@ -22,12 +22,11 @@ import sys
 from collections.abc import Callable, Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import Any, NoReturn, Protocol
+from typing import TYPE_CHECKING, Any, NoReturn, Protocol
 
-from appmem import __version__, darwin_report, darwin_schema, report, schema
+from appmem import __version__, report, schema
 from appmem.backend import Backend, select_backend
 from appmem.collect import CgroupUnavailableError
-from appmem.darwin_backend import DarwinBackend, DarwinReadError, DarwinUnavailableError
 from appmem.render import escape_control_chars, render_app_text, render_snapshot_text
 from appmem.theme import (
     APPMEM_THEME_ENV,
@@ -38,7 +37,10 @@ from appmem.theme import (
     resolve_theme,
 )
 from appmem.ui.app import AppMemApp
-from appmem.ui.screens.darwin import DarwinMainScreen
+
+if TYPE_CHECKING:
+    # The macOS modules load only on a Mac (see `_run_darwin`): Linux starts without them.
+    from appmem.darwin_backend import DarwinBackend
 
 MIN_INTERVAL = 0.2
 
@@ -170,7 +172,7 @@ writes JSON, with or without --json.
 """
 
 _DARWIN_HELP_TEXT = """\
-appmem: experimental Apple Silicon application footprint view.
+appmem: live terminal view of memory per application, not per process, on macOS.
 
 Usage:
   appmem [-i SECONDS] [--theme NAME]
@@ -193,15 +195,18 @@ Commands:
 Run `appmem schema` for machine-readable fields, or `appmem snapshot --help`
 and `appmem app --help` for each command's flags.
 
-Footprint is a per-process native physical footprint, not resident RAM or
-reclaimable memory. Denied process reads make app totals partial or unknown.
-macOS 15+ Apple Silicon is required. --system is unsupported.
+Memory is each process's physical footprint, the number Activity Monitor shows in
+its Memory column, added up per app. It is not resident RAM or reclaimable memory.
+Only the current user's apps are shown, and macOS has no per-app swap or compression
+figures. Denied process reads make app totals partial or unknown.
+Requires macOS 15+ on Apple Silicon. --system is unsupported.
 
 Keys: f/d/r main sort MEMORY/ΔMEM/RESIDENT (when visible; repeat reverses).
       f/r/n/p/u details sort MEMORY/RESIDENT/command/PID or count/unreadable.
       Enter details or group members, g group by command, Esc back, b reset Δ.
-      h main dashboard host memory (h/Esc close); dim … (ASCII >) marks hidden host data.
       up/down/PgUp/PgDn move, Home/End first/last, T/Ctrl+P theme,
+      h main dashboard host memory (h/Esc close); a trailing … (ASCII >) means data
+      hidden for space, not an unavailable reading.
       ? help, esc/?/q close help, q/Ctrl+C quit live view.
       Click header sorts/reverses; click row selects, double click opens.
 """
@@ -401,9 +406,14 @@ def _add_app_parser(subparsers: _SubparserFactory, *, darwin: bool = False) -> N
         help="show this help and exit",
     )
     parser.add_argument("name", metavar="NAME", help=schema.APP_NAME.description)
+    scopes = schema.APP_SCOPE.enum
+    if darwin:
+        from appmem.darwin_schema import USER_SCOPE
+
+        scopes = USER_SCOPE
     parser.add_argument(
         *_option_strings(schema.APP_SCOPE),
-        choices=darwin_schema.USER_SCOPE if darwin else schema.APP_SCOPE.enum,
+        choices=scopes,
         default=schema.APP_SCOPE.default,
         help=schema.APP_SCOPE.description,
     )
@@ -637,10 +647,15 @@ def _run_app_command(
 
 def _run_schema(args: argparse.Namespace, *, darwin: bool = False) -> int:
     path: list[str] = [] if args.path is None else [args.path]
+    index, detail = schema.index, schema.detail
+    if darwin:
+        from appmem import darwin_schema
+
+        index, detail = darwin_schema.index, darwin_schema.detail
     if not path:
-        document = darwin_schema.index() if darwin else schema.index()
+        document = index()
     else:
-        found = darwin_schema.detail(path) if darwin else schema.detail(path)
+        found = detail(path)
         if found is None:
             _fail(
                 "invalid_input",
@@ -694,6 +709,8 @@ def _append_json_to_next(document: dict[str, Any], json_flag: bool) -> None:
 def _darwin_snapshot(
     args: argparse.Namespace, backend: DarwinBackend, stdout_isatty: Callable[[], bool]
 ) -> int:
+    from appmem import darwin_report
+
     document, _ = darwin_report.snapshot_document(
         backend, limit=args.limit, now=datetime.now().astimezone()
     )
@@ -708,6 +725,8 @@ def _darwin_snapshot(
 def _darwin_app(
     args: argparse.Namespace, backend: DarwinBackend, stdout_isatty: Callable[[], bool]
 ) -> int:
+    from appmem import darwin_report
+
     try:
         document, _, _ = darwin_report.app_document(
             backend, args.name, limit=args.limit, now=datetime.now().astimezone()
@@ -741,6 +760,8 @@ def _darwin_live(
     stdin_isatty: Callable[[], bool],
     stdout_isatty: Callable[[], bool],
 ) -> int:
+    from appmem.ui.screens.darwin import DarwinMainScreen
+
     _require_live_terminal(args, stdin_isatty, stdout_isatty)
     backend.check()
     interval = args.interval if args.interval is not None else 1.0
@@ -766,6 +787,8 @@ def _run_darwin(
     stdin_isatty: Callable[[], bool],
     stdout_isatty: Callable[[], bool],
 ) -> int:
+    from appmem.darwin_backend import DarwinBackend, DarwinReadError, DarwinUnavailableError
+
     try:
         backend = DarwinBackend(uid)
         if args.command == "snapshot":

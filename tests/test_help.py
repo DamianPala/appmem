@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import re
+
+from appmem import cli as cli_module
+from appmem.ui.screens.darwin import DarwinHelpScreen
 from appmem.ui.screens.help import _build_body  # pyright: ignore[reportPrivateUsage]
 
 
@@ -105,3 +109,22 @@ def test_body_explains_the_none_was_qualifier() -> None:
     body = _build_body(200)
 
     assert "'none (was X.X %)' means stalls just stopped" in body
+
+
+def test_both_helps_list_theme_before_host_dashboard_as_the_spec_does() -> None:
+    linux = _build_body(200).split("Keys:")[-1]
+    mac = DarwinHelpScreen._body(200).split("Keys:")[-1]  # pyright: ignore[reportPrivateUsage]
+    for keys in (linux, mac):
+        host_key = re.search(r"^\s*h\s{2,}", keys, re.MULTILINE)
+        assert host_key is not None
+        assert keys.index("T / Ctrl+P") < host_key.start()
+    darwin_help = cli_module._DARWIN_HELP_TEXT  # pyright: ignore[reportPrivateUsage]
+    assert darwin_help.index("T/Ctrl+P theme") < darwin_help.index("h main dashboard")
+
+
+def test_mac_help_ties_memory_to_activity_monitor_and_warns_that_ram_reads_higher() -> None:
+    body = " ".join(DarwinHelpScreen._body(200).split())  # pyright: ignore[reportPrivateUsage]
+
+    assert "Activity Monitor's Memory column shows per process" in body
+    assert "holds back at boot, so it reads higher than Activity Monitor" in body
+    assert "session total" not in body and "AppMem started" not in body

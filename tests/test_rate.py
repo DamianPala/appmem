@@ -96,3 +96,37 @@ def test_equal_consecutive_values_are_not_treated_as_a_reset() -> None:
 
     assert rate == 0
     assert history == (Sample(0.0, 0.0, 1000), Sample(1.0, 1.0, 1000))
+
+
+def test_a_sample_exactly_one_window_old_is_the_oldest_kept_only_while_newer_ones_exist() -> None:
+    history: tuple[Sample, ...] = ()
+    history, _ = update_rate(history, 0.0, 0, wall=0.0)
+    history, _ = update_rate(history, 1.0, 10 * 1024 * 1024, wall=1.0)
+    rates: dict[int, int | None] = {}
+    for t in range(2, 8):
+        history, rates[t] = update_rate(history, float(t), 10 * 1024 * 1024, wall=float(t))
+    # At t=6 the burst sample sits exactly on the window edge and becomes the oldest, so
+    # the rate over [1, 6] is flat; keeping the older sample would still show growth.
+    assert rates[6] == 0
+    assert history[0].monotonic == 2.0
+
+
+def test_a_sparse_tick_still_measures_across_the_previous_sample() -> None:
+    history, _ = update_rate((), 0.0, 0, wall=0.0, interval=7.0)
+    history, rate = update_rate(history, 7.0, 7 * 1024, wall=7.0, interval=7.0)
+    assert rate == 1024  # the only earlier sample is older than the 5 s window and is kept
+
+
+@pytest.mark.parametrize(
+    ("now", "wall"),
+    [(float("nan"), 1.0), (float("inf"), 1.0), (1.0, float("nan")), (1.0, float("-inf"))],
+)
+def test_non_finite_clocks_give_no_rate_and_no_history(now: float, wall: float) -> None:
+    history, _ = update_rate((), 0.0, 0, wall=0.0)
+    assert update_rate(history, now, 1024, wall=wall) == ((), None)
+
+
+@pytest.mark.parametrize("value", [True, 1.5, "7", -1])
+def test_only_non_negative_integers_are_counters(value: object) -> None:
+    history, _ = update_rate((), 0.0, 0, wall=0.0)
+    assert update_rate(history, 1.0, value, wall=1.0) == ((), None)  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]

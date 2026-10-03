@@ -21,6 +21,10 @@ class LiveScreen(Screen[None]):
         self._timer: Timer | None = None
         self._tick_in_flight = False
         self._generation = 0
+        """Bumped by `_invalidate_tick` on every context change (screen covered or
+        resumed, a mode switch). A background result carries the generation it was
+        read under; one that no longer matches is discarded, so a slow read cannot
+        overwrite what the change already drew."""
         self._host_panel_open = False
 
     def _set_static(self, selector: str, content: Text | str) -> None:
@@ -67,11 +71,12 @@ class LiveScreen(Screen[None]):
     def _invalidate_tick(self) -> None:
         self._generation += 1
 
-    def on_screen_resume(self) -> None:
-        # Textual dispatches handlers on every class in the MRO. Dashboard
-        # overrides already handle resume; running this too duplicates sampling.
-        if type(self).on_screen_resume is not LiveScreen.on_screen_resume:
-            return
+    def refresh_theme(self) -> None:
+        """Recolour what the theme colours; the main screens override, the rest have none."""
+
+    def _resume(self) -> None:
+        """What a screen's own `on_screen_resume` calls: Textual runs the handler of
+        every class in the MRO, so the base defines none and cannot double-sample."""
         self._invalidate_tick()
         self.refresh_now()
 

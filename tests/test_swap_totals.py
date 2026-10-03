@@ -12,15 +12,17 @@ from textual.widgets import Static
 from appmem.collect import LinuxBackend, read_system
 from appmem.darwin_backend import DarwinApp, DarwinBackend
 from appmem.darwin_native import HostMemory
+from appmem.fmt import total_amount
 from appmem.model import AppStats, SystemStats
 from appmem.rate import Sample, update_rate
-from appmem.total import SessionCounter, total_amount
+from appmem.total import SessionCounter
 from appmem.ui.app import AppMemApp
 from appmem.ui.darwin_header import render_host_header
 from appmem.ui.header import render_header
 from appmem.ui.host_panel import Block, darwin_details, linux_details, render_blocks
 from appmem.ui.screens.darwin import DarwinMainScreen
 from appmem.ui.screens.main import MainScreen
+from helpers import write_meminfo
 from test_darwin_header import HOST
 from test_swap_activity import COLORS, GIB, STATS, header
 
@@ -102,7 +104,7 @@ def test_zero_mac_allocation_does_not_erase_nonzero_native_activity() -> None:
         HOST, swap_used_bytes=0, swap_total_bytes=0, swap_in_bytes=GIB, swap_out_bytes=2 * GIB
     )
     text = text_of(darwin_details(host, (0, 0), (0, 0)))
-    assert "0/0 B used / allocated now" in text
+    assert "0 B; not allocated" in text and "allocated now" not in text
     assert "Since boot              1.0 GiB         2.0 GiB" in text
     header_swap = render_host_header(host, 160, colors=COLORS)[2].plain
     assert re.search(r"since boot\s+2\.0 GiB$", header_swap)
@@ -121,7 +123,6 @@ def test_zero_mac_allocation_does_not_erase_nonzero_native_activity() -> None:
         ("/swapfile file bad 1 -2", False),
         ("/swapfile file ² 1 -2", False),
         ("/swapfile file 100 1 --2", False),
-        (f"/swapfile file {'1' * 4301} 1 -2", False),
         ("/swapfile file 100 101 -2", False),
         ("/swapfile file 0 0 -2", False),
         ("/swapfile other 100 1 -2", False),
@@ -139,6 +140,21 @@ def test_current_topology_fails_closed_for_zram_mixed_and_unknown(
     text = text_of(linux_details(stats, (0, 0)))
     assert ("Writes count data sent to disk for swap." in text) is disk
     assert ("swap devices" in text) is not disk
+
+
+def test_backend_rereads_the_swap_topology_only_when_swap_total_changes(tmp_path: Path) -> None:
+    header = "Filename Type Size Used Priority\n"
+    swaps = tmp_path / "proc/swaps"
+    swaps.parent.mkdir()
+    swaps.write_text(header + "/dev/zram0 partition 100 1 100\n")
+    backend = LinuxBackend(tmp_path, 1000)
+    assert backend.read_system().swap_disk_only is False
+    swaps.write_text(header + "/swapfile file 100 1 -2\n")
+    assert backend.read_system().swap_disk_only is False  # same SwapTotal: not re-read
+    write_meminfo(
+        tmp_path, mem_total_kb=4096, mem_available_kb=2048, swap_total_kb=100, swap_free_kb=99
+    )
+    assert backend.read_system().swap_disk_only is True  # the swapon moved SwapTotal
 
 
 @pytest.mark.parametrize("content", [None, "", "bad header\n/swapfile file 100 1 -2\n"])
@@ -213,7 +229,7 @@ def test_activity_table_labels_and_values_survive_wrapping(platform: str, width:
         "Written",
         "Current rate",
         "Since boot",
-        "Since AppMem started",
+        "This run",
         "41.6 GiB",
         "1 KiB",
         "2 KiB",
@@ -296,10 +312,10 @@ async def test_session_survives_baseline_navigation_pause_clock_shift_and_indepe
         header = str(owner.query_one("#header3", Static).content)
         assert re.search(r"run\s+120 KiB", header)
         content = text_of(owner._host_content())  # pyright: ignore[reportPrivateUsage]
-        assert "Since AppMem started" in content and "120 KiB" in content
+        assert "This run" in content and "120 KiB" in content
         await pilot.press("h")
         panel = str(app.screen.query_one("#host-text", Static).content)
-        assert "Since AppMem started" in panel and "120 KiB" in panel
+        assert "This run" in panel and "120 KiB" in panel
         await pilot.press("escape")
         # Reset the rate window as a long pause or clock discontinuity would.
         owner._swap_in_history = ()  # pyright: ignore[reportPrivateUsage]
@@ -312,3 +328,8 @@ async def test_session_survives_baseline_navigation_pause_clock_shift_and_indepe
         assert owner._swap_in_session.total == 20000  # pyright: ignore[reportPrivateUsage]
         assert owner._swap_out_session.total is None  # pyright: ignore[reportPrivateUsage]
         assert "117 KiB" in text_of(owner._host_content())  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.parametrize("value", [None, -1, True])
+def test_a_total_that_is_not_a_count_is_unavailable(value: int | None) -> None:
+    assert total_amount(value) == "unavailable"

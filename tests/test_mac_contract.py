@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from textual.widgets import Static
 
 from appmem import cli as cli_module
 from appmem import darwin_backend, darwin_report, darwin_schema, report, schema
@@ -26,7 +27,10 @@ from appmem.backend import Backend
 from appmem.darwin_backend import DarwinBackend
 from appmem.darwin_native import BSDShortInfo, DarwinNative, HostMemory, ReadResult, Unavailable
 from appmem.model import AppStats, SystemStats
+from appmem.ui.app import AppMemApp
 from appmem.ui.darwin_rows import DarwinRow, sort_rows
+from appmem.ui.screens.darwin import DarwinHelpScreen, DarwinMainScreen, DarwinProcessesScreen
+from appmem.ui.table import RowTable
 from test_darwin_backend import Reader
 from test_darwin_header import HOST
 from test_swap_activity import STATS
@@ -61,7 +65,7 @@ def _mac_cli(monkeypatch: pytest.MonkeyPatch, reader: Reader | None = None) -> N
         def backend_for_uid(_uid: int) -> DarwinBackend:
             return backend
 
-        monkeypatch.setattr(cli_module, "DarwinBackend", backend_for_uid)
+        monkeypatch.setattr(darwin_backend, "DarwinBackend", backend_for_uid)
 
 
 def _error(capsys: pytest.CaptureFixture[str]) -> dict[str, Any]:
@@ -375,6 +379,91 @@ def test_descending_sort_keeps_ties_a_to_z() -> None:
         assert "".join(r.name for r in sort_rows(rows, "procs", reverse)) == expected
 
 
+@pytest.mark.asyncio
+async def test_detail_sorts_keep_ties_a_to_z_in_both_directions() -> None:
+    reader = Reader()
+    reader.add(10, 1, "App", "/Applications/App.app/Contents/MacOS/App", 100)
+    for pid, name in ((11, "zeta"), (12, "Alpha"), (13, "mid")):
+        reader.add(pid, 10, name, f"/usr/bin/{name}", 7)
+    backend = DarwinBackend(501, reader)
+    app = AppMemApp(interval=60, main_screen_factory=lambda: DarwinMainScreen(backend, 60))
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        pilot.app.screen.query_one("#table", RowTable).focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        detail = pilot.app.screen
+        assert isinstance(detail, DarwinProcessesScreen)
+        table = detail.query_one("#table", RowTable)
+
+        def names() -> list[str]:
+            return [str(table.get_cell(key, "name")) for key in table.row_keys]
+
+        assert names() == ["App", "Alpha", "mid", "zeta"]  # memory, largest first
+        await pilot.press("f")
+        assert names() == ["Alpha", "mid", "zeta", "App"]  # smallest first, ties still A to Z
+        await pilot.press("g", "p")
+        assert names() == ["Alpha", "App", "mid", "zeta"]  # equal PROCS, largest first
+        await pilot.press("p")
+        assert names() == ["Alpha", "App", "mid", "zeta"]  # smallest first, same ties
+
+
+@pytest.mark.asyncio
+async def test_detail_view_says_where_you_are_in_members_and_when_the_app_is_gone() -> None:
+    reader = Reader()
+    reader.add(10, 1, "App", "/Applications/App.app/Contents/MacOS/App", 100)
+    reader.add(11, 10, "helper", "/usr/bin/helper", 20)
+    reader.add(12, 10, "helper", "/usr/bin/helper", 30)
+    backend = DarwinBackend(501, reader)
+    app = AppMemApp(interval=60, main_screen_factory=lambda: DarwinMainScreen(backend, 60))
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        pilot.app.screen.query_one("#table", RowTable).focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        detail = pilot.app.screen
+        assert isinstance(detail, DarwinProcessesScreen)
+
+        def shown(selector: str) -> str:
+            return str(detail.query_one(selector, Static).content)
+
+        crumb = chr(0x203A)  # the breadcrumb separator between app and command
+        assert shown("#title").startswith("App  memory ") and crumb not in shown("#title")
+        assert "esc back" in shown("#footer")
+        await pilot.press("g")
+        table = detail.query_one("#table", RowTable)
+        table.move_cursor(row=table.get_row_index("helper"))
+        await pilot.press("enter")
+        await pilot.pause()
+        assert shown("#title").startswith(f"App {crumb} helper  memory ")
+        assert "esc groups" in shown("#footer") and "esc back" not in shown("#footer")
+        assert shown("#status") == "Command helper"
+
+        for pid in (10, 11, 12):
+            reader.identities.pop(pid)
+        detail.refresh_now()
+        await pilot.pause()
+        assert shown("#title") == "App   (app no longer running)"
+        assert shown("#status") == ""
+
+
+@pytest.mark.asyncio
+async def test_closing_help_rereads_the_mac_detail_view_at_once() -> None:
+    reader = Reader()
+    reader.add(10, 1, "App", "/Applications/App.app/Contents/MacOS/App", 100)
+    backend = DarwinBackend(501, reader)
+    app = AppMemApp(interval=60, main_screen_factory=lambda: DarwinMainScreen(backend, 60))
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        pilot.app.screen.query_one("#table", RowTable).focus()
+        await pilot.press("enter", "?")
+        reader.add(11, 10, "helper", "/usr/bin/helper", 7)
+        await pilot.press("q")
+        await pilot.pause()
+        table = pilot.app.screen.query_one("#table", RowTable)
+        assert "helper" in [str(table.get_cell(key, "name")) for key in table.row_keys]
+
+
 # --- text ----------------------------------------------------------------------
 
 
@@ -388,6 +477,43 @@ def test_text_snapshot_does_not_qualify_pressure_and_footnotes_only_when_needed(
     reader.add(30, 10, "helper", "/usr/bin/helper", None)
     document, _ = darwin_report.snapshot_document(DarwinBackend(501, reader), limit=5, now=NOW)
     assert "* partial known sum" in darwin_report.render_snapshot_text(document)
+
+
+def test_nothing_the_user_or_an_agent_reads_calls_macos_experimental() -> None:
+    root = Path(__file__).resolve().parent.parent
+    document, _ = darwin_report.snapshot_document(
+        DarwinBackend(501, _reader(("App", 1024**2))), limit=5, now=NOW
+    )
+    texts = {
+        "--help": cli_module._DARWIN_HELP_TEXT,  # pyright: ignore[reportPrivateUsage]
+        "help screen": DarwinHelpScreen._body(200),  # pyright: ignore[reportPrivateUsage]
+        "text snapshot": darwin_report.render_snapshot_text(document),
+        "schema": json.dumps(
+            [darwin_schema.index(), *(darwin_schema.detail([n]) for n in ("snapshot", "app"))]
+        ),
+        "skill": (root / "skills" / "appmem" / "SKILL.md").read_text(encoding="utf-8"),
+        "pyproject": (root / "pyproject.toml")
+        .read_text(encoding="utf-8")
+        .split("[project.urls]")[0],
+    }
+    for where, text in texts.items():
+        assert "experimental" not in text.lower(), where
+        assert "provisional" not in text.lower(), where
+
+
+def test_text_reports_mark_a_grouping_partial_app_as_the_live_view_does() -> None:
+    # Every footprint is readable; only the grouping is uncertain (a member without a path).
+    reader = _reader(("App", 100))
+    reader.add(30, 10, "helper", None, 5, start=300)
+    backend = DarwinBackend(501, reader)
+    (app,) = backend.collect_apps()
+    assert app.grouping_partial and not app.partial
+    document, _ = darwin_report.snapshot_document(backend, limit=5, now=NOW)
+    lines = darwin_report.render_snapshot_text(document).splitlines()
+    row = next(line for line in lines if line.startswith("App"))
+    assert row.count("*") == 2 and row.rstrip().endswith("partial")
+    detail, _, _ = darwin_report.app_document(backend, "App", limit=5, now=NOW)
+    assert "partial" in darwin_report.render_app_text(detail).splitlines()[0]
 
 
 # --- native layer ----------------------------------------------------------------

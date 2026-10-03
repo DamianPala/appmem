@@ -601,3 +601,10 @@ def test_linux_values_going_unknown_or_absurd_move_nothing() -> None:
         assert fingerprint(plain)[0] == fingerprint(odd)[0] == fingerprint(wild)[0], width
         for before, after in zip(fingerprint(plain)[1], fingerprint(odd)[1], strict=True):  # type: ignore[arg-type]
             assert before[0] == after[0]
+
+
+def test_zswap_writeback_shows_a_measured_zero_and_a_dash_for_unknown() -> None:
+    zero = linux(width=200, writeback=0)[1].plain
+    unknown = linux(width=200, writeback=None)[1].plain
+    assert re.search(r"writeback\s+0 B/s", zero)
+    assert re.search(r"writeback\s+—", unknown) and "0 B/s" not in unknown.split("writeback")[1]

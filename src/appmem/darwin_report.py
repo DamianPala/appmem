@@ -160,6 +160,12 @@ def _text_amount(value: object, *, partial: bool = False) -> str:
     return size(value) + ("*" if partial else "")
 
 
+def _partial(coverage: dict[str, Any], metric: str) -> bool:
+    """The live view's rule: a metric is partial when its own reads were, or when
+    the app's grouping was (a member may be missing from the group)."""
+    return bool(coverage[metric] or coverage["grouping_partial"])
+
+
 def _text_table(headers: tuple[str, ...], rows: list[tuple[str, ...]]) -> list[str]:
     widths = [
         max(cell_len(header), *(cell_len(row[i]) for row in rows)) if rows else cell_len(header)
@@ -205,7 +211,7 @@ def render_snapshot_text(document: dict[str, Any]) -> str:
     else:
         swap = format_pair(swap_used, allocated) + " used/allocated now"
     lines = [
-        "macOS application footprints (experimental)",
+        "macOS application footprints",
         f"RAM       {ram}",
         f"Compress  {compression}",
         f"Swap      {swap}",
@@ -215,10 +221,12 @@ def render_snapshot_text(document: dict[str, Any]) -> str:
     rows = [
         (
             escape_control_chars(app["name"]),
-            _text_amount(app["footprint_bytes"], partial=app["coverage"]["partial"]),
-            _text_amount(app["resident_bytes"], partial=app["coverage"]["resident_partial"]),
+            _text_amount(app["footprint_bytes"], partial=_partial(app["coverage"], "partial")),
+            _text_amount(
+                app["resident_bytes"], partial=_partial(app["coverage"], "resident_partial")
+            ),
             str(app["procs"]),
-            "partial" if app["coverage"]["partial"] else "complete",
+            "partial" if _partial(app["coverage"], "partial") else "complete",
         )
         for app in document["apps"]["items"]
     ]
@@ -235,7 +243,7 @@ def _legend(rows: list[tuple[str, ...]]) -> list[str]:
 
 
 def render_app_text(document: dict[str, Any]) -> str:
-    coverage = "partial" if document["coverage"]["partial"] else "complete"
+    coverage = "partial" if _partial(document["coverage"], "partial") else "complete"
     lines = [
         f"{escape_control_chars(document['name'])} ({escape_control_chars(document['id'])})  "
         f"memory {_text_amount(document['footprint_bytes'])}  {coverage}"

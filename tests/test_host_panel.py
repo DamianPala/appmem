@@ -11,7 +11,7 @@ from textual.widgets import Static
 
 from appmem.collect import LinuxBackend
 from appmem.darwin_backend import DarwinApp, DarwinBackend
-from appmem.darwin_native import HostMemory
+from appmem.darwin_native import HostMemory, Unavailable
 from appmem.model import AppStats, SystemStats
 from appmem.ui.app import AppMemApp
 from appmem.ui.host_panel import (
@@ -54,6 +54,17 @@ def test_panel_linux_accounting_and_unknowns_are_current_sample() -> None:
     off = _text(linux_details(replace(STATS, zswap_enabled=False), (0, 0)))
     assert "disabled or unavailable" in off
     assert "(0.0:1)" not in _text(linux_details(replace(STATS, zswap_pool_bytes=0), (0, 0)))
+
+
+def test_panel_swap_wording_with_none_configured_is_the_headers() -> None:
+    def swap_line(text: str) -> str:
+        return next(line for line in text.splitlines() if line.startswith("Swap  "))
+
+    none = replace(STATS, swap_total=0, swap_free=0, zswap_enabled=False)
+    assert swap_line(_text(linux_details(none, (0, 0)))).split() == ["Swap", "off"]
+    mac = _text(darwin_details(replace(HOST, swap_used_bytes=0, swap_total_bytes=0), (0, 0)))
+    assert swap_line(mac).endswith("0 B; not allocated")
+    assert swap_line(_text(linux_details(STATS, (0, 0)))).endswith(" used")
 
 
 def test_panel_names_the_zswap_compressor_and_writeback() -> None:
@@ -324,3 +335,21 @@ async def test_sample_during_keyboard_animation_preserves_scroll_intent(
         owner._tick()  # pyright: ignore[reportPrivateUsage] - real worker/sample path
         await asyncio.sleep(1.2)
         assert scroll.scroll_y == (scroll.max_scroll_y if key == "end" else 0)
+
+
+@pytest.mark.parametrize(
+    ("level", "unavailable", "word"),
+    [
+        (1, None, "normal"),
+        (2, None, "warning"),
+        (4, None, "critical"),
+        (None, None, "unavailable"),
+        (8, None, "unavailable"),
+        (4, Unavailable.ERROR, "unavailable"),
+    ],
+)
+def test_panel_mac_pressure_words_follow_the_native_level(
+    level: int | None, unavailable: Unavailable | None, word: str
+) -> None:
+    host = replace(HOST, pressure_level=level, pressure_unavailable=unavailable)
+    assert f"Pressure  {word} · native macOS memory pressure" in _text(darwin_details(host, (0, 0)))

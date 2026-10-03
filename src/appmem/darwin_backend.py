@@ -185,7 +185,8 @@ class DarwinBackend:
         memory_result = self._native.memory(pid)
         memory = memory_result.value
         path = self._native.path(pid).value
-        # Re-reading the identity after the memory read catches a PID reused mid-sample.
+        # Re-reading the identity after the memory read catches a PID reused mid-sample
+        # when the parent or owner changed; a second memory read catches it by start time.
         after = self._native.process(pid).value
         if after is None or after.ppid != identity.ppid or after.uid != identity.uid:
             return None
@@ -193,17 +194,11 @@ class DarwinBackend:
             again = self._native.memory(pid).value
             if again is None or again.start_abstime != memory.start_abstime:
                 return None
-        if (
-            identity.start_abstime is not None
-            and memory is not None
-            and identity.start_abstime != memory.start_abstime
-        ):
-            return None
         unavailable = None if memory is not None else str(memory_result.unavailable or "error")
         return DarwinProcess(
             pid=pid,
             ppid=after.ppid,
-            start_abstime=memory.start_abstime if memory is not None else identity.start_abstime,
+            start_abstime=memory.start_abstime if memory is not None else None,
             command=_executable_name(path, after.command),
             footprint_bytes=memory.footprint_bytes if memory is not None else None,
             unavailable=unavailable,

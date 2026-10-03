@@ -67,14 +67,14 @@ _ZSWAP_HEADER_NOTE = (
 _SWAP_ACTIVITY_NOTE = (
     "Swap in/out measure host swap-device activity, including zram. Successful zswap hits "
     "are excluded; zero-page bypass depends on kernel version. Rates average about 5 seconds "
-    "in this session. Unknown means insufficient or unavailable samples, while 0 B/s is "
+    "in this run. Unknown means insufficient or unavailable samples, while 0 B/s is "
     "measured zero. Clock discontinuities reset measurement; b resets growth only. These "
     "rates are not SSD throughput. The Swap line keeps in and out in fixed columns, then the "
     "exact total written this run; the since-boot total follows when space permits. Rates "
-    "have priority over both totals, and the session total has priority over the boot total. "
-    "h shows Read/Written rates, boot totals and exact totals since AppMem started. Session totals "
-    "survive b, navigation and rate/clock resets. Missing initial counters or any decrease "
-    "leave that direction unavailable; temporary missing readings retain its baseline. "
+    "have priority over both totals, and the total for this run has priority over the boot "
+    "total. h shows Read/Written rates, boot totals and exact totals for this run. Totals for "
+    "this run survive b, navigation and rate/clock resets. Missing initial counters or any "
+    "decrease leave that direction unavailable; temporary missing readings retain its baseline. "
     "Disk wording uses recognizable current swap targets only; historical targets may differ."
 )
 
@@ -195,8 +195,8 @@ _KEYS: tuple[tuple[str, str], ...] = (
     ("c", "toggle the CACHE column"),
     ("x", "toggle system services"),
     ("b", "reset the Δ baseline to now"),
-    ("h", "main dashboards: live host memory; h/Esc close"),
     ("T / Ctrl+P", "change the theme"),
+    ("h", "main dashboards: live host memory; h/Esc close"),
     ("?", "this screen"),
     ("q / Ctrl+C", "quit"),
 )

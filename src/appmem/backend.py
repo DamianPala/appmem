@@ -31,7 +31,7 @@ class Backend(Protocol):
 
 
 def select_backend(root: Path, uid: int) -> Backend:
-    """Construct the Linux backend for the current Linux-only release."""
+    """Construct the Linux backend; `cli` takes the macOS path before this is called."""
     from appmem.collect import LinuxBackend
 
     return LinuxBackend(root, uid)

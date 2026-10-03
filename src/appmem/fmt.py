@@ -44,6 +44,16 @@ def size(num_bytes: int) -> str:
     return _format_as(num_bytes, _unit_for(num_bytes))
 
 
+def total_amount(value: int | None) -> str:
+    """Cumulative traffic can reach TiB and beyond while memory sizes stay small."""
+    if type(value) is not int or value < 0:
+        return "unavailable"
+    for power, unit in ((60, "EiB"), (50, "PiB"), (40, "TiB")):
+        if value >= 2**power:
+            return f"{value / 2**power:.1f} {unit}"
+    return size(value)
+
+
 def unit_of(num_bytes: int) -> str:
     """The unit `size(num_bytes)` renders in, e.g. ``"GiB"``. Lets a caller
     force a breakdown figure into another number's unit instead of its own

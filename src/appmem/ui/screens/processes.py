@@ -236,11 +236,6 @@ class ProcessesScreen(LiveScreen):
         self._last_proc_count = 0
         self._age_shown = True
         self._column_widths: tuple[int | None, ...] = ()
-        """Bumped on every context change (`g`, drilling in/out, the app
-        going away, the screen covered/resumed). A background result carries
-        the generation it was read under; `_apply_tick` discards one that
-        no longer matches, so a slow read that outlives a later
-        context change can't overwrite what that change already drew."""
 
     @property
     def _showing_group_table(self) -> bool:
@@ -486,6 +481,9 @@ class ProcessesScreen(LiveScreen):
         except (OSError, ValueError):
             return None  # transient read/parse failure: same treatment, try again next tick
 
+    def on_screen_resume(self) -> None:
+        self._resume()
+
     def refresh_now(self, *, scroll: bool = False) -> None:
         """Collect and redraw immediately.
 
@@ -550,7 +548,7 @@ class ProcessesScreen(LiveScreen):
         was_drilled = self._drill_command is not None
         self._last_app = None
         self._drill_command = None
-        self._generation += 1
+        self._invalidate_tick()
         name = escape_control_chars(self._name)
         self._set_rich("#title", Text(f"{name}   (app no longer running)"))
         self._set_rich("#status", Text(""))
@@ -847,7 +845,7 @@ class ProcessesScreen(LiveScreen):
         app, procs = result
         self._grouped = grouped
         self._drill_command = drill_command
-        self._generation += 1
+        self._invalidate_tick()
         self._reset_sort_if_unsupported()
         table = self._table()
         self._rebuild_columns(table)

@@ -9,8 +9,8 @@ from typing import Any
 from rich.text import Text
 from textual.theme import BUILTIN_THEMES
 
-from appmem.collect import SystemStats
 from appmem.fmt import format_pair
+from appmem.model import SystemStats
 from appmem.ui.header import (
     ThemeColors,
     _bar_glyphs,  # pyright: ignore[reportPrivateUsage]

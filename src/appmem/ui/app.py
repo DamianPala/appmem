@@ -27,7 +27,7 @@ from appmem.theme import (
     config_path,
     write_config_theme,
 )
-from appmem.ui.screens.darwin import DarwinMainScreen
+from appmem.ui.screens.live import LiveScreen
 from appmem.ui.screens.main import MainScreen
 from appmem.ui.theme_picker import ThemePanel
 
@@ -171,11 +171,11 @@ class AppMemApp(App[None]):
         self._config_theme = theme_name
 
     def _refresh_themed_screens(self) -> None:
-        # Only `MainScreen` colours anything from the theme (pressure word,
-        # swap fraction); it's always mounted (the default screen), whether
-        # or not it's the one currently on top.
+        # Only the main screens (Linux and macOS) colour anything from the theme
+        # (pressure word, swap fraction); the one in use is always mounted (the
+        # default screen), whether or not it's the one currently on top.
         for screen in self.screen_stack:
-            if isinstance(screen, (MainScreen, DarwinMainScreen)):
+            if isinstance(screen, LiveScreen):
                 screen.refresh_theme()
 
     def fail_cgroup_unavailable(self, message: str) -> None:

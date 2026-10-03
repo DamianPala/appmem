@@ -2,13 +2,11 @@
 
 from pathlib import Path
 
-from appmem.collect import (
+from appmem.collect import Unit, UnitStats, group_apps
+from appmem.model import (
     AppStats,
     ProcStats,
-    Unit,
-    UnitStats,
     filter_visible_apps,
-    group_apps,
     group_by_command,
     unattributed_row,
 )

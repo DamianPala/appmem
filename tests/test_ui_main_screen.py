@@ -1303,11 +1303,11 @@ async def test_transient_os_error_skips_the_tick_and_next_tick_shows_fresh_data(
     real_read_system = collect.read_system
     calls = {"n": 0}
 
-    def _flaky_read_system(root: Path, uid: int) -> object:
+    def _flaky_read_system(root: Path, uid: int, **kwargs: bool | None) -> object:
         calls["n"] += 1
         if calls["n"] == 1:
             raise OSError("transient read failure")
-        return real_read_system(root, uid)
+        return real_read_system(root, uid, **kwargs)
 
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -1343,7 +1343,7 @@ async def test_a_programming_error_in_a_tick_still_propagates(
     _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0)
     app = _app(root)
 
-    def _broken_read_system(root: Path, uid: int) -> object:
+    def _broken_read_system(root: Path, uid: int, **kwargs: bool | None) -> object:
         raise TypeError("not a transient read failure")
 
     async with app.run_test() as pilot:
@@ -2025,10 +2025,10 @@ async def test_slow_tick_does_not_block_key_handling(
     started = threading.Event()
     release = threading.Event()
 
-    def blocking_read_system(root: Path, uid: int) -> object:
+    def blocking_read_system(root: Path, uid: int, **kwargs: bool | None) -> object:
         started.set()
         release.wait(timeout=2)  # bounded: the worker thread never hangs forever
-        return real_read_system(root, uid)
+        return real_read_system(root, uid, **kwargs)
 
     app = AppMemApp(backend=LinuxBackend(root, UID), interval=0.05, include_system=False)
     async with app.run_test(size=(120, 30)) as pilot:

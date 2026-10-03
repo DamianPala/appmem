@@ -347,6 +347,24 @@ async def test_help_opens_from_process_view_and_q_closes(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
+async def test_closing_help_rereads_the_process_view_at_once(tmp_path: Path) -> None:
+    root = _base_tree(tmp_path)
+    _app_unit(root, "app-ghostty.service", ram=1 * 1024**2, swap=0, pids=[100])
+    _proc(root, 100, name="ghostty")
+
+    async with _app(root).run_test(size=SCREEN_SIZE) as pilot:
+        await pilot.pause()
+        await _open_ghostty_process_view(pilot)
+        await pilot.press("?")
+        await pilot.pause()
+        _app_unit(root, "app-ghostty.service", ram=1 * 1024**2, swap=0, pids=[100, 101])
+        _proc(root, 101, name="helper")
+        await pilot.press("q")
+        await pilot.pause()
+        assert "101" in _row_keys(_table(pilot))  # no timer tick runs: the resume read it
+
+
+@pytest.mark.asyncio
 async def test_help_scrolls_to_reach_the_kill_pid_line_at_80x24(tmp_path: Path) -> None:
     root = _base_tree(tmp_path)
     _app_unit(root, "app-alpha.service", ram=1 * 1024**2, swap=0, pids=[])

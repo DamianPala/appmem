@@ -1,6 +1,6 @@
 """Tests for `appmem.ui.process_rows` (SPEC.md "Process view")."""
 
-from appmem.collect import AppStats, ProcStats
+from appmem.model import AppStats, ProcStats
 from appmem.ui.process_rows import (
     KERNEL_KEY,
     UNATTRIBUTED_KEY,

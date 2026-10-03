@@ -374,9 +374,6 @@ class MainScreen(LiveScreen):
         """Last known procs count per unit path (`str(path)`), carried
         forward on a tick that skips the recursive `cgroup.procs` walk
         (SPEC.md "Main view")."""
-        """Bumped on every context change (`x` toggled, screen covered or
-        resumed). A background result carries the generation it was read
-        under; `_apply_tick` discards one that no longer matches."""
         self._resume_scrolls = False
         """Set while the process view covers this screen: coming back from it
         is a drill-out and scrolls; closing help or the theme panel is not."""
@@ -528,7 +525,7 @@ class MainScreen(LiveScreen):
         # elsewhere: the resort can move the selected app out of the old
         # viewport, so it scrolls; help and the theme panel keep a wheel
         # scroll where it was (SPEC.md "Main view").
-        self._generation += 1
+        self._invalidate_tick()
         scroll, self._resume_scrolls = self._resume_scrolls, False
         self.refresh_now(scroll=scroll)  # no stale numbers after Esc from the process view
 
@@ -1003,7 +1000,7 @@ class MainScreen(LiveScreen):
 
     def action_toggle_system(self) -> None:
         self._show_system = not self._show_system
-        self._generation += 1
+        self._invalidate_tick()
         self.refresh_now(scroll=True)  # explicit `x` key press
 
     def action_reset_delta(self) -> None:

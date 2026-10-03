@@ -12,7 +12,7 @@ from textual.content import Content
 from textual.widgets import Static
 
 from appmem import cli as cli_module
-from appmem import darwin_report, darwin_schema
+from appmem import darwin_backend, darwin_report, darwin_schema
 from appmem.darwin_backend import DarwinBackend
 from appmem.darwin_native import (
     HostMemory,
@@ -73,7 +73,7 @@ class Reader:
         start: int | None = None,
         uid: int = 501,
     ) -> None:
-        self.identities[pid] = ProcessIdentity(pid, ppid, uid, 1, command, start)
+        self.identities[pid] = ProcessIdentity(pid, ppid, uid, 1, command)
         if path is not None:
             self.paths[pid] = path
         self.memories[pid] = (
@@ -94,11 +94,7 @@ class Reader:
         if pid == self.reuse_pid and self.memory_calls.get(pid, 0):
             return ReadResult(ProcessIdentity(pid, pid + 1, 501, 1, value.command))
         if pid == self.fresh_command_pid and self.process_calls[pid] > 1:
-            return ReadResult(
-                ProcessIdentity(
-                    pid, value.ppid, value.uid, value.status, "New", value.start_abstime
-                )
-            )
+            return ReadResult(ProcessIdentity(pid, value.ppid, value.uid, value.status, "New"))
         return ReadResult(value)
 
     def path(self, pid: int) -> ReadResult[str]:
@@ -441,7 +437,7 @@ def test_darwin_cli_snapshot_and_app_by_id(
         assert uid == 501
         return backend
 
-    monkeypatch.setattr(cli_module, "DarwinBackend", backend_for_uid)
+    monkeypatch.setattr(darwin_backend, "DarwinBackend", backend_for_uid)
     monkeypatch.setattr(cli_module.sys, "platform", "darwin")
     assert cli_module.main(["snapshot", "--json"], uid=501) == 0
     snapshot = json.loads(capsys.readouterr().out)
@@ -477,9 +473,9 @@ def test_darwin_named_command_interrupt_is_structured(
         return backend
 
     if stage == "backend":
-        monkeypatch.setattr(cli_module, "DarwinBackend", interrupt_backend)
+        monkeypatch.setattr(darwin_backend, "DarwinBackend", interrupt_backend)
     else:
-        monkeypatch.setattr(cli_module, "DarwinBackend", backend_for_uid)
+        monkeypatch.setattr(darwin_backend, "DarwinBackend", backend_for_uid)
         monkeypatch.setattr(reader, "pids", interrupt)
     monkeypatch.setattr(cli_module.sys, "platform", "darwin")
     args = ["snapshot", "--json"] if command == "snapshot" else ["app", "App", "--json"]
@@ -505,7 +501,7 @@ def test_darwin_json_next_keeps_json_on_tty(
         assert uid == 501
         return backend
 
-    monkeypatch.setattr(cli_module, "DarwinBackend", backend_for_uid)
+    monkeypatch.setattr(darwin_backend, "DarwinBackend", backend_for_uid)
     monkeypatch.setattr(cli_module.sys, "platform", "darwin")
     args = ["snapshot", "--limit", "1", "--json"]
     assert cli_module.main(args, uid=501, stdout_isatty=lambda: True) == 0

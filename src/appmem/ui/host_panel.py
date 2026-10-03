@@ -15,9 +15,8 @@ from textual.screen import Screen
 from textual.widgets import Static
 
 from appmem.darwin_native import HostMemory
-from appmem.fmt import format_pair, format_rate, pressure_word, size
+from appmem.fmt import format_pair, format_rate, pressure_word, size, total_amount
 from appmem.model import SystemStats
-from appmem.total import total_amount
 
 _INDENT = 10
 _KEY_WIDTH = 27
@@ -84,7 +83,7 @@ def _activity(
         (
             ("Current rate", _rate(rates[0]), _rate(rates[1])),
             ("Since boot", total_amount(boot[0]), total_amount(boot[1])),
-            ("Since AppMem started", total_amount(session[0]), total_amount(session[1])),
+            ("This run", total_amount(session[0]), total_amount(session[1])),
         )
     )
 
@@ -151,8 +150,12 @@ def linux_details(
         blocks += _zswap_blocks(stats, writeback_rate, rate_known=writeback_rate is not None)
     else:
         blocks.append(Entry("Zswap", ("disabled or unavailable",)))
-    swap = format_pair(stats.swap_total - stats.swap_free, stats.swap_total)
-    blocks.append(Entry("Swap", (f"{swap} used",)))
+    swap = (
+        f"{format_pair(stats.swap_total - stats.swap_free, stats.swap_total)} used"
+        if stats.swap_total
+        else "off"
+    )
+    blocks.append(Entry("Swap", (swap,)))
     blocks.append(_activity(rates, (stats.swap_in_bytes, stats.swap_out_bytes), session))
     if stats.swap_disk_only:
         writes = (
@@ -216,11 +219,12 @@ def darwin_details(
         else ""
     )
     compression = f"{_amount(logical)} of data compressed into {_amount(physical)} of RAM{ratio}."
-    swap = (
-        format_pair(host.swap_used_bytes, host.swap_total_bytes) + " used / allocated now"
-        if 0 <= host.swap_used_bytes <= host.swap_total_bytes
-        else "unavailable"
-    )
+    if not 0 <= host.swap_used_bytes <= host.swap_total_bytes:
+        swap = "unavailable"
+    elif host.swap_total_bytes == 0:
+        swap = "0 B; not allocated"
+    else:
+        swap = format_pair(host.swap_used_bytes, host.swap_total_bytes) + " used / allocated now"
     pressure = {1: "normal", 2: "warning", 4: "critical"}.get(
         host.pressure_level or 0, "unavailable"
     )

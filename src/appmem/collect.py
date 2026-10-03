@@ -11,30 +11,12 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Iterable, Iterator, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from appmem.command_name import command_display_name
-from appmem.model import (
-    AppStats,
-    CommandStats,
-    ProcStats,
-    SystemStats,
-    filter_visible_apps,
-    group_by_command,
-    unattributed_row,
-)
+from appmem.model import AppStats, ProcStats, SystemStats, filter_visible_apps
 from appmem.naming import app_name, is_generic_desktop_id, normalize_process_name, scope_leader_pid
-
-__all__ = [
-    "AppStats",
-    "CommandStats",
-    "ProcStats",
-    "SystemStats",
-    "filter_visible_apps",
-    "group_by_command",
-    "unattributed_row",
-]
 
 _REQUIRED_MEMORY_STAT_KEYS = ("anon", "shmem", "file")
 _KERNEL_FALLBACK_KEYS = ("slab", "kernel_stack", "pagetables", "percpu")
@@ -104,10 +86,17 @@ class Unit:
 # --- system ---------------------------------------------------------------
 
 
-def read_system(root: Path, uid: int, *, page_size: int | None = None) -> SystemStats:
+def read_system(
+    root: Path,
+    uid: int,
+    *,
+    page_size: int | None = None,
+    swap_disk_only: bool | None = None,
+) -> SystemStats:
     """Read system-wide memory/swap/pressure, the hidden system.slice total and
     the `elsewhere` figure (SPEC.md "Behaviour details"). `uid` locates the
-    user tree for the `elsewhere` subtraction."""
+    user tree for the `elsewhere` subtraction. `swap_disk_only=None` reads
+    `/proc/swaps` now; `LinuxBackend` passes a cached answer instead."""
     meminfo = _read_meminfo(root / "proc" / "meminfo")
     some_avg10, some_avg60, full_avg10, full_avg60 = _read_pressure(
         root / "proc" / "pressure" / "memory"
@@ -149,7 +138,11 @@ def read_system(root: Path, uid: int, *, page_size: int | None = None) -> System
         zswap_writeback_bytes=_counter_bytes(vmstat, "zswpwb", page_size),
         swap_in_bytes=_counter_bytes(vmstat, "pswpin", page_size),
         swap_out_bytes=_counter_bytes(vmstat, "pswpout", page_size),
-        swap_disk_only=_read_swap_disk_only(root / "proc" / "swaps"),
+        swap_disk_only=(
+            _read_swap_disk_only(root / "proc" / "swaps")
+            if swap_disk_only is None
+            else swap_disk_only
+        ),
         zswap_compressor=(
             _read_zswap_str_param(zswap_params_dir / "compressor") if zswap_enabled else None
         ),
@@ -178,11 +171,7 @@ def _disk_swap_entry(entry: list[str]) -> bool:
     name, kind, capacity, used, priority = entry
     if re.fullmatch(r"[0-9]+ [0-9]+ -?[0-9]+", f"{capacity} {used} {priority}") is None:
         return False
-    try:
-        if int(capacity) <= 0 or int(used) > int(capacity):
-            return False
-    except ValueError:
-        # Excessively large malformed integers must not invalidate the host sample.
+    if int(capacity) <= 0 or int(used) > int(capacity):
         return False
     if kind == "file":
         return name.startswith("/") and not name.startswith("/dev/")
@@ -244,8 +233,8 @@ def _read_pressure(
     for line in content.splitlines():
         kind, _, rest = line.partition(" ")
         fields: dict[str, float] = {}
-        for field in rest.split():
-            key, _, value = field.partition("=")
+        for item in rest.split():
+            key, _, value = item.partition("=")
             if key in ("avg10", "avg60"):
                 fields[key] = float(value)
         values[kind] = fields
@@ -305,10 +294,7 @@ def _read_vmstat(path: Path) -> dict[str, int]:
             and fields[1].isascii()
             and fields[1].isdigit()
         ):
-            try:
-                values[fields[0]] = int(fields[1])
-            except ValueError:
-                continue  # oversized malformed decimal is unavailable
+            values[fields[0]] = int(fields[1])
     return values
 
 
@@ -705,18 +691,35 @@ def group_apps(root: Path, units: Iterable[Unit]) -> list[AppStats]:
     return apps
 
 
+@dataclass
+class _SwapTopology:
+    """`/proc/swaps` only picks a sentence in the host panel and changes only on
+    swapon/swapoff, which also move SwapTotal: it is read on the first sample and
+    again when SwapTotal changes, not on every tick."""
+
+    swap_total: int | None = None
+    disk_only: bool = False
+
+
 @dataclass(frozen=True)
 class LinuxBackend:
     """Linux cgroup collection with a fixture-injectable filesystem root."""
 
     root: Path
     uid: int
+    _swap_topology: _SwapTopology = field(default_factory=_SwapTopology, repr=False, compare=False)
 
     def check(self) -> None:
         find_units(self.root, self.uid, include_system=False, strict=True)
 
     def read_system(self) -> SystemStats:
-        return read_system(self.root, self.uid)
+        topology = self._swap_topology
+        stats = read_system(self.root, self.uid, swap_disk_only=topology.disk_only)
+        if stats.swap_total != topology.swap_total:
+            topology.swap_total = stats.swap_total
+            topology.disk_only = _read_swap_disk_only(self.root / "proc" / "swaps")
+            stats = replace(stats, swap_disk_only=topology.disk_only)
+        return stats
 
     def collect_apps(
         self,

@@ -1,6 +1,6 @@
 """Tests for `appmem.ui.rows` (SPEC.md "Main view", "Definitions": Δ)."""
 
-from appmem.collect import AppStats
+from appmem.model import AppStats
 from appmem.ui.rows import (
     Row,
     build_rows,

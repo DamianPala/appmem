@@ -19,8 +19,7 @@ from dataclasses import dataclass, replace
 
 from rich.text import Text
 
-from appmem.fmt import format_rate, size, size_in_unit, unit_of
-from appmem.total import total_amount
+from appmem.fmt import format_rate, size, size_in_unit, total_amount, unit_of
 
 _GAUGE_STEPS = ((80, 10), (60, 6))
 _FLEX_MIN = 105

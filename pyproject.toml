@@ -1,7 +1,7 @@
 [project]
 name = "appmem"
 version = "0.2.0"
-description = "Terminal view of application RAM and swap on Linux or footprints on Apple Silicon"
+description = "Live terminal view of memory per application, not per process, on Linux and macOS"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

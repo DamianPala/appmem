@@ -1,4 +1,4 @@
-"""Experimental Apple Silicon footprint screens."""
+"""macOS (Apple Silicon) footprint screens."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from textual.widgets import Static
 
 from appmem.darwin_backend import DarwinApp, DarwinBackend, DarwinProcess, DarwinUnavailableError
 from appmem.darwin_native import HostMemory
-from appmem.fmt import format_delta, format_elapsed, size, truncate_name
+from appmem.fmt import ellipsize_middle, format_delta, format_elapsed, size, truncate_name
 from appmem.rate import Sample, update_rate
 from appmem.render import escape_control_chars
 from appmem.total import SessionCounter
@@ -476,6 +476,7 @@ class DarwinProcessesScreen(LiveScreen):
         self._app_id = app_id
         self._interval = interval
         self._app: DarwinApp | None = None
+        self._app_name: str | None = None
         self._grouped = False
         self._command: str | None = None
         self._rows: dict[str, _DetailRow] = {}
@@ -531,6 +532,9 @@ class DarwinProcessesScreen(LiveScreen):
         self._app = event.frame.app
         self._read_failed = False
         self._render_detail()
+
+    def on_screen_resume(self) -> None:
+        self._resume()
 
     def refresh_now(self, *, scroll: bool = False) -> None:
         try:
@@ -595,23 +599,26 @@ class DarwinProcessesScreen(LiveScreen):
         ]
 
     def _sorted_rows(self, rows: list[_DetailRow]) -> list[_DetailRow]:
+        # Ties stay A to Z whichever way the values run: order the tie-break first,
+        # then the values (a stable sort keeps equal values in that order, reversed or not).
+        by_name = sorted(rows, key=lambda row: (row.name.casefold(), row.key))
         if self._sort_key == "name":
-            return sorted(
-                rows, key=lambda row: (row.name.casefold(), row.key), reverse=self._reverse
-            )
+            by_key = sorted(rows, key=lambda row: row.key)
+            return sorted(by_key, key=lambda row: row.name.casefold(), reverse=self._reverse)
         if self._sort_key == "count":
             return sorted(
-                rows,
-                key=lambda row: (row.procs if self._showing_groups else row.pid or 0, row.name),
+                by_name,
+                key=lambda row: row.procs if self._showing_groups else row.pid or 0,
                 reverse=self._reverse,
             )
         if self._sort_key == "unreadable":
-            return sorted(rows, key=lambda row: (row.unreadable, row.name), reverse=self._reverse)
+            return sorted(by_name, key=lambda row: row.unreadable, reverse=self._reverse)
         attribute = "resident_bytes" if self._sort_key == "resident" else "footprint_bytes"
-        known = [row for row in rows if getattr(row, attribute) is not None]
-        unknown = [row for row in rows if getattr(row, attribute) is None]
-        known.sort(key=lambda row: (getattr(row, attribute), row.name), reverse=self._reverse)
-        return known + sorted(unknown, key=lambda row: row.name)
+        known = [row for row in by_name if getattr(row, attribute) is not None]
+        unknown = [row for row in by_name if getattr(row, attribute) is None]
+        return (
+            sorted(known, key=lambda row: getattr(row, attribute), reverse=self._reverse) + unknown
+        )
 
     def _specs(self, table: RowTable) -> list[tuple[str, str, int | None]]:
         grouped = self._showing_groups
@@ -729,11 +736,18 @@ class DarwinProcessesScreen(LiveScreen):
         }:
             self._sort_key, self._reverse = "footprint", True
             force_columns = True
-        title = (
-            "Application vanished"
-            if app is None
-            else f"{escape_control_chars(app.name)}  memory {_amount(app.footprint_bytes)}"
+        if app is not None:
+            self._app_name = app.name
+        shown = (
+            escape_control_chars(self._app_name) if self._app_name is not None else "Application"
         )
+        if app is None:
+            title = f"{shown}   (app no longer running)"
+        elif self._command is not None:  # members of one command: say so, as Linux does
+            title = f"{shown} › {escape_control_chars(self._command)}"  # noqa: RUF001 -- breadcrumb separator
+            title += f"  memory {_amount(app.footprint_bytes)}"
+        else:
+            title = f"{shown}  memory {_amount(app.footprint_bytes)}"
         self._set_static("#title", truncate_name(title, self.size.width))
         self._apply_rows(self._build_rows(), force_columns=force_columns, scroll=scroll)
         self._render_status()
@@ -746,7 +760,8 @@ class DarwinProcessesScreen(LiveScreen):
         ]
         if self._showing_groups and self._rows:
             footer.append((("enter",), "members"))
-        footer.extend(((("esc",), "back"), (("T",), "theme"), (("?",), "help"), (("q",), "quit")))
+        back = "groups" if self._command is not None else "back"  # `esc` returns to the groups
+        footer.extend(((("esc",), back), (("T",), "theme"), (("?",), "help"), (("q",), "quit")))
         self._set_static(
             "#footer",
             build_footer(footer, width=self.size.width, drop_order=("theme", "members", "sort")),
@@ -760,13 +775,16 @@ class DarwinProcessesScreen(LiveScreen):
             )
             return
         status = "Captured process memory; ? means unreadable"
-        if self._command is not None:
+        if self._app is None:
+            status = ""
+        elif self._command is not None:
             status = f"Command {escape_control_chars(self._command)}"
         elif table.row_count:
             selected, _ = self._selection(table)
             if selected is not None and selected in self._rows:
                 status = self._rows[selected].status
-        self._set_static("#status", truncate_name(status, self.size.width))
+        # The end of an executable path is the useful part: cut the middle.
+        self._set_static("#status", ellipsize_middle(status, self.size.width))
 
     def on_row_table_row_highlighted(self, event: RowTable.RowHighlighted) -> None:
         self._render_status()
@@ -856,23 +874,23 @@ class DarwinHelpScreen(Screen[None]):
         definitions = (
             (
                 "Swap in/out",
-                "Host activity averaged over about 5 seconds in this session. "
+                "Host activity averaged over about 5 seconds in this run. "
                 "Native counters count page-rounded compressed segments transferred to/from swap "
                 "files, including housekeeping, not logical app bytes or SSD throughput. "
                 "Unknown means insufficient/unavailable samples; 0 B/s is measured zero. "
                 "Clock discontinuities reset rates; b resets growth only. "
                 "The Swap line keeps in and out in fixed columns, then the exact total written "
                 "this run; the since-boot total follows when space permits. Rates have priority "
-                "over both totals, and the session total has priority over the boot total. "
+                "over both totals, and the total for this run has priority over the boot total. "
                 "h shows Read/Written rates, "
-                "boot totals and exact totals since AppMem started. Session totals survive "
+                "boot totals and exact totals for this run. Totals for this run survive "
                 "navigation and rate resets. Missing initial counters or any decrease leave "
                 "that direction unavailable; temporary missing readings retain its baseline.",
             ),
             (
                 "MEMORY",
-                "App physical footprint, including native compression accounting; "
-                "not resident RAM, reclaimable memory or an Activity Monitor total.",
+                "What Activity Monitor's Memory column shows per process (physical footprint, "
+                "including compression), summed per app. Not resident RAM or reclaimable memory.",
             ),
             (
                 "RESIDENT",
@@ -883,7 +901,7 @@ class DarwinHelpScreen(Screen[None]):
                 "ΔMEM",
                 "Change since the app's first complete sample or b reset. Partial current "
                 "samples stay unknown; recovery uses the retained complete baseline. Reopened "
-                "apps start fresh. The header clock is the session/reset epoch.",
+                "apps start fresh. The header clock counts from this run or the last b.",
             ),
             (
                 "* / ?",
@@ -893,7 +911,8 @@ class DarwinHelpScreen(Screen[None]):
             (
                 "RAM",
                 "Host physical usage: physical - (native free - speculative) - file-backed. "
-                "Reserved/unaccounted memory stays used. Wired and purgeable overlap used.",
+                "It includes memory the system holds back at boot, so it reads higher than "
+                "Activity Monitor. Wired and purgeable overlap used.",
             ),
             (
                 "file-backed",
@@ -922,8 +941,8 @@ class DarwinHelpScreen(Screen[None]):
             ("g", "details: toggle grouping by command"),
             ("Esc", "back"),
             ("b", "reset Δ and the displayed baseline clock"),
-            ("h", "main dashboard: live host memory; h/Esc close"),
             ("T / Ctrl+P", "theme"),
+            ("h", "main dashboard: live host memory; h/Esc close"),
             ("?", "help"),
             ("q / Ctrl+C", "quit live view; esc/?/q close help"),
         )
@@ -945,7 +964,8 @@ class DarwinHelpScreen(Screen[None]):
             "Bundles follow the outermost .app path; bundleless processes follow "
             "the nearest app ancestor or a session root. Shared launchd XPC/WebKit "
             "services can remain separate, so related footprints may be omitted. "
-            "App sums do not equal host RAM. macOS 15+ Apple Silicon (experimental)."
+            "App sums do not equal host RAM. Only the current user's apps are shown; "
+            "macOS 15+ on Apple Silicon is required."
         )
         return (
             items(definitions, 13)

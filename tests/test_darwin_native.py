@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import ctypes
 import errno
+import importlib.util
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -19,8 +22,15 @@ from appmem.darwin_native import (
     VMStatistics64,
     classify_error,
     decode_vm,
-    validate_sdk_abi,
 )
+
+_PROBE = Path(__file__).resolve().parents[1] / "scripts/darwin_probe.py"
+_SPEC = importlib.util.spec_from_file_location("darwin_probe", _PROBE)
+assert _SPEC is not None and _SPEC.loader is not None
+_probe = importlib.util.module_from_spec(_SPEC)
+sys.modules[_SPEC.name] = _probe
+_SPEC.loader.exec_module(_probe)
+validate_sdk_abi = _probe.validate_sdk_abi
 
 
 def test_fixed_abi_layout() -> None:
