@@ -2,11 +2,29 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import cast
+
 from appmem import __version__, schema
 
 
 def _field(type_name: str | list[str], description: str) -> dict[str, object]:
     return {"type": type_name, "description": description}
+
+
+_TAKEN_AT = "When this sample was taken, RFC 3339 with the local UTC offset."
+
+
+def _paged(item: Mapping[str, object], items_description: str, more: str) -> dict[str, object]:
+    return {
+        "type": "object",
+        "description": items_description,
+        "required": ["items", "has_more"],
+        "properties": {
+            "items": {"type": "array", "description": "The page of items.", "items": item},
+            "has_more": _field("boolean", more),
+        },
+    }
 
 
 _COVERAGE = {
@@ -46,7 +64,11 @@ _APP = {
             "not additive with footprint and their difference is not swap",
         ),
         "id": _field("string", "Stable identity of the bundle path or session root"),
-        "name": _field("string", "Display name; same-named independent roots are disambiguated"),
+        "name": _field(
+            "string",
+            "Bundle name, or the executable name for apps without a bundle (same-named roots are "
+            "one app); two bundles with one name add their bundle id in parentheses",
+        ),
         "footprint_bytes": _field(
             ["integer", "null"],
             "Sum of readable process physical footprints; null if none readable",
@@ -61,7 +83,7 @@ _PROCESS = {
     "required": [
         "pid",
         "start_abstime",
-        "command",
+        "name",
         "footprint_bytes",
         "resident_bytes",
         "unavailable",
@@ -74,16 +96,16 @@ _PROCESS = {
         ),
         "pid": _field("integer", "Process ID"),
         "start_abstime": _field(["integer", "null"], "Native process start identity, if readable"),
-        "command": _field("string", "Short BSD executable name, never arguments"),
+        "name": _field("string", "Executable file name from its path, never arguments"),
         "footprint_bytes": _field(["integer", "null"], "Physical footprint, null when unreadable"),
         "unavailable": _field(["string", "null"], "Reason the footprint is unavailable"),
     },
 }
 _COMMAND = {
     "type": "object",
-    "description": "Captured processes grouped by short executable name",
+    "description": "Captured processes grouped by executable name",
     "required": [
-        "command",
+        "name",
         "footprint_bytes",
         "resident_bytes",
         "procs",
@@ -102,7 +124,7 @@ _COMMAND = {
             "Resident bytes of readable members; shared/file-backed pages may double count; "
             "not additive with footprint and their difference is not swap",
         ),
-        "command": _field("string", "Short BSD executable name"),
+        "name": _field("string", "Executable file name from its path"),
         "footprint_bytes": _field(["integer", "null"], "Sum of readable member footprints"),
         "procs": _field("integer", "Captured process count"),
         "readable_processes": _field("integer", "Members with readable footprints"),
@@ -111,24 +133,22 @@ _COMMAND = {
 }
 
 
-def _unsupported_system(flag: schema.Flag) -> dict[str, object]:
-    result = flag.to_dict()
-    result["description"] = "Unsupported on macOS; returns invalid_input"
-    return result
+USER_SCOPE = ("user",)
 
 
 def _user_scope() -> dict[str, object]:
     result = schema.APP_SCOPE.to_dict()
-    result["description"] = "Only user scope is available; system returns invalid_input"
+    result["description"] = "Only the current user's processes are visible on macOS"
+    result["enum"] = list(USER_SCOPE)
     return result
 
 
 def _snapshot_output() -> dict[str, object]:
     return {
         "type": "object",
-        "required": ["taken_at", "platform", "system", "pressure", "apps", "has_more"],
+        "required": ["taken_at", "platform", "system", "pressure", "apps"],
         "properties": {
-            "taken_at": _field("string", "Sample time in ISO 8601 format"),
+            "taken_at": _field("string", _TAKEN_AT),
             "platform": {
                 "type": "string",
                 "enum": ["darwin"],
@@ -217,15 +237,17 @@ def _snapshot_output() -> dict[str, object]:
                     ),
                 },
             },
-            "apps": {
-                "type": "array",
-                "description": "Captured user application groups",
-                "items": _APP,
-            },
-            "has_more": _field("boolean", "More app items exist than the limit"),
+            "apps": _paged(
+                _APP,
+                "Captured user application groups, largest footprint first, ties by name",
+                "true when more apps exist than limit allowed through.",
+            ),
             "next": {
                 "type": "array",
-                "description": "Command arguments to retrieve all application groups",
+                "description": (
+                    "The argv to run appmem app on the first (largest) item; omitted when "
+                    "there are no items, repeats --json when the call passed it."
+                ),
                 "items": _field("string", "One command argument"),
             },
         },
@@ -233,42 +255,34 @@ def _snapshot_output() -> dict[str, object]:
 
 
 def _app_output() -> dict[str, object]:
+    properties = cast("dict[str, object]", _APP["properties"])
     return {
         "type": "object",
         "required": [
             "taken_at",
             "platform",
-            "app",
+            *cast("list[str]", _APP["required"]),
             "processes",
             "commands",
-            "has_more_processes",
-            "has_more_commands",
         ],
         "properties": {
-            "taken_at": _field("string", "Sample time in ISO 8601 format"),
+            "taken_at": _field("string", _TAKEN_AT),
             "platform": {
                 "type": "string",
                 "enum": ["darwin"],
                 "description": "Darwin data contract",
             },
-            "app": _APP,
-            "processes": {
-                "type": "array",
-                "description": "Captured member processes, limited to the requested count",
-                "items": _PROCESS,
-            },
-            "commands": {
-                "type": "array",
-                "description": "Command aggregates from captured members, limited by --limit",
-                "items": _COMMAND,
-            },
-            "has_more_processes": _field("boolean", "More process items exist than the limit"),
-            "has_more_commands": _field("boolean", "More command items exist than the limit"),
-            "next": {
-                "type": "array",
-                "description": "Command arguments to retrieve all processes and commands",
-                "items": _field("string", "One command argument"),
-            },
+            **properties,
+            "processes": _paged(
+                _PROCESS,
+                "Captured member processes, largest footprint first, ties by name then pid",
+                "true when more processes exist than limit allowed through.",
+            ),
+            "commands": _paged(
+                _COMMAND,
+                "Processes summed by executable name, largest footprint first, ties by name",
+                "true when more commands exist than limit allowed through.",
+            ),
         },
     }
 
@@ -276,6 +290,7 @@ def _app_output() -> dict[str, object]:
 def index() -> dict[str, object]:
     return {
         "schema_version": schema.SCHEMA_VERSION,
+        "platform": "darwin",
         "tool_version": __version__,
         "conformance": {
             "name": "cli-design-standard",
@@ -286,7 +301,10 @@ def index() -> dict[str, object]:
         "format_defaults": dict(schema.FORMAT_DEFAULTS),
         "exit_codes": {
             "0": "success",
-            "1": "runtime failure (platform unavailable, app not found, or no terminal)",
+            "1": (
+                "runtime failure (unsupported platform, native read failed and may succeed on "
+                "retry, app not found, or no terminal)"
+            ),
             "2": "usage error",
             "130": "interrupted by SIGINT",
             "143": "terminated by SIGTERM",
@@ -319,7 +337,6 @@ def root_detail() -> dict[str, object]:
         "args": [],
         "flags": [
             schema.ROOT_INTERVAL.to_dict(),
-            _unsupported_system(schema.ROOT_SYSTEM),
             schema.ROOT_THEME.to_dict(),
         ],
         "effects": "read_only",
@@ -334,7 +351,7 @@ def detail(path: list[str]) -> dict[str, object] | None:
             "name": "snapshot",
             "description": "One native host and app footprint sample",
             "args": [],
-            "flags": [_unsupported_system(schema.SNAPSHOT_SYSTEM), schema.SNAPSHOT_LIMIT.to_dict()],
+            "flags": [schema.SNAPSHOT_LIMIT.to_dict()],
             "effects": "read_only",
             "confirm": False,
             "interactive": False,
@@ -357,7 +374,9 @@ def detail(path: list[str]) -> dict[str, object] | None:
             "interactive": False,
             "output": _app_output(),
             "output_description": (
-                "Use the stable app id or display name; only user scope is supported"
+                "Use the stable app id or display name; only user scope is supported. "
+                "processes.items and commands.items are sorted by footprint_bytes descending, "
+                "unreadable last"
             ),
         }
     return None

@@ -40,6 +40,7 @@ class Reader:
         self.memories: dict[int, ProcessMemory | None] = {}
         self.memory_calls: dict[int, int] = {}
         self.process_calls: dict[int, int] = {}
+        self.bundle_ids: dict[str, str] = {}
         self.reuse_pid: int | None = None
         self.reuse_start_pid: int | None = None
         self.fresh_command_pid: int | None = None
@@ -70,8 +71,9 @@ class Reader:
         footprint: int | None,
         *,
         start: int | None = None,
+        uid: int = 501,
     ) -> None:
-        self.identities[pid] = ProcessIdentity(pid, ppid, 501, 1, command, start)
+        self.identities[pid] = ProcessIdentity(pid, ppid, uid, 1, command, start)
         if path is not None:
             self.paths[pid] = path
         self.memories[pid] = (
@@ -111,6 +113,10 @@ class Reader:
                 value.footprint_bytes, value.resident_bytes, value.start_abstime + 1
             )
         return ReadResult(value, None if value is not None else Unavailable.DENIED)
+
+    def bundle_id(self, bundle: str) -> ReadResult[str]:
+        value = self.bundle_ids.get(bundle)
+        return ReadResult(value, None if value is not None else Unavailable.UNSUPPORTED)
 
 
 def _assert_contract(value: Any, field: dict[str, Any], *, root: bool = False) -> None:
@@ -160,16 +166,126 @@ def test_nested_bundle_and_terminal_child_join_outer_app() -> None:
     assert reader.memory_calls == {10: 2, 11: 2, 12: 2}
 
 
-def test_same_name_bundles_have_different_stable_identity() -> None:
+def _twin_editors(reader: Reader) -> None:
+    reader.add(10, 1, "Editor", "/Applications/Editor.app/Contents/MacOS/Editor", 100)
+    reader.add(20, 1, "Editor", "/Users/me/Editor.app/Contents/MacOS/Editor", 200)
+    reader.bundle_ids["/Applications/Editor.app"] = "com.example.editor"
+    reader.bundle_ids["/Users/me/Editor.app"] = "com.example.editor.beta"
+
+
+def test_same_name_bundles_are_told_apart_by_bundle_id_not_a_hash() -> None:
+    reader = Reader()
+    _twin_editors(reader)
+    backend = DarwinBackend(501, reader)
+    apps = backend.collect_apps()
+    assert {app.name for app in apps} == {
+        "Editor (com.example.editor)",
+        "Editor (com.example.editor.beta)",
+    }
+    assert len({app.id for app in apps}) == 2
+    assert not any("[" in app.name for app in apps)
+    assert backend.find_app(apps[0].id) is not None
+
+
+def test_a_twin_quitting_does_not_break_the_name_an_agent_kept() -> None:
+    reader = Reader()
+    _twin_editors(reader)
+    backend = DarwinBackend(501, reader)
+    kept = "Editor (com.example.editor.beta)"
+    app_id = next(app.id for app in backend.collect_apps() if app.name == kept)
+    assert backend.find_app("Editor") is None  # two candidates: a plain name cannot choose
+    reader.identities.pop(10)
+    alone = backend.collect_apps()
+    assert [app.name for app in alone] == ["Editor"]
+    assert alone[0].id == app_id
+    assert backend.find_app(kept) is not None
+    assert backend.find_app("Editor") is not None
+    assert backend.find_app(app_id) is not None
+
+
+def test_bundle_without_a_readable_id_keeps_its_plain_name() -> None:
     reader = Reader()
     reader.add(10, 1, "Editor", "/Applications/Editor.app/Contents/MacOS/Editor", 100)
     reader.add(20, 1, "Editor", "/Users/me/Editor.app/Contents/MacOS/Editor", 200)
-    backend = DarwinBackend(501, reader)
-    apps = backend.collect_apps()
+    apps = DarwinBackend(501, reader).collect_apps()
+    assert [app.name for app in apps] == ["Editor", "Editor"]
     assert len({app.id for app in apps}) == 2
-    assert len({app.name for app in apps}) == 2
-    assert all(app.name.startswith("Editor [") for app in apps)
-    assert backend.find_app(apps[0].id) is not None
+
+
+def test_names_come_from_the_executable_not_the_15_character_comm() -> None:
+    reader = Reader()
+    reader.add(10, 1, "containermanage", "/usr/libexec/containermanagerd", 100)
+    reader.add(
+        20, 1, "Google Chrome He", "/opt/Chrome.app/Contents/Frameworks/x/Google Chrome Helper", 7
+    )
+    reader.add(
+        21,
+        20,
+        "Google Chrome He",
+        "/opt/Chrome.app/Contents/Frameworks/x/Google Chrome Helper (GPU)",
+        5,
+    )
+    reader.add(22, 20, "unreadable-path-proc", None, 3)
+    apps = {app.name: app for app in DarwinBackend(501, reader).collect_apps()}
+    assert set(apps) == {"containermanagerd", "Chrome"}
+    assert [p.command for p in apps["Chrome"].members] == [
+        "Google Chrome Helper",
+        "Google Chrome Helper (GPU)",
+        "unreadable-path-proc",
+    ]
+
+
+def test_same_named_roots_without_a_bundle_are_one_app() -> None:
+    reader = Reader()
+    for root, pid in enumerate((10, 20, 30)):
+        reader.add(pid, 1, "mdworker_share", "/System/Library/mdworker_shared", 10 * (root + 1))
+    reader.add(31, 30, "child", "/usr/bin/child", 5)
+    reader.add(40, 1, "other", "/usr/bin/other", 1)
+    backend = DarwinBackend(501, reader)
+    apps = {app.name: app for app in backend.collect_apps()}
+    merged = apps["mdworker_shared"]
+    assert merged.procs == 4
+    assert merged.footprint_bytes == 65
+    assert set(apps) == {"mdworker_shared", "other"}
+    assert not any("[" in name for name in apps)
+    assert backend.find_app("mdworker_shared") == merged
+    again = DarwinBackend(501, reader).collect_apps()
+    assert {app.id for app in again} == {app.id for app in apps.values()}
+
+
+def test_a_bundle_and_a_bundleless_root_with_one_name_stay_separate() -> None:
+    reader = Reader()
+    reader.add(10, 1, "Tool", "/Applications/Tool.app/Contents/MacOS/Tool", 100)
+    reader.add(20, 1, "Tool", "/usr/local/bin/Tool", 50)
+    reader.bundle_ids["/Applications/Tool.app"] = "com.example.tool"
+    apps = DarwinBackend(501, reader).collect_apps()
+    assert [app.name for app in apps] == ["Tool (com.example.tool)", "Tool"]
+
+
+def test_framework_python_app_is_not_an_application_bundle() -> None:
+    reader = Reader()
+    python = "/opt/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python"
+    reader.add(10, 1, "sshd-session", "/usr/libexec/sshd-session", 40)
+    reader.add(11, 10, "Python", python, 60)
+    reader.add(20, 1, "Other", "/opt/Other.app/Contents/Frameworks/Python.framework/x/Python", 5)
+    apps = {app.name: app for app in DarwinBackend(501, reader).collect_apps()}
+    assert set(apps) == {"sshd-session", "Other"}
+    assert [p.pid for p in apps["sshd-session"].members] == [10, 11]
+
+
+def test_control_characters_stay_in_names_and_are_escaped_where_shown() -> None:
+    reader = Reader()
+    reader.add(10, 1, "daemon", "/Applications/\x1b[41mEVIL\x1b[0m.app/Contents/MacOS/x", 100)
+    reader.add(11, 10, "w", "/tmp/worker\x07", 5)
+    backend = DarwinBackend(501, reader)
+    now = datetime(2026, 9, 26, tzinfo=UTC)
+    snapshot, _ = darwin_report.snapshot_document(backend, limit=5, now=now)
+    text = darwin_report.render_snapshot_text(snapshot)
+    assert "\\x1b[41mEVIL" in text and "\x1b" not in text and "?[41m" not in text
+    app_id = cast("dict[str, Any]", snapshot["apps"])["items"][0]["id"]
+    document, _, _ = darwin_report.app_document(backend, app_id, limit=5, now=now)
+    detail = darwin_report.render_app_text(document)
+    assert "worker\\x07" in detail and "\x07" not in detail
 
 
 def test_own_bundle_beats_launcher_and_bundleless_child_uses_nearest_app() -> None:
@@ -184,11 +300,11 @@ def test_own_bundle_beats_launcher_and_bundleless_child_uses_nearest_app() -> No
     }
 
 
-def test_independent_bundleless_roots_and_partial_coverage() -> None:
+def test_differently_named_bundleless_roots_and_partial_coverage() -> None:
     reader = Reader()
     reader.add(10, 1, "daemon", "/usr/bin/daemon", 100)
     reader.add(11, 10, "child", None, None)
-    reader.add(20, 1, "daemon", "/usr/bin/daemon", None)
+    reader.add(20, 1, "other", "/usr/bin/other", None)
     apps = DarwinBackend(501, reader).collect_apps()
     assert len(apps) == 2
     assert len({app.id for app in apps}) == 2
@@ -198,6 +314,15 @@ def test_independent_bundleless_roots_and_partial_coverage() -> None:
     assert first.readable_processes == first.unreadable_processes == 1
     assert denied.footprint_bytes is None
     assert denied.unreadable_processes == 1
+
+
+def test_merged_roots_are_partial_when_any_member_is_unreadable() -> None:
+    reader = Reader()
+    reader.add(10, 1, "daemon", "/usr/bin/daemon", 100)
+    reader.add(20, 1, "daemon", "/usr/bin/daemon", None)
+    (app,) = DarwinBackend(501, reader).collect_apps()
+    assert app.procs == 2 and app.footprint_bytes == 100
+    assert app.readable_processes == app.unreadable_processes == 1 and app.partial
 
 
 def test_launchd_webkit_service_stays_separate_from_safari() -> None:
@@ -265,24 +390,19 @@ def test_report_schema_exposes_footprint_and_nullable_coverage() -> None:
     now = datetime(2026, 9, 26, tzinfo=UTC)
     raw_snapshot, _ = darwin_report.snapshot_document(backend, limit=10, now=now)
     snapshot = cast("dict[str, Any]", raw_snapshot)
-    item = snapshot["apps"][0]
+    item = snapshot["apps"]["items"][0]
     assert item["footprint_bytes"] == 100
     assert item["coverage"]["partial"] is True
     assert snapshot["system"]["swap_used_bytes"] == 0
     assert "ram_bytes" not in item and "swap_bytes" not in item
-    detail = darwin_report.app_document(backend, item["id"], limit=10, now=now)
-    assert detail is not None
-    raw_document, _, _ = detail
+    raw_document, _, _ = darwin_report.app_document(backend, item["id"], limit=10, now=now)
     document = cast("dict[str, Any]", raw_document)
-    assert document["commands"][1]["footprint_bytes"] is None
-    assert document["processes"][1]["command"] == "secret?name?more"
+    assert document["commands"]["items"][1]["footprint_bytes"] is None
+    assert document["processes"]["items"][1]["name"] == "secret\nname\x9bmore"
     schema_detail = darwin_schema.detail(["app"])
     assert schema_detail is not None
     output = cast("dict[str, Any]", schema_detail["output"])
-    assert output["properties"]["app"]["properties"]["footprint_bytes"]["type"] == [
-        "integer",
-        "null",
-    ]
+    assert output["properties"]["footprint_bytes"]["type"] == ["integer", "null"]
 
 
 def test_darwin_schema_describes_and_validates_emitted_documents() -> None:
@@ -292,11 +412,9 @@ def test_darwin_schema_describes_and_validates_emitted_documents() -> None:
     backend = DarwinBackend(501, reader)
     now = datetime(2026, 9, 26, tzinfo=UTC)
     snapshot, _ = darwin_report.snapshot_document(backend, limit=1, now=now)
-    detail = darwin_report.app_document(
-        backend, cast("list[dict[str, Any]]", snapshot["apps"])[0]["id"], limit=1, now=now
+    app_document, _, _ = darwin_report.app_document(
+        backend, cast("dict[str, Any]", snapshot["apps"])["items"][0]["id"], limit=1, now=now
     )
-    assert detail is not None
-    app_document, _, _ = detail
     for name, document in (("snapshot", snapshot), ("app", app_document)):
         schema_detail = darwin_schema.detail([name])
         assert schema_detail is not None
@@ -327,11 +445,12 @@ def test_darwin_cli_snapshot_and_app_by_id(
     monkeypatch.setattr(cli_module.sys, "platform", "darwin")
     assert cli_module.main(["snapshot", "--json"], uid=501) == 0
     snapshot = json.loads(capsys.readouterr().out)
-    app_id = snapshot["apps"][0]["id"]
+    app_id = snapshot["apps"]["items"][0]["id"]
+    assert snapshot["next"] == ["appmem", "app", app_id, "--json"]
     assert cli_module.main(["app", app_id, "--json"], uid=501) == 0
     detail = json.loads(capsys.readouterr().out)
-    assert detail["app"]["id"] == app_id
-    assert detail["commands"][0]["footprint_bytes"] == 100
+    assert detail["id"] == app_id
+    assert detail["commands"]["items"][0]["footprint_bytes"] == 100
 
 
 @pytest.mark.parametrize("command", ["snapshot", "app"])
@@ -388,13 +507,16 @@ def test_darwin_json_next_keeps_json_on_tty(
 
     monkeypatch.setattr(cli_module, "DarwinBackend", backend_for_uid)
     monkeypatch.setattr(cli_module.sys, "platform", "darwin")
-    for args in (["snapshot", "--limit", "1", "--json"], ["app", "App", "--limit", "1", "--json"]):
-        assert cli_module.main(args, uid=501, stdout_isatty=lambda: True) == 0
-        first = json.loads(capsys.readouterr().out)
-        assert first["next"][-1] == "--json"
-        assert cli_module.main(first["next"][1:], uid=501, stdout_isatty=lambda: True) == 0
-        continued = json.loads(capsys.readouterr().out)
-        assert continued["platform"] == "darwin"
+    args = ["snapshot", "--limit", "1", "--json"]
+    assert cli_module.main(args, uid=501, stdout_isatty=lambda: True) == 0
+    first = json.loads(capsys.readouterr().out)
+    assert first["apps"]["has_more"] is True
+    assert first["next"][-1] == "--json"
+    assert cli_module.main(first["next"][1:], uid=501, stdout_isatty=lambda: True) == 0
+    continued = json.loads(capsys.readouterr().out)
+    assert continued["platform"] == "darwin"
+    assert continued["name"] == "Other"
+    assert "next" not in continued
 
 
 def test_darwin_system_scope_is_structured_invalid_input(
@@ -940,13 +1062,13 @@ def test_resident_preserves_unknown_and_independent_aggregate_coverage() -> None
     assert isolated.resident_bytes is None
     assert isolated.resident_readable_processes == 0
     raw = darwin_report.app_document(backend, app.id, limit=10, now=datetime.now(UTC))
-    assert raw is not None
     doc = cast("dict[str, Any]", raw[0])
-    assert doc["app"]["resident_bytes"] == 810
-    assert doc["app"]["coverage"]["resident_unreadable_processes"] == 1
-    assert doc["commands"][1]["resident_bytes"] == 10
-    assert doc["commands"][1]["resident_readable_processes"] == 1
-    assert doc["commands"][1]["resident_unreadable_processes"] == 1
+    assert doc["resident_bytes"] == 810
+    assert doc["coverage"]["resident_unreadable_processes"] == 1
+    worker = next(item for item in doc["commands"]["items"] if item["name"] == "worker")
+    assert worker["resident_bytes"] == 10
+    assert worker["resident_readable_processes"] == 1
+    assert worker["resident_unreadable_processes"] == 1
 
 
 @pytest.mark.asyncio
@@ -1090,6 +1212,5 @@ def test_darwin_text_reports_use_aligned_units_and_keep_documents() -> None:
     rows = [line for line in text.splitlines() if line.startswith(("Long App", "Small"))]
     assert rows[0].index("GiB") + 1 == rows[1].index("MiB")
     result = darwin_report.app_document(backend, "Long App", limit=10, now=datetime.now(UTC))
-    assert result is not None
     detail = darwin_report.render_app_text(result[0])
     assert "1.0 GiB" in detail and "unknown" in detail and "partial" in detail

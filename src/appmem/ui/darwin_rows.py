@@ -87,5 +87,7 @@ def sort_rows(rows: list[DarwinRow], key: str, reverse: bool) -> list[DarwinRow]
     }[key]
     known = [row for row in rows if getattr(row, attribute) is not None]
     unknown = [row for row in rows if getattr(row, attribute) is None]
-    known.sort(key=lambda row: (getattr(row, attribute), row.name.casefold()), reverse=reverse)
+    # Stable sort twice: ties stay A to Z whichever way the values run.
+    known.sort(key=lambda row: (row.name.casefold(), row.key))
+    known.sort(key=lambda row: getattr(row, attribute), reverse=reverse)
     return known + sorted(unknown, key=lambda row: row.name.casefold())

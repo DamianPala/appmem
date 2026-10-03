@@ -5,12 +5,18 @@ from __future__ import annotations
 
 import ctypes as c
 import errno
+import os
+import plistlib
+import stat
 import sys
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TypeVar, cast
+from xml.parsers.expat import ExpatError
 
 SysctlValue = TypeVar("SysctlValue", c.Structure, c.c_uint32, c.c_uint64)
+
+_PLIST_MAX_BYTES = 1 << 20
 
 
 class Unavailable(StrEnum):
@@ -407,7 +413,34 @@ class DarwinNative:
             return classify_error(c.get_errno(), pid=True)
         if length >= c.sizeof(buf) or b"\0" not in buf.raw[: length + 1]:
             return ReadResult(None, Unavailable.ERROR)
-        return ReadResult(buf.value.decode(errors="surrogateescape"))
+        return ReadResult(buf.value.decode(errors="replace"))
+
+    def bundle_id(self, bundle: str) -> ReadResult[str]:
+        """CFBundleIdentifier from `<bundle>/Contents/Info.plist`; nothing else is read."""
+        try:
+            # O_NONBLOCK plus the regular-file check: a FIFO or device must not stall a tick.
+            fd = os.open(f"{bundle}/Contents/Info.plist", os.O_RDONLY | os.O_NONBLOCK)
+            with open(fd, "rb") as handle:
+                if not stat.S_ISREG(os.fstat(fd).st_mode):
+                    return ReadResult(None, Unavailable.ERROR)
+                raw = handle.read(_PLIST_MAX_BYTES + 1)
+            if len(raw) > _PLIST_MAX_BYTES:
+                return ReadResult(None, Unavailable.ERROR)
+            identifier = plistlib.loads(raw).get("CFBundleIdentifier")
+        except OSError as exc:
+            return classify_error(exc.errno or 0, pid=True)
+        # RecursionError: the binary parser recurses once per nesting level.
+        except (
+            plistlib.InvalidFileException,
+            ExpatError,
+            ValueError,
+            AttributeError,
+            RecursionError,
+        ):
+            return ReadResult(None, Unavailable.ERROR)
+        if not isinstance(identifier, str) or not identifier:
+            return ReadResult(None, Unavailable.UNSUPPORTED)
+        return ReadResult(identifier)
 
     def memory(self, pid: int) -> ReadResult[ProcessMemory]:
         usage = RUsageV4()

@@ -790,7 +790,10 @@ FORMAT_DEFAULTS: dict[str, str] = {"tty": "text", "non_tty": "json"}
 
 EXIT_CODES: dict[str, str] = {
     "0": "success",
-    "1": "runtime failure (cgroup tree unavailable, app not found, no terminal for the live view)",
+    "1": (
+        "runtime failure (cgroup tree unavailable, app not found, no terminal for the live view, "
+        "unsupported platform)"
+    ),
     "2": "usage error",
     "130": "interrupted by SIGINT",
     "143": "terminated by SIGTERM",
@@ -845,6 +848,7 @@ def index() -> dict[str, object]:
     them, and the tool-wide defaults and exit codes."""
     return {
         "schema_version": SCHEMA_VERSION,
+        "platform": "linux",
         "tool_version": __version__,
         "conformance": {
             "name": "cli-design-standard",

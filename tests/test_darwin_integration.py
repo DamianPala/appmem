@@ -22,70 +22,74 @@ SPEC.loader.exec_module(harness)
 
 SNAPSHOT_SCHEMA: dict[str, Any] = {
     "type": "object",
-    "required": ["apps", "has_more"],
+    "required": ["apps"],
     "properties": {
         "apps": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "required": ["id"],
-                "properties": {"id": {"type": "string"}},
+            "type": "object",
+            "required": ["items", "has_more"],
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["id"],
+                        "properties": {"id": {"type": "string"}},
+                    },
+                },
+                "has_more": {"type": "boolean"},
             },
         },
-        "has_more": {"type": "boolean"},
         "next": {"type": "array", "items": {"type": "string"}},
     },
+}
+PAGED: dict[str, Any] = {
+    "type": "object",
+    "required": ["has_more"],
+    "properties": {"has_more": {"type": "boolean"}},
 }
 DETAIL_SCHEMA: dict[str, Any] = {
     "type": "object",
-    "required": ["app", "has_more_processes", "has_more_commands"],
+    "required": ["id", "processes", "commands"],
     "properties": {
-        "app": {
-            "type": "object",
-            "required": ["id"],
-            "properties": {"id": {"type": "string"}},
-        },
-        "has_more_processes": {"type": "boolean"},
-        "has_more_commands": {"type": "boolean"},
-        "next": {"type": "array", "items": {"type": "string"}},
+        "platform": {"type": "string"},
+        "id": {"type": "string"},
+        "processes": PAGED,
+        "commands": PAGED,
     },
 }
 
 
-def test_pagination_follows_new_inventory_until_both_ids_are_visible(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    calls: list[list[str]] = []
-
+def _fake_cli(inventory: list[str]) -> Any:
     def run_command(
         command: list[str | Path], *, cwd: Path, deadline: float, cap: float = 30.0
     ) -> subprocess.CompletedProcess[str]:
         args = [str(item) for item in command[1:]]
-        calls.append(args)
         if args[0] == "snapshot":
             limit = int(args[args.index("--limit") + 1])
-            # Another app appears between samples. The published next limit
-            # from the prior sample can no longer show both controlled IDs.
-            inventory = ["other", "new", "A", "B"] if limit > 1 else ["other", "A", "B"]
             page: dict[str, Any] = {
-                "apps": [{"id": app_id} for app_id in inventory[:limit]],
-                "has_more": len(inventory) > limit,
+                "apps": {
+                    "items": [{"id": app_id} for app_id in inventory[:limit]],
+                    "has_more": len(inventory) > limit,
+                },
+                "next": ["appmem", "app", inventory[0], "--json"],
             }
-            if page["has_more"]:
-                page["next"] = ["appmem", "snapshot", "--limit", str(len(inventory)), "--json"]
         else:
-            app_id = args[1]
-            limit = int(args[args.index("--limit") + 1])
+            limit = int(args[args.index("--limit") + 1]) if "--limit" in args else 100
             page = {
-                "app": {"id": app_id},
-                "has_more_processes": limit == 1,
-                "has_more_commands": False,
+                "platform": "darwin",
+                "id": args[1],
+                "processes": {"has_more": limit == 1},
+                "commands": {"has_more": False},
             }
-            if limit == 1:
-                page["next"] = ["appmem", "app", app_id, "--limit", "2", "--json"]
         return subprocess.CompletedProcess(command, 0, json.dumps(page), "")
 
-    monkeypatch.setattr(harness, "run_command", run_command)
+    return run_command
+
+
+def test_pagination_opens_the_top_app_and_finds_both_ids_in_the_full_snapshot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(harness, "run_command", _fake_cli(["other", "A", "B"]))
     harness.pagination(
         tmp_path / "appmem",
         tmp_path,
@@ -94,7 +98,6 @@ def test_pagination_follows_new_inventory_until_both_ids_are_visible(
         app_ids=("A", "B"),
         deadline=time.monotonic() + 5,
     )
-    assert [args[2] for args in calls if args[0] == "snapshot"] == ["1", "3", "4"]
 
 
 def test_require_error_exposes_only_static_check_id() -> None:
@@ -104,26 +107,11 @@ def test_require_error_exposes_only_static_check_id() -> None:
     assert "sensitive" not in error.value.check_id
 
 
-def test_pagination_stops_when_controlled_identity_never_appears(
+def test_pagination_fails_when_a_controlled_identity_is_missing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    calls = 0
-
-    def run_command(
-        command: list[str | Path], *, cwd: Path, deadline: float, cap: float = 30.0
-    ) -> subprocess.CompletedProcess[str]:
-        nonlocal calls
-        assert command[1] == "snapshot"
-        calls += 1
-        page = {
-            "apps": [{"id": "other"}],
-            "has_more": True,
-            "next": ["appmem", "snapshot", "--limit", str(calls + 1), "--json"],
-        }
-        return subprocess.CompletedProcess(command, 0, json.dumps(page), "")
-
-    monkeypatch.setattr(harness, "run_command", run_command)
-    with pytest.raises(harness.CheckError, match="within four pages"):
+    monkeypatch.setattr(harness, "run_command", _fake_cli(["other", "A"]))
+    with pytest.raises(harness.CheckError, match="full snapshot omitted"):
         harness.pagination(
             tmp_path / "appmem",
             tmp_path,
@@ -132,7 +120,6 @@ def test_pagination_stops_when_controlled_identity_never_appears(
             app_ids=("A", "B"),
             deadline=time.monotonic() + 5,
         )
-    assert calls == 5
 
 
 @pytest.mark.parametrize("field_count", [8, 6])

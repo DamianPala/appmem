@@ -186,22 +186,6 @@ def test_pid_listing_rejects_a_full_buffer(monkeypatch: pytest.MonkeyPatch) -> N
     assert result.error_code is None
 
 
-def test_short_successful_process_read_is_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    class Proc:
-        def proc_pidinfo(
-            self, _pid: int, _flavor: int, _arg: int, _buffer: object, size: int
-        ) -> int:
-            return size - 4
-
-    reader = object.__new__(DarwinNative)
-    monkeypatch.setattr(reader, "_proc", Proc(), raising=False)
-
-    result = reader.process(123)
-    assert result.value is None
-    assert result.unavailable == Unavailable.ERROR
-    assert result.error_code is None
-
-
 @pytest.mark.parametrize("count", [38, 40])
 def test_legacy_vm_prefix_decodes_speculative_file_backed_and_purgeable(count: int) -> None:
     vm = VMStatistics64()

@@ -1,4 +1,4 @@
-"""Darwin documents, separate from the stable Linux JSON contract."""
+"""Darwin documents: the Linux envelope around macOS footprint metrics."""
 
 from __future__ import annotations
 
@@ -11,6 +11,15 @@ from rich.cells import cell_len
 from appmem.darwin_backend import DarwinApp, DarwinBackend, DarwinProcess
 from appmem.fmt import format_pair, size
 from appmem.render import escape_control_chars
+from appmem.report import paged
+
+
+class AppNotFoundError(Exception):
+    """No current app matches the name or id; `candidates` are the near misses."""
+
+    def __init__(self, name: str, candidates: list[str]) -> None:
+        super().__init__(name)
+        self.candidates = candidates
 
 
 def _coverage(app: DarwinApp) -> dict[str, object]:
@@ -40,11 +49,16 @@ def _process_item(process: DarwinProcess) -> dict[str, object]:
     return {
         "pid": process.pid,
         "start_abstime": process.start_abstime,
-        "command": process.command,
+        "name": process.command,
         "footprint_bytes": process.footprint_bytes,
         "resident_bytes": process.resident_bytes,
         "unavailable": process.unavailable,
     }
+
+
+def _by_size(footprint: int | None, name: str, pid: int = 0) -> tuple[bool, int, str, int]:
+    """Largest first, unreadable last, ties A to Z then by PID."""
+    return (footprint is None, -(footprint or 0), name, pid)
 
 
 def _commands(app: DarwinApp) -> list[dict[str, object]]:
@@ -57,7 +71,7 @@ def _commands(app: DarwinApp) -> list[dict[str, object]]:
         residents = [p.resident_bytes for p in members if p.resident_bytes is not None]
         result.append(
             {
-                "command": name,
+                "name": name,
                 "footprint_bytes": sum(known) if known else None,
                 "resident_bytes": sum(residents) if residents else None,
                 "resident_readable_processes": len(residents),
@@ -69,10 +83,9 @@ def _commands(app: DarwinApp) -> list[dict[str, object]]:
         )
     return sorted(
         result,
-        key=lambda item: (
-            item["footprint_bytes"] is None,
-            -(item["footprint_bytes"] if isinstance(item["footprint_bytes"], int) else 0),
-            str(item["command"]),
+        key=lambda item: _by_size(
+            item["footprint_bytes"] if isinstance(item["footprint_bytes"], int) else None,
+            str(item["name"]),
         ),
     )
 
@@ -83,8 +96,9 @@ def snapshot_document(
     host = backend.read_system()
     apps = backend.collect_apps()
     pressure = {1: "normal", 2: "warning", 4: "critical"}.get(host.pressure_level or 0)
+    page = apps[:limit]
     document: dict[str, object] = {
-        "taken_at": now.isoformat(),
+        "taken_at": now.isoformat(timespec="seconds"),
         "platform": "darwin",
         "system": {
             "physical_bytes": host.physical_bytes,
@@ -113,32 +127,30 @@ def snapshot_document(
                 str(host.pressure_unavailable or "unknown_level") if pressure is None else None
             ),
         },
-        "apps": [_app_item(app) for app in apps[:limit]],
-        "has_more": len(apps) > limit,
+        "apps": paged(apps, limit, _app_item),
     }
-    if len(apps) > limit:
-        document["next"] = ["appmem", "snapshot", "--limit", str(len(apps))]
+    if page:
+        document["next"] = ["appmem", "app", page[0].id]
     return document, len(apps)
 
 
 def app_document(
     backend: DarwinBackend, name: str, *, limit: int, now: datetime
-) -> tuple[dict[str, object], int, int] | None:
-    app = backend.find_app(name)
+) -> tuple[dict[str, object], int, int]:
+    """One app, flat like the Linux document: its own fields, then paged processes
+    and commands. Raises AppNotFoundError when nothing matches."""
+    app, near = backend.lookup(name)
     if app is None:
-        return None
+        raise AppNotFoundError(name, [candidate.name for candidate in near[:5]])
     commands = _commands(app)
+    processes = sorted(app.members, key=lambda p: _by_size(p.footprint_bytes, p.command, p.pid))
     document: dict[str, object] = {
-        "taken_at": now.isoformat(),
+        "taken_at": now.isoformat(timespec="seconds"),
         "platform": "darwin",
-        "app": _app_item(app),
-        "processes": [_process_item(p) for p in app.members[:limit]],
-        "commands": commands[:limit],
-        "has_more_processes": app.procs > limit,
-        "has_more_commands": len(commands) > limit,
+        **_app_item(app),
+        "processes": paged(processes, limit, _process_item),
+        "commands": paged(commands, limit, lambda item: item),
     }
-    if app.procs > limit or len(commands) > limit:
-        document["next"] = ["appmem", "app", app.id, "--limit", str(max(app.procs, len(commands)))]
     return document, app.procs, len(commands)
 
 
@@ -197,7 +209,7 @@ def render_snapshot_text(document: dict[str, Any]) -> str:
         f"RAM       {ram}",
         f"Compress  {compression}",
         f"Swap      {swap}",
-        f"Pressure  {document['pressure']['level'] or 'unavailable'}  current user",
+        f"Pressure  {document['pressure']['level'] or 'unavailable'}",
         "",
     ]
     rows = [
@@ -208,40 +220,47 @@ def render_snapshot_text(document: dict[str, Any]) -> str:
             str(app["procs"]),
             "partial" if app["coverage"]["partial"] else "complete",
         )
-        for app in document["apps"]
+        for app in document["apps"]["items"]
     ]
     lines.extend(_text_table(("APP", "MEMORY", "RESIDENT", "PROCS", "COVERAGE"), rows))
-    lines.append("* partial known sum; unknown = unavailable for that metric")
+    lines.extend(_legend(rows))
     return "\n".join(lines)
 
 
+def _legend(rows: list[tuple[str, ...]]) -> list[str]:
+    """The footnote only when a shown amount is partial or unknown."""
+    if any(cell.endswith("*") or cell == "unknown" for row in rows for cell in row[1:3]):
+        return ["* partial known sum; unknown = unavailable for that metric"]
+    return []
+
+
 def render_app_text(document: dict[str, Any]) -> str:
-    app = document["app"]
-    coverage = "partial" if app["coverage"]["partial"] else "complete"
+    coverage = "partial" if document["coverage"]["partial"] else "complete"
     lines = [
-        f"{escape_control_chars(app['name'])} ({escape_control_chars(app['id'])})  "
-        f"memory {_text_amount(app['footprint_bytes'])}  {coverage}"
+        f"{escape_control_chars(document['name'])} ({escape_control_chars(document['id'])})  "
+        f"memory {_text_amount(document['footprint_bytes'])}  {coverage}"
     ]
-    rows = [
+    process_rows = [
         (
             str(p["pid"]),
-            escape_control_chars(p["command"]),
+            escape_control_chars(p["name"]),
             _text_amount(p["footprint_bytes"]),
             _text_amount(p["resident_bytes"]),
         )
-        for p in document["processes"]
+        for p in document["processes"]["items"]
     ]
-    lines.extend(_text_table(("PID", "COMMAND", "MEMORY", "RESIDENT"), rows))
-    rows = [
+    lines.extend(_text_table(("PID", "COMMAND", "MEMORY", "RESIDENT"), process_rows))
+    command_rows = [
         (
-            escape_control_chars(c["command"]),
+            escape_control_chars(c["name"]),
             _text_amount(c["footprint_bytes"], partial=bool(c["unreadable_processes"])),
             _text_amount(c["resident_bytes"], partial=bool(c["resident_unreadable_processes"])),
             str(c["procs"]),
             "partial" if c["unreadable_processes"] else "complete",
         )
-        for c in document["commands"]
+        for c in document["commands"]["items"]
     ]
-    lines.extend(_text_table(("COMMAND", "MEMORY", "RESIDENT", "PROCS", "COVERAGE"), rows))
-    lines.append("* partial known sum; unknown = unavailable for that metric")
+    lines.extend(_text_table(("COMMAND", "MEMORY", "RESIDENT", "PROCS", "COVERAGE"), command_rows))
+    # Process rows lead with a PID, so their amounts sit one column to the right.
+    lines.extend(_legend([row[1:] for row in process_rows] + command_rows))
     return "\n".join(lines)

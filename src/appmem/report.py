@@ -196,7 +196,7 @@ def _command_item(command: CommandStats) -> dict[str, Any]:
     }
 
 
-def _paged[T](items: list[T], limit: int, to_item: Callable[[T], dict[str, Any]]) -> dict[str, Any]:
+def paged[T](items: list[T], limit: int, to_item: Callable[[T], dict[str, Any]]) -> dict[str, Any]:
     page = items[:limit]
     return {"items": [to_item(item) for item in page], "has_more": len(items) > limit}
 
@@ -241,10 +241,10 @@ def app_document(
         "zswap_pool_bytes": app.zswap_pool,
         "procs": app.procs,
         "units": [{"name": path.name, "label": unit_label(path.name)} for path in app.unit_paths],
-        "processes": _paged(
+        "processes": paged(
             processes_sorted, limit, lambda proc: _process_item(proc, backend=backend)
         ),
-        "commands": _paged(commands_sorted, limit, _command_item),
+        "commands": paged(commands_sorted, limit, _command_item),
         "unattributed_ram_bytes": unattributed_ram,
         "unattributed_swap_bytes": unattributed_swap,
     }

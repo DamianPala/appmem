@@ -10,7 +10,8 @@ import hashlib
 import platform
 import re
 import sys
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from appmem.darwin_native import (
@@ -23,7 +24,14 @@ from appmem.darwin_native import (
 
 
 class DarwinUnavailableError(RuntimeError):
-    """The platform or a required native inventory read is unavailable."""
+    """The host cannot run this backend: wrong OS, processor or macOS version."""
+
+
+class DarwinReadError(DarwinUnavailableError):
+    """A supported host failed a required native read; the next attempt may succeed.
+
+    A subclass so the live view, which only needs "no data this tick", catches both.
+    """
 
 
 class NativeReader(Protocol):
@@ -32,6 +40,7 @@ class NativeReader(Protocol):
     def process(self, pid: int) -> ReadResult[ProcessIdentity]: ...
     def path(self, pid: int) -> ReadResult[str]: ...
     def memory(self, pid: int) -> ReadResult[ProcessMemory]: ...
+    def bundle_id(self, bundle: str) -> ReadResult[str]: ...
 
 
 @dataclass(frozen=True)
@@ -51,6 +60,8 @@ class DarwinApp:
     id: str
     key: str
     name: str
+    display_name: str
+    bundle_id: str | None
     footprint_bytes: int | None
     readable_processes: int
     unreadable_processes: int
@@ -78,24 +89,50 @@ class DarwinApp:
     def partial(self) -> bool:
         return self.unreadable_processes > 0
 
+    @property
+    def bundle_path(self) -> str | None:
+        return self.key.removeprefix("bundle:") if self.key.startswith("bundle:") else None
 
-def _safe_name(value: str) -> str:
-    # BSD comm is a short executable label, never command-line arguments.
-    return re.sub(r"[\x00-\x1f\x7f-\x9f]", "?", value) or "unknown"
+
+@dataclass
+class _Group:
+    key: str
+    name: str
+    bundle: str | None
+    members: list[DarwinProcess] = field(default_factory=lambda: [])
+    uncertain: bool = False
+
+
+def _executable_name(path: str | None, comm: str) -> str:
+    """Basename of the executable path, never argv.
+
+    BSD comm holds 16 bytes and is cut at 15 characters, which merges helpers whose
+    names share a prefix; it is only the fallback when the path cannot be read.
+    """
+    name = path.rsplit("/", 1)[-1] if path else ""
+    return name or comm or "unknown"
+
+
+def _macos_major() -> int:
+    head = platform.mac_ver()[0].split(".")[0]
+    return int(head) if head.isdigit() else 0
 
 
 def _bundle(path: str | None) -> str | None:
+    """Outermost `.app` directory of an executable path.
+
+    A `.app` inside a `.framework` is a tool the framework ships (the Python
+    framework's Python.app), not an application the user runs, so it is no bundle.
+    """
     if not path or not path.startswith("/"):
         return None
     parts = path.split("/")
     for index, part in enumerate(parts):
+        if part.endswith(".framework"):
+            return None
         if part.endswith(".app") and part not in (".app", "..app"):
             return "/".join(parts[: index + 1])
     return None
-
-
-def _identity_key(pid: int, start: int | None) -> str:
-    return f"{pid}:{start if start is not None else 'unknown'}"
 
 
 class DarwinBackend:
@@ -104,9 +141,12 @@ class DarwinBackend:
     def __init__(self, uid: int, native: NativeReader | None = None) -> None:
         if native is None:
             if sys.platform != "darwin" or platform.machine() != "arm64":
-                raise DarwinUnavailableError("macOS 15+ on Apple Silicon is required")
-            major = int(platform.mac_ver()[0].split(".")[0] or "0")
-            if major < 15:
+                raise DarwinUnavailableError(
+                    "macOS 15+ on Apple Silicon with a native arm64 Python is required "
+                    f"(this is {sys.platform} {platform.machine()}); "
+                    "the memory layouts are only validated there"
+                )
+            if _macos_major() < 15:
                 raise DarwinUnavailableError("macOS 15 or newer is required")
             native = DarwinNative()
         self._native = native
@@ -118,13 +158,13 @@ class DarwinBackend:
     def read_system(self) -> HostMemory:
         result = self._native.host()
         if result.value is None:
-            raise DarwinUnavailableError(f"native host memory read failed: {result.unavailable}")
+            raise DarwinReadError(f"native host memory read failed: {result.unavailable}")
         return result.value
 
     def _read_inventory(self) -> tuple[dict[int, ProcessIdentity], dict[int, DarwinProcess]]:
         result = self._native.pids()
         if result.value is None:
-            raise DarwinUnavailableError(f"native process inventory failed: {result.unavailable}")
+            raise DarwinReadError(f"native process inventory failed: {result.unavailable}")
         identities: dict[int, ProcessIdentity] = {}
         for pid in result.value:
             identity = self._native.process(pid).value
@@ -145,7 +185,7 @@ class DarwinBackend:
         memory_result = self._native.memory(pid)
         memory = memory_result.value
         path = self._native.path(pid).value
-        # A second rusage read verifies the PID did not restart mid-sample.
+        # Re-reading the identity after the memory read catches a PID reused mid-sample.
         after = self._native.process(pid).value
         if after is None or after.ppid != identity.ppid or after.uid != identity.uid:
             return None
@@ -164,7 +204,7 @@ class DarwinBackend:
             pid=pid,
             ppid=after.ppid,
             start_abstime=memory.start_abstime if memory is not None else identity.start_abstime,
-            command=_safe_name(after.command),
+            command=_executable_name(path, after.command),
             footprint_bytes=memory.footprint_bytes if memory is not None else None,
             unavailable=unavailable,
             path=path,
@@ -201,62 +241,56 @@ class DarwinBackend:
 
     def _group_processes(
         self, identities: dict[int, ProcessIdentity], processes: dict[int, DarwinProcess]
-    ) -> tuple[dict[str, list[DarwinProcess]], set[str]]:
+    ) -> dict[str, _Group]:
         direct_bundles = {
             pid: bundle
             for pid, process in processes.items()
             if (bundle := _bundle(process.path)) is not None
         }
 
-        groups: dict[str, list[DarwinProcess]] = {}
-        uncertain: set[str] = set()
+        groups: dict[str, _Group] = {}
         for process in processes.values():
             chain, missing = self._ancestry(process, identities, processes)
             bundle = next((direct_bundles[item] for item in chain if item in direct_bundles), None)
             if bundle is not None:
                 key = f"bundle:{bundle}"
+                name = bundle.rsplit("/", 1)[-1].removesuffix(".app") or "unknown"
             else:
-                root = processes[chain[-1]]
-                key = f"session:{_identity_key(root.pid, root.start_abstime)}"
-            groups.setdefault(key, []).append(process)
+                # Same-named roots with no bundle are one app, as Linux merges units by name.
+                name = processes[chain[-1]].command
+                key = f"session:{name}"
+            group = groups.setdefault(key, _Group(key, name, bundle))
+            group.members.append(process)
             if missing or process.path is None or process.start_abstime is None:
-                uncertain.add(key)
+                group.uncertain = True
+        return groups
 
-        return groups, uncertain
+    def _app(self, group: _Group, *, shared_name: bool) -> DarwinApp:
+        """Two bundles with one display name are told apart by their bundle id,
+        which stays with the bundle when the twin quits (unlike an ordinal)."""
+        bundle_id = None
+        if group.bundle is not None and shared_name:
+            bundle_id = self._native.bundle_id(group.bundle).value
+        members = sorted(group.members, key=lambda item: item.pid)
+        readable = [item.footprint_bytes for item in members if item.footprint_bytes is not None]
+        return DarwinApp(
+            id=hashlib.sha256(group.key.encode()).hexdigest()[:12],
+            key=group.key,
+            name=f"{group.name} ({bundle_id})" if bundle_id else group.name,
+            display_name=group.name,
+            bundle_id=bundle_id,
+            footprint_bytes=sum(readable) if readable else None,
+            readable_processes=len(readable),
+            unreadable_processes=len(members) - len(readable),
+            members=tuple(members),
+            grouping_partial=group.uncertain,
+        )
 
     def collect_apps(self) -> list[DarwinApp]:
         identities, processes = self._read_inventory()
-        groups, uncertain = self._group_processes(identities, processes)
-        names: dict[str, str] = {}
-        for key in groups:
-            if key.startswith("bundle:"):
-                names[key] = _safe_name(key[7:].rsplit("/", 1)[-1].removesuffix(".app"))
-            else:
-                root_pid = int(key.split(":", 2)[1])
-                names[key] = processes[root_pid].command
-        duplicates = {name for name in names.values() if list(names.values()).count(name) > 1}
-        apps: list[DarwinApp] = []
-        for key, members in groups.items():
-            members.sort(key=lambda item: item.pid)
-            readable = [
-                item.footprint_bytes for item in members if item.footprint_bytes is not None
-            ]
-            digest = hashlib.sha256(key.encode()).hexdigest()[:12]
-            name = names[key]
-            if name in duplicates:
-                name = f"{name} [{digest[:6]}]"
-            apps.append(
-                DarwinApp(
-                    id=digest,
-                    key=key,
-                    name=name,
-                    footprint_bytes=sum(readable) if readable else None,
-                    readable_processes=len(readable),
-                    unreadable_processes=len(members) - len(readable),
-                    members=tuple(members),
-                    grouping_partial=key in uncertain,
-                )
-            )
+        groups = self._group_processes(identities, processes)
+        shared = Counter(group.name for group in groups.values())
+        apps = [self._app(group, shared_name=shared[group.name] > 1) for group in groups.values()]
         return sorted(
             apps,
             key=lambda app: (
@@ -267,9 +301,36 @@ class DarwinBackend:
             ),
         )
 
-    def find_app(self, name: str) -> DarwinApp | None:
+    def lookup(self, name: str) -> tuple[DarwinApp | None, list[DarwinApp]]:
+        """The app a name or id selects, or None with the apps that nearly match.
+
+        An id never changes. A name does when a same-named twin starts or quits, so
+        the plain display name still finds an app whose name carries a bundle id,
+        and `Name (bundle id)` still finds it after the twin is gone.
+        """
         apps = self.collect_apps()
-        return next((app for app in apps if app.id == name or app.name == name), None)
+        exact = next((app for app in apps if app.id == name or app.name == name), None)
+        if exact is not None:
+            return exact, []
+        plain = [app for app in apps if app.display_name == name]
+        if len(plain) == 1:
+            return plain[0], []
+        qualified = re.fullmatch(r"(.+) \((.+)\)", name)
+        if qualified is not None:
+            display, wanted = qualified.groups()
+            for app in apps:
+                path = app.bundle_path
+                if (
+                    app.display_name == display
+                    and path is not None
+                    and self._native.bundle_id(path).value == wanted
+                ):
+                    return app, []
+        needle = name.casefold()
+        return None, [app for app in apps if needle in app.name.casefold()]
+
+    def find_app(self, name: str) -> DarwinApp | None:
+        return self.lookup(name)[0]
 
     def read_procs(self, app: DarwinApp) -> tuple[DarwinProcess, ...]:
         return app.members

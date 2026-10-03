@@ -9,6 +9,7 @@ import inspect
 import json
 import os
 import platform
+import plistlib
 import pty
 import select
 import shutil
@@ -129,6 +130,9 @@ def compile_helpers(root: Path, deadline: float) -> tuple[Path, Path, Path]:
     loose = root / "loose/probe"
     for binary in (*binaries, loose):
         binary.parent.mkdir(parents=True, exist_ok=True)
+    for branch, identifier in (("A", "probe.twin.a"), ("B", "probe.twin.b")):
+        plist = root / branch / "Twin.app/Contents/Info.plist"
+        plist.write_bytes(plistlib.dumps({"CFBundleIdentifier": identifier}))
     run_command(
         ["cc", "-std=gnu11", "-O2", "-Wall", "-Wextra", "-Werror", HELPER, "-o", binaries[0]],
         cwd=root,
@@ -347,9 +351,9 @@ def detail(
     document = cli_json(cli, root, ["app", app_id, "--limit", "1000", "--json"], deadline)
     validate(document, schema)
     require(document["platform"] == "darwin", "detail selected wrong platform")
-    require(document["app"]["id"] == app_id, "detail did not resolve stable app id")
+    require(document["id"] == app_id, "detail did not resolve stable app id")
     require(
-        not document["has_more_processes"] and not document["has_more_commands"],
+        not document["processes"]["has_more"] and not document["commands"]["has_more"],
         "controlled detail was truncated",
     )
     return document
@@ -380,7 +384,7 @@ def follow_next(
 
 
 def listed_ids(document: dict[str, Any]) -> set[str]:
-    apps = cast("list[dict[str, Any]]", document["apps"])
+    apps = cast("list[dict[str, Any]]", document["apps"]["items"])
     return {str(app["id"]) for app in apps}
 
 
@@ -395,35 +399,20 @@ def pagination(
 ) -> None:
     first_page = cli_json(cli, root, ["snapshot", "--limit", "1", "--json"], deadline)
     validate(first_page, snapshot_schema)
-    require(first_page["has_more"], "controlled snapshot did not publish next")
-    page = first_page
-    continued = first_page
-    for _ in range(4):
-        continued = follow_next(
-            cli, root, page, snapshot_schema, command="snapshot", deadline=deadline
-        )
-        if set(app_ids) <= listed_ids(continued):
-            break
-        require(continued["has_more"], "snapshot next omitted a controlled identity")
-        page = continued
-    require(
-        set(app_ids) <= listed_ids(continued),
-        "snapshot next did not reach both controlled identities within four pages",
-    )
+    require(first_page["apps"]["has_more"], "controlled snapshot was not cut by --limit")
+    top = first_page["apps"]["items"][0]["id"]
+    drilled = follow_next(cli, root, first_page, app_schema, command="app", deadline=deadline)
+    require(drilled["id"] == top, "snapshot next did not open the top app")
+    full = cli_json(cli, root, ["snapshot", "--limit", "1000", "--json"], deadline)
+    validate(full, snapshot_schema)
+    require(set(app_ids) <= listed_ids(full), "full snapshot omitted a controlled identity")
     for app_id in app_ids:
         first_detail = cli_json(cli, root, ["app", app_id, "--limit", "1", "--json"], deadline)
         validate(first_detail, app_schema)
-        require(first_detail["has_more_processes"], "controlled detail did not publish next")
-        require(first_detail["app"]["id"] == app_id, "detail page resolved wrong app")
-        continued_detail = follow_next(
-            cli, root, first_detail, app_schema, command="app", deadline=deadline
-        )
-        require(
-            continued_detail["app"]["id"] == app_id
-            and not continued_detail["has_more_processes"]
-            and not continued_detail["has_more_commands"],
-            "app next did not resolve complete intended app",
-        )
+        require(first_detail["processes"]["has_more"], "controlled detail was not cut by --limit")
+        require(first_detail["id"] == app_id, "detail page resolved wrong app")
+        complete = detail(cli, root, app_id, app_schema, deadline)
+        require(complete["id"] == app_id, "full detail resolved wrong app")
 
 
 def controlled_groups(
@@ -436,12 +425,12 @@ def controlled_groups(
     deadline: float,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     parent_pid, child_pid, other_pid, other_child_pid = controlled
-    candidates = [app for app in snap["apps"] if app["name"].startswith("Twin")]
+    candidates = [app for app in snap["apps"]["items"] if app["name"].startswith("Twin")]
     require(len(candidates) >= 2, "two independent Twin bundles were not listed")
     found: dict[int, dict[str, Any]] = {}
     for candidate in candidates:
         document = detail(cli, root, candidate["id"], app_schema, deadline)
-        pids = {item["pid"] for item in document["processes"]}
+        pids = {item["pid"] for item in document["processes"]["items"]}
         for pid in controlled:
             if pid in pids:
                 found[pid] = document
@@ -451,23 +440,24 @@ def controlled_groups(
     )
     first, second = found[parent_pid], found[other_pid]
     require(
-        found[child_pid]["app"]["id"] == first["app"]["id"],
+        found[child_pid]["id"] == first["id"],
         "bundleless descendant did not inherit parent app",
     )
     require(
-        found[other_child_pid]["app"]["id"] == second["app"]["id"],
+        found[other_child_pid]["id"] == second["id"],
         "second bundleless descendant did not inherit parent app",
     )
-    require(first["app"]["id"] != second["app"]["id"], "same-name bundles merged")
+    require(first["id"] != second["id"], "same-name bundles merged")
     require(
-        first["app"]["name"] != second["app"]["name"], "same-name bundles were not disambiguated"
+        {first["name"], second["name"]} == {"Twin (probe.twin.a)", "Twin (probe.twin.b)"},
+        "same-name bundles were not told apart by bundle id",
     )
     return first, second
 
 
 def check_detail(document: dict[str, Any], controlled: set[int]) -> None:
-    app = document["app"]
-    processes = document["processes"]
+    app = document
+    processes = document["processes"]["items"]
     coverage = app["coverage"]
     require(controlled <= {proc["pid"] for proc in processes}, "controlled PID absent")
     require(
@@ -503,7 +493,7 @@ def check_detail(document: dict[str, Any], controlled: set[int]) -> None:
             proc["start_abstime"] is not None and proc["unavailable"] is None,
             "own process identity/availability missing",
         )
-    commands = document["commands"]
+    commands = document["commands"]["items"]
     require(
         all(item["footprint_bytes"] is not None for item in commands),
         "controlled command footprint missing",
@@ -603,13 +593,13 @@ def tui(cli: Path, root: Path, deadline: float) -> int:
 
 
 def identities(document: dict[str, Any]) -> dict[int, int]:
-    return {int(proc["pid"]): int(proc["start_abstime"]) for proc in document["processes"]}
+    return {int(proc["pid"]): int(proc["start_abstime"]) for proc in document["processes"]["items"]}
 
 
 def footprint(document: dict[str, Any], pid: int, start: int) -> int:
     rows = [
         proc
-        for proc in document["processes"]
+        for proc in document["processes"]["items"]
         if proc["pid"] == pid and proc["start_abstime"] == start
     ]
     require(len(rows) == 1, "known PID/start member was lost")
@@ -628,7 +618,7 @@ def measure(
     child_pid: int,
     deadline: float,
 ) -> dict[str, int]:
-    app_id = baseline["app"]["id"]
+    app_id = baseline["id"]
     original = identities(baseline)
     require(set(original) == {leader.pid, child_pid}, "controlled bundle membership changed")
     before = footprint(baseline, child_pid, original[child_pid])
@@ -675,8 +665,8 @@ def collect(
     )
     check_detail(first_base, {first_process.pid, first_child})
     check_detail(second_base, {second_process.pid, second_child})
-    first_id = str(first_base["app"]["id"])
-    second_id = str(second_base["app"]["id"])
+    first_id = str(first_base["id"])
+    second_id = str(second_base["id"])
     owned = [*identities(first_base).items(), *identities(second_base).items()]
     require(len(owned) == 4, "controlled PID/start inventory incomplete")
     progress.start("pagination")
@@ -782,7 +772,7 @@ def integration(python_version: str, progress: Progress, deadline: float) -> dic
                 facts["helper_exit_statuses"] = [first.returncode, second.returncode]
                 after = snapshot(cli, root, snapshot_schema, deadline)
                 require(
-                    not any(app["id"] in controlled_ids for app in after["apps"]),
+                    not any(app["id"] in controlled_ids for app in after["apps"]["items"]),
                     "controlled apps persisted after process exit",
                 )
                 require_gone(cli, root, owned, deadline)

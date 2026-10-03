@@ -22,13 +22,13 @@ import sys
 from collections.abc import Callable, Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import Any, NoReturn, Protocol, cast
+from typing import Any, NoReturn, Protocol
 
 from appmem import __version__, darwin_report, darwin_schema, report, schema
 from appmem.backend import Backend, select_backend
 from appmem.collect import CgroupUnavailableError
-from appmem.darwin_backend import DarwinBackend, DarwinUnavailableError
-from appmem.render import render_app_text, render_snapshot_text
+from appmem.darwin_backend import DarwinBackend, DarwinReadError, DarwinUnavailableError
+from appmem.render import escape_control_chars, render_app_text, render_snapshot_text
 from appmem.theme import (
     APPMEM_THEME_ENV,
     TEXTUAL_THEME_ENV,
@@ -49,6 +49,7 @@ ERROR_KINDS: tuple[str, ...] = (
     "not_found",
     "interrupted",
     "platform_unavailable",
+    "read_failed",
 )
 """Every `kind` an error object can carry. The single source for both the
 runtime check below and `tests/test_docs.py`, so a kind renamed here without
@@ -332,12 +333,16 @@ def _build_parser(*, darwin: bool = False) -> argparse.ArgumentParser:
         metavar="SECONDS",
         help=schema.ROOT_INTERVAL.description,
     )
-    parser.add_argument(
-        *_option_strings(schema.ROOT_SYSTEM),
-        action="store_true",
-        default=schema.ROOT_SYSTEM.default,
-        help=schema.ROOT_SYSTEM.description,
-    )
+    if darwin:
+        # System services are Linux cgroup units; the flag must not appear in usage text.
+        parser.set_defaults(system=False)
+    else:
+        parser.add_argument(
+            *_option_strings(schema.ROOT_SYSTEM),
+            action="store_true",
+            default=schema.ROOT_SYSTEM.default,
+            help=schema.ROOT_SYSTEM.description,
+        )
     parser.add_argument(
         *_option_strings(schema.ROOT_THEME),
         # Not `choices=`: that would list `ansi-dark`/`ansi-light` (still
@@ -368,14 +373,15 @@ def _add_snapshot_parser(subparsers: _SubparserFactory, *, darwin: bool = False)
         action=_make_help_action(_DARWIN_SNAPSHOT_HELP_TEXT if darwin else _SNAPSHOT_HELP_TEXT),
         help="show this help and exit",
     )
-    parser.add_argument(
-        *_option_strings(schema.SNAPSHOT_SYSTEM),
-        action="store_true",
-        # SUPPRESS: a bare "appmem --system snapshot" must keep the root's value,
-        # not have this parser's own default silently overwrite it.
-        default=argparse.SUPPRESS,
-        help=schema.SNAPSHOT_SYSTEM.description,
-    )
+    if not darwin:
+        parser.add_argument(
+            *_option_strings(schema.SNAPSHOT_SYSTEM),
+            action="store_true",
+            # SUPPRESS: a bare "appmem --system snapshot" must keep the root's value,
+            # not have this parser's own default silently overwrite it.
+            default=argparse.SUPPRESS,
+            help=schema.SNAPSHOT_SYSTEM.description,
+        )
     parser.add_argument(
         *_option_strings(schema.SNAPSHOT_LIMIT),
         type=_positive_int,
@@ -397,7 +403,7 @@ def _add_app_parser(subparsers: _SubparserFactory, *, darwin: bool = False) -> N
     parser.add_argument("name", metavar="NAME", help=schema.APP_NAME.description)
     parser.add_argument(
         *_option_strings(schema.APP_SCOPE),
-        choices=schema.APP_SCOPE.enum,
+        choices=darwin_schema.USER_SCOPE if darwin else schema.APP_SCOPE.enum,
         default=schema.APP_SCOPE.default,
         help=schema.APP_SCOPE.description,
     )
@@ -581,9 +587,7 @@ def _run_snapshot(
     except CgroupUnavailableError as exc:
         _fail("cgroup_unavailable", str(exc), 1, action="user")
 
-    next_argv = document.get("next")
-    if json_flag and next_argv:
-        next_argv.append("--json")
+    _append_json_to_next(document, json_flag)
 
     if json_flag or not stdout_isatty():
         _write_result(json.dumps(document))
@@ -680,10 +684,80 @@ def _reject_live_view_flags(args: argparse.Namespace) -> None:
         )
 
 
-def _preserve_darwin_json_next(document: dict[str, object], json_flag: bool) -> None:
+def _append_json_to_next(document: dict[str, Any], json_flag: bool) -> None:
+    """A `next` call that was reached with --json must keep it."""
     next_argv = document.get("next")
-    if json_flag and isinstance(next_argv, list):
-        cast("list[str]", next_argv).append("--json")
+    if json_flag and next_argv:
+        next_argv.append("--json")
+
+
+def _darwin_snapshot(
+    args: argparse.Namespace, backend: DarwinBackend, stdout_isatty: Callable[[], bool]
+) -> int:
+    document, _ = darwin_report.snapshot_document(
+        backend, limit=args.limit, now=datetime.now().astimezone()
+    )
+    _append_json_to_next(document, bool(args.json))
+    if args.json or not stdout_isatty():
+        _write_result(json.dumps(document))
+    else:
+        _write_result(darwin_report.render_snapshot_text(document))
+    return 0
+
+
+def _darwin_app(
+    args: argparse.Namespace, backend: DarwinBackend, stdout_isatty: Callable[[], bool]
+) -> int:
+    try:
+        document, _, _ = darwin_report.app_document(
+            backend, args.name, limit=args.limit, now=datetime.now().astimezone()
+        )
+    except darwin_report.AppNotFoundError as exc:
+        next_argv = ["appmem", "snapshot"]
+        if args.json:
+            next_argv.append("--json")
+        hint = "Names and ids are as listed by appmem snapshot"
+        if exc.candidates:
+            near = ", ".join(escape_control_chars(name) for name in exc.candidates)
+            hint += f"; close matches: {near}"
+        _fail(
+            "not_found",
+            f"no app named {args.name!r}",
+            1,
+            action="agent",
+            hint=hint,
+            next_argv=next_argv,
+        )
+    if args.json or not stdout_isatty():
+        _write_result(json.dumps(document))
+    else:
+        _write_result(darwin_report.render_app_text(document))
+    return 0
+
+
+def _darwin_live(
+    args: argparse.Namespace,
+    backend: DarwinBackend,
+    stdin_isatty: Callable[[], bool],
+    stdout_isatty: Callable[[], bool],
+) -> int:
+    _require_live_terminal(args, stdin_isatty, stdout_isatty)
+    backend.check()
+    interval = args.interval if args.interval is not None else 1.0
+    theme = resolve_theme(
+        cli_theme=args.theme,
+        env_theme=os.environ.get(APPMEM_THEME_ENV) or None,
+        config_path=config_path(),
+        textual_theme=os.environ.get(TEXTUAL_THEME_ENV) or None,
+    )
+    app = AppMemApp(
+        interval=interval,
+        main_screen_factory=lambda: DarwinMainScreen(backend, interval),
+        theme=theme.effective,
+        config_theme=theme.config_theme,
+        theme_warnings=theme.warnings,
+    )
+    return _run_app(app)
 
 
 def _run_darwin(
@@ -692,67 +766,13 @@ def _run_darwin(
     stdin_isatty: Callable[[], bool],
     stdout_isatty: Callable[[], bool],
 ) -> int:
-    if args.system or (args.command == "app" and args.scope == "system"):
-        _fail(
-            "invalid_input",
-            "system scope is unavailable on macOS",
-            2,
-            action="agent",
-            hint="Use the user-scoped snapshot or app command without --system",
-        )
     try:
         backend = DarwinBackend(uid)
         if args.command == "snapshot":
-            document, _ = darwin_report.snapshot_document(
-                backend, limit=args.limit, now=datetime.now().astimezone()
-            )
-            _preserve_darwin_json_next(document, args.json)
-            output = (
-                json.dumps(document)
-                if args.json or not stdout_isatty()
-                else darwin_report.render_snapshot_text(document)
-            )
-            _write_result(output)
-            return 0
+            return _darwin_snapshot(args, backend, stdout_isatty)
         if args.command == "app":
-            found = darwin_report.app_document(
-                backend, args.name, limit=args.limit, now=datetime.now().astimezone()
-            )
-            if found is None:
-                _fail(
-                    "not_found",
-                    f"no app named {args.name!r}",
-                    1,
-                    action="agent",
-                    hint="Use an id or name from appmem snapshot",
-                )
-            document, _, _ = found
-            _preserve_darwin_json_next(document, args.json)
-            output = (
-                json.dumps(document)
-                if args.json or not stdout_isatty()
-                else darwin_report.render_app_text(document)
-            )
-            _write_result(output)
-            return 0
-        _require_live_terminal(args, stdin_isatty, stdout_isatty)
-        backend.check()
-        theme = resolve_theme(
-            cli_theme=args.theme,
-            env_theme=os.environ.get(APPMEM_THEME_ENV) or None,
-            config_path=config_path(),
-            textual_theme=os.environ.get(TEXTUAL_THEME_ENV) or None,
-        )
-        app = AppMemApp(
-            interval=args.interval if args.interval is not None else 1.0,
-            main_screen_factory=lambda: DarwinMainScreen(
-                backend, args.interval if args.interval is not None else 1.0
-            ),
-            theme=theme.effective,
-            config_theme=theme.config_theme,
-            theme_warnings=theme.warnings,
-        )
-        return _run_app(app)
+            return _darwin_app(args, backend, stdout_isatty)
+        return _darwin_live(args, backend, stdin_isatty, stdout_isatty)
     except KeyboardInterrupt:
         if args.command not in ("snapshot", "app"):
             raise
@@ -761,6 +781,14 @@ def _run_darwin(
             f"interrupted while reading the {args.command}",
             130,
             action="user",
+        )
+    except DarwinReadError as exc:
+        _fail(
+            "read_failed",
+            str(exc),
+            1,
+            action="agent",
+            hint="A native memory read failed on this supported Mac; run the command again",
         )
     except DarwinUnavailableError as exc:
         _fail(
