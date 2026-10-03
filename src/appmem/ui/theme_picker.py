@@ -149,7 +149,7 @@ class ThemePanel(ModalScreen[None]):
         self.app.persist_theme(  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType]
             event.option_id
         )
-        self.dismiss()
+        self._close()
 
     def on_click(self, event: events.Click) -> None:
         # Bubbles here from every descendant (`OptionList` included) since
@@ -161,8 +161,16 @@ class ThemePanel(ModalScreen[None]):
             self.action_cancel()
 
     def action_cancel(self) -> None:
+        if self not in self.app.screen_stack:  # pyright: ignore[reportUnknownMemberType]
+            return  # a second event queued behind the one that already closed the panel
         self.app.theme = self._original_theme  # pyright: ignore[reportUnknownMemberType]
-        self.dismiss()
+        self._close()
+
+    def _close(self) -> None:
+        # A double click queues two events for this screen before the first
+        # one's dismissal runs; the second must not pop the screen below.
+        if self in self.app.screen_stack:  # pyright: ignore[reportUnknownMemberType]
+            self.dismiss()
 
     def action_quit_app(self) -> None:
         # `persist_theme` is only ever called from `on_option_list_option_

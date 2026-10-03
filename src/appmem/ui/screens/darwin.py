@@ -327,6 +327,10 @@ class DarwinMainScreen(LiveScreen):
             table.move_cursor(row=target, scroll=scroll)
 
     def _apply_rows(self, rows: list[DarwinRow], *, scroll: bool) -> None:
+        # A screen covered by another one gets no `Resize`, yet its width
+        # moves with the terminal: cells for the new column set would be
+        # diffed against a table still built for the old one.
+        self._sync_columns()
         table = self._table()
         selected, index = self._selected(table)
         new_rows = {row.key: row for row in rows}
@@ -349,7 +353,14 @@ class DarwinMainScreen(LiveScreen):
         if changed_count:
             self.call_after_refresh(self._sync_columns)
 
+    def _drop_hidden_sort(self) -> None:
+        if (self._sort_key == "delta" and self.size.width < 65) or (
+            self._sort_key == "resident" and self.size.width < 100
+        ):
+            self._sort_key, self._reverse = "footprint", True
+
     def _sync_columns(self, *, force: bool = False, preserve_scroll: bool = True) -> None:
+        self._drop_hidden_sort()
         table = self._table()
         widths = tuple(width for _, _, width in self._specs(table))
         if widths == self._column_widths and not force:
@@ -370,10 +381,6 @@ class DarwinMainScreen(LiveScreen):
             table.scroll_to(y=previous_scroll_y, animate=False)
 
     def on_resize(self, event: events.Resize) -> None:
-        if (self._sort_key == "delta" and self.size.width < 65) or (
-            self._sort_key == "resident" and self.size.width < 100
-        ):
-            self._sort_key, self._reverse = "footprint", True
         self._render_header()
         self._sync_columns(force=True, preserve_scroll=False)
         table = self._table()
