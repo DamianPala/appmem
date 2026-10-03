@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import ctypes
 import json
 import os
 import platform
@@ -17,14 +18,36 @@ import time
 from pathlib import Path
 
 from appmem.darwin_native import (
+    BSDShortInfo,
     DarwinNative,
     ReadResult,
+    RUsageV4,
+    SwapUsage,
     Unavailable,
-    validate_sdk_abi,
+    VMStatistics64,
 )
 
 MIB = 1024 * 1024
 SOURCE = Path(__file__).with_name("darwin_probe_helper.c")
+
+
+def validate_sdk_abi(actual: dict[str, int]) -> None:
+    """Check the stable prefix for known 152/160-byte and SDK 27 416-byte revisions."""
+    vm_prefix_size = VMStatistics64.total_uncompressed_pages_in_compressor.offset + 8
+    expected = {
+        "bsdshort_size": ctypes.sizeof(BSDShortInfo),
+        "rusage_size": ctypes.sizeof(RUsageV4),
+        "footprint_offset": RUsageV4.phys_footprint.offset,
+        "vm_logical_offset": VMStatistics64.total_uncompressed_pages_in_compressor.offset,
+        "swap_size": ctypes.sizeof(SwapUsage),
+        "vm_swapins_offset": VMStatistics64.swapins.offset,
+        "vm_swapouts_offset": VMStatistics64.swapouts.offset,
+    }
+    if {key: actual.get(key) for key in expected} != expected:
+        raise RuntimeError(f"SDK/ctypes required ABI mismatch: {actual} != {expected}")
+    # SDK 27 appends revisions 3-5 while preserving the consumed revisions 1-2 prefix.
+    if actual.get("vm_sdk_size") not in (vm_prefix_size, ctypes.sizeof(VMStatistics64), 416):
+        raise RuntimeError(f"unsupported SDK vm_statistics64 size: {actual.get('vm_sdk_size')}")
 
 
 def require(condition: bool, message: str) -> None:
