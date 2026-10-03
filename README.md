@@ -52,7 +52,7 @@ Kernel 5.10 or newer; the zswap figures need 5.19 and the Pressure line needs pr
 ## Using it
 
 The main view lists your apps, biggest first.
-Press the first letter of a column or click a header to sort by something else.
+Click a column header to sort by it, or press one of the sort keys shown in the footer.
 The Pressure line in the header tells you whether memory is a problem right now: a full swap with Pressure at `none` (`normal` on a Mac) only means idle pages were moved out of the way; anything above that means programs are waiting for memory.
 
 `Enter` on an app shows its processes.
