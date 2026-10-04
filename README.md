@@ -97,6 +97,7 @@ A `…` at the end of a header row means the terminal is too narrow for the rest
 MEMORY is the number Activity Monitor shows in its Memory column, added up per app.
 COMPRESSED (from 80 columns, `c` sorts by it) is the part of MEMORY that macOS holds compressed, in RAM or swapped out.
 It is already inside MEMORY, so don't add the two; a large share means the app's pages were squeezed to make room for something else.
+The column does not add up to the Compress line at the top: that line counts every user's memory still in RAM, the column counts only your apps and includes what went on to swap.
 ΔMEM is how much it grew or shrank since you started appmem.
 RESIDENT (from 100 columns) is what the app has in RAM at this moment, including files it shares with other apps; it overlaps with MEMORY, so don't add the two.
 A `*` after a number means some of the app's processes could not be read, `?` means none could.

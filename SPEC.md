@@ -233,7 +233,7 @@ With `g` (group by command):
 A scrolling screen with the definitions below in plain words, soft-wrapped to the width, with `esc/?/q close` in its title line, ending with the platform's key list, one line per key.
 
 - Linux: what RAM, CACHE, SWAP, TOTAL, pressure and the header's shared/free/cache/avail mean (tmpfs files count toward the app that wrote them), swap in/out and written totals, why rows don't add up to the header, why a closed app can still have a row, and how to act on what you see, plus `h` for the host panel, the trailing hidden-data marker (`…`, ASCII `>`), and `T` with where the theme is saved. When zswap is enabled, it also defines the physical Zswap gauge and logical ZSWAP, and lists `z` and `w`. It also explains the bar glyphs (`█` used, `░` what's left).
-- macOS: swap in/out, MEMORY, COMPRESSED (part of MEMORY, not on top of it; a large share means the app's pages were squeezed to make room), RESIDENT, ΔMEM, `*`/`?`, RAM, file-backed, Compress, Swap, Pressure, grouping, the host panel and the hidden-data marker.
+- macOS: swap in/out, MEMORY, COMPRESSED (part of MEMORY, not on top of it; a large share means the app's pages were squeezed to make room; it does not add up to the Compress line, which counts every user's memory still in RAM while the column counts this user's apps and includes what went on to swap), RESIDENT, ΔMEM, `*`/`?`, RAM, file-backed, Compress, Swap, Pressure, grouping, the host panel and the hidden-data marker.
 
 ## Keys
 

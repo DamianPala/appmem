@@ -932,7 +932,9 @@ class DarwinHelpScreen(Screen[None]):
                 "COMPRESSED",
                 "The part of MEMORY that macOS holds compressed, in RAM or swapped out; it is "
                 "included in MEMORY, not added on top. A large share means the app's pages "
-                "were squeezed to make room for something else.",
+                "were squeezed to make room for something else. The column will not add up to "
+                "the Compress line: that line counts every user's memory still in RAM, the "
+                "column counts only your apps and includes what went on to swap.",
             ),
             (
                 "RESIDENT",
