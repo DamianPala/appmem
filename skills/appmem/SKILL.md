@@ -8,7 +8,7 @@ description: Diagnose per-application memory with the appmem CLI on Linux (RAM a
 appmem reports memory per application, with a drill-down to processes and commands.
 Use its non-interactive commands; the live TUI (bare `appmem`) is for the human.
 
-- Get it: `uv tool install appmem`.
+- Get it: `uv tool install appmem`; ask first unless the user already asked you to install it.
 - Always pass `--json`; some agent shells look like a terminal and would get text.
 - `appmem schema` and `appmem schema COMMAND` are the catalog: every command, flag, output field with its meaning, and exit code. Read a field's `description` there before interpreting it.
 - The schema index has `platform`: `linux` or `darwin` (macOS 15+ on Apple Silicon). Linux and macOS documents share the envelope (`apps.items`, `has_more`, `next`, `processes.items`, `commands.items`) and differ in the memory fields, so read the schema of the platform you are on. In `snapshot` and `app` output only macOS carries a `platform` key.
@@ -24,23 +24,20 @@ Use its non-interactive commands; the live TUI (bare `appmem`) is for the human.
    Read `commands.items` first (processes summed by command name), then `processes.items` for PIDs; when `has_more` is true, rerun with `--limit` at least the app's `procs`.
    Terminals: everything started from a terminal counts as the terminal app. A terminal holding many GiB is usually not the terminal itself; name what `commands.items` shows inside it (agent sessions, node processes, builds), not the terminal.
 4. Growth needs two samples: run `snapshot` again a few minutes later and compare the same apps (macOS: only when both have complete `coverage`). Swap traffic is the difference of `swap_in_bytes` and `swap_out_bytes` between the two samples (either may be null); one snapshot gives none.
-5. Answer with numbers: which app, how much memory, which processes or commands inside it, whether memory stalls are happening now, and one concrete action.
+5. Answer with numbers, say whether memory is short right now, and give one concrete action.
 
 ## Linux: judging the numbers
 
-- `pressure.level` is the last 10 s. `none` with a lot of swap used means idle pages were paged out earlier; memory is probably not why the machine feels slow now (look at CPU, I/O, GPU). `some` or `high` means tasks are waiting for memory now; appmem shows how much, not which app causes it.
-- Act when `ram_available_bytes` drops under ~10 % of `ram_total_bytes` together with `some` or `high`. `pressure` is `null` when the kernel has no pressure data: judge by `ram_available_bytes` alone and say you can't tell whether stalls are happening.
-- Never sum process `ram_bytes` to size an app: RSS counts a shared page once per process. Use the app's own `ram_bytes`.
+- `pressure.level` `none` with a lot of swap used means idle pages were paged out earlier; memory is probably not why the machine feels slow now (look at CPU, I/O, GPU). `some` or `high` means tasks are waiting for memory now; appmem shows how much, not which app causes it.
+- Act when `ram_available_bytes` drops under ~10 % of `ram_total_bytes` together with `some` or `high`.
 - A process with large `swap_bytes`, small `ram_bytes` and an `age_seconds` of days is an idle sleeper that was paged out: harmless under `none`, the first thing to free under `high`.
 - Swap always belongs to a live process or cgroup and is freed when the owner exits. Long uptime is not a reason to reboot; closing or restarting the holder frees the same memory.
-- Compare within appmem, not against htop: per-process values here leave out file-backed pages.
-- `kernel_bytes` and `unattributed_*` explain why processes don't add up to the app; neither is a leak by itself.
+- `kernel_bytes` and `unattributed_*` are accounting remainders, not leaks.
 
 ## Linux: what to recommend
 
-- The smallest action that frees the most: close or restart one app or one command inside it ("N `node` processes inside the terminal hold X GiB; close the ones you are done with"). Give the numbers and let the user choose.
 - Never kill or stop anything without the user's explicit ok. appmem itself never does.
-- Ready commands: `systemctl --user stop 'UNIT'` for a unit from `units` of a `scope: "user"` app; `sudo systemctl stop 'UNIT'` for `scope: "system"`; `kill PID` for one process. Stopping a terminal's main unit closes every window in it, so prefer `kill PID` for the specific command or ask the user to close that tab.
+- Ready commands: `systemctl --user stop 'UNIT'` for a unit from `units` of a `scope: "user"` app; `sudo systemctl stop 'UNIT'` for `scope: "system"`. Stopping a terminal's main unit closes every window in it, so prefer `kill PID` for the specific command or ask the user to close that tab.
 - Don't recommend `swapoff` or `vm.swappiness` changes from one snapshot: `swapoff` needs free RAM for everything paged out, and under `none` swap is doing its job.
 - `high` with most swap in one app: free that app. `high` with swap spread thin and `ram_available_bytes` near zero: the machine needs fewer things running or more RAM.
 - With zswap on, `zswap_writeback_bytes` growing between two snapshots means the compressed pool is overflowing to the swap devices, which is slow: that is worth naming.
