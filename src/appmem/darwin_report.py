@@ -53,6 +53,7 @@ def _process_item(process: DarwinProcess) -> dict[str, object]:
         "footprint_bytes": process.footprint_bytes,
         "resident_bytes": process.resident_bytes,
         "unavailable": process.unavailable,
+        "via": process.via,
     }
 
 
@@ -175,7 +176,7 @@ def _text_table(headers: tuple[str, ...], rows: list[tuple[str, ...]]) -> list[s
     def line(row: tuple[str, ...]) -> str:
         return "  ".join(
             value + " " * (width - cell_len(value))
-            if headers[i] in ("APP", "COMMAND")
+            if headers[i] in ("APP", "COMMAND", "VIA")
             else " " * (width - cell_len(value)) + value
             for i, (value, width) in enumerate(zip(row, widths, strict=True))
         ).rstrip()
@@ -254,10 +255,11 @@ def render_app_text(document: dict[str, Any]) -> str:
             escape_control_chars(p["name"]),
             _text_amount(p["footprint_bytes"]),
             _text_amount(p["resident_bytes"]),
+            p["via"],
         )
         for p in document["processes"]["items"]
     ]
-    lines.extend(_text_table(("PID", "COMMAND", "MEMORY", "RESIDENT"), process_rows))
+    lines.extend(_text_table(("PID", "COMMAND", "MEMORY", "RESIDENT", "VIA"), process_rows))
     command_rows = [
         (
             escape_control_chars(c["name"]),

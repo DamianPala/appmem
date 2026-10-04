@@ -1,4 +1,4 @@
-# appmem: spec v0.21
+# appmem: spec v0.22
 
 A live terminal view of memory usage **per application**, not per process, on Linux and on Apple Silicon macOS.
 Think `btm` or `htop`, but rows are apps (Ghostty, Brave, LibreOffice), each summing all of its processes.
@@ -25,7 +25,7 @@ Which app holds the memory and swap? Is memory actually the problem right now? W
 | Not available | cgroup v1, running as root | Intel Macs, macOS before 15, other users' processes, system scope, per-app swap, compression or GPU memory |
 
 - **Linux:** the kernel already sums each unit's memory, so appmem finds the units, names them and adds same-named units together.
-- **macOS:** nothing is counted per app, so each sample lists the user's processes, reads each one natively and groups them by `.app` bundle or ancestry. Per-app swap, cache and compression don't exist there.
+- **macOS:** nothing is counted per app, so each sample lists the user's processes, reads each one natively and groups them by `.app` bundle, ancestry or the app macOS holds responsible for them. Per-app swap, cache and compression don't exist there.
 
 Any other operating system fails with `platform_unavailable`.
 
@@ -206,7 +206,7 @@ Google Chrome  memory 3.8 GiB
      101  Google Chrome Helper (Renderer)        130 MiB       182 MiB  readable
      102  Google Chrome Helper (Renderer)        130 MiB       182 MiB  readable
  ...
-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+via bundle  /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
  f n p r sort  g group  esc back  T theme  ? help  q quit
 ```
 
@@ -221,7 +221,7 @@ With `g` (group by command):
 ```
 
 - Title: the app name and its MEMORY, or `Application vanished`.
-- Flat: PID, COMMAND, MEMORY, RESIDENT (from 100 columns), STATE (`readable`/`unreadable`, from 75 columns). The status line shows the selected process's executable path, or why its memory is unavailable.
+- Flat: PID, COMMAND, MEMORY, RESIDENT (from 100 columns), STATE (`readable`/`unreadable`, from 75 columns). The status line shows `via <rule>` (see "Grouping"), then the selected process's executable path, or why its memory is unavailable.
 - Grouped: COMMAND, MEMORY, RESIDENT (from 100 columns), PROCS, UNREADABLE (from 75 columns), with readable/unreadable counts for both metrics in the status line. Enter drills into a command's processes, live; Esc returns to the groups on the same command.
 - All layouts refresh with the same interval as the main view.
 - Sorted by MEMORY descending, unknown last; a hidden sort column falls back to that.
@@ -441,11 +441,13 @@ Each sample is one immutable process inventory; the process view reuses its memb
 
 1. **Bundle:** a process whose executable lies inside an `.app` belongs to the outermost `.app` on its path, so an app's helpers, frameworks and XPC services count as the app even when launchd started them. A `.framework` before any `.app` on the path means no bundle: that `.app` is a tool the framework ships (the Python framework's `Python.app`).
 2. **Ancestry:** a process outside any bundle joins its nearest ancestor with a bundle (at most 64 levels), so a shell and everything run in Ghostty count as Ghostty.
-3. **Roots:** otherwise the walk stops below launchd or at a parent owned by another user, and the topmost process is the root. Bundleless roots with one name are one app, as Linux merges units; a bundle and a bundleless root with one name stay apart.
-4. **Names:** the bundle's directory name without `.app`, or the root's executable basename. Same-named bundles at different paths add their bundle id when readable, `Name (bundle.id)`; it stays with its bundle when the twin quits. Each app's `id` is the first 12 hex digits of a SHA-256 of its bundle path or root name.
-5. **Partial grouping:** a vanished or unreadable parent, a parent started after its child (PID reuse), a cycle, the depth limit, or an unreadable path or start time.
+3. **Responsible:** only when the walk of rule 2 ended below launchd (parent pid 1) without reaching a bundle, appmem asks macOS which process it holds responsible for the topmost process, with the private `responsibility_get_pid_responsible_for_pid` (the process the system attributes the helper's privacy and resource use to; WebKit's WebContent, GPU and Networking services and other per-client XPC services report the app that asked for them). The answer is trusted only when it is another process of the same sample that started no later than the helper (a pid is reused by a later process) and that resolves through rules 1 and 2 to a bundle; the helper then joins that app. Every other answer is ignored. A bundleless answer, a self-responsible helper such as `com.apple.Safari.History`, a failed call and an absent symbol all leave the helper to rule 4, exactly as without this rule. Rules 1 and 2 come first because responsibility follows the launch chain: a process started from a terminal is responsible to the terminal, and a helper an app disclaims is responsible to itself, so neither says which app the process belongs to. A terminal-launched app's own XPC helpers therefore land in the terminal's row, a known limit. The call is private (it has no header and Apple may change it), so it is looked up on first use and its absence is not an error; it needs no root.
+4. **Roots:** otherwise the walk stops below launchd or at a parent owned by another user, and the topmost process is the root. Bundleless roots with one name are one app, as Linux merges units; a bundle and a bundleless root with one name stay apart.
+5. **Names:** the bundle's directory name without `.app`, or the root's executable basename. Same-named bundles at different paths add their bundle id when readable, `Name (bundle.id)`; it stays with its bundle when the twin quits. Each app's `id` is the first 12 hex digits of a SHA-256 of its bundle path or root name.
+6. **Partial grouping:** a vanished or unreadable parent, a parent started after its child (PID reuse), a cycle, the depth limit, or an unreadable path or start time. A launchd service rule 3 could not place is not partial: it is a row of its own.
+7. **Reason:** each process records the rule that placed it, `via`: `bundle` (rule 1), `ancestry` (rule 2), `responsible` (rule 3) or `root` (rule 4). It is shown in the process view's status line and in the `app` document and text report.
 
-Services launchd starts outside any app bundle are rows of their own: WebKit's `com.apple.WebKit.WebContent` lives in `WebKit.framework`, so a Safari row does not include the pages it shows.
+WebKit's `com.apple.WebKit.WebContent`, `.GPU` and `.Networking` live in `WebKit.framework`, so rule 1 cannot place them; rule 3 puts them in the app that uses them, so a Safari row includes the pages it shows. Services launchd starts that no app is responsible for (shared agents such as `com.apple.Safari.History`, which is responsible to itself) are rows of their own.
 
 `app NAME` matches an `id`, a full name, a plain name only one app has, or `Name (bundle.id)` after the twin has gone; a miss hints up to five names containing it.
 
@@ -513,7 +515,7 @@ The command line conforms to the house CLI Design Standard 0.1.0 (claimed in `ap
 - **app NAME**: one app with `processes` and `commands`, each paged by `--limit` (default 100). No match, or every unit gone before it is read: `not_found`, exit 1, with `next` pointing at `appmem snapshot`. Linux resolves (scope, name) exactly like the process view and adds `units` as `{name, label}` objects (raw name, and the systemd-unescaped label), `private_bytes` per process, `kernel_bytes`, `zswap_pool_bytes` and `unattributed_*`. macOS resolves names and ids as in "Grouping".
 - **schema**: the index (platform, commands, global flags, format defaults, exit codes, conformance) or one command's detail (flags, args, output schema). Always JSON, for the running platform only; the index's `platform` is `linux` or `darwin`. Every output field carries a short `description`. This deliberately departs from the 0.1.0 claim, whose O4 allows only the five validation keywords; the 0.2 draft's O4a admits `description` as an annotation, which validators ignore. `conformance.extensions` stays empty: no 0.1.0 extension covers it.
 - Output: text on a terminal, JSON otherwise; `--json` forces JSON. Sizes are integer bytes (`_bytes`), percentages `_percent`, ages integer `age_seconds`, `taken_at` is RFC 3339 with the local offset. Text reports contain no escape sequences, and names with control characters are shown escaped.
-- macOS text reports show four host lines (RAM, Compress, Swap, Pressure) without gauges, rates or Δ, aligned app or process and command tables, and a footnote when `*` or `unknown` appears.
+- macOS text reports show four host lines (RAM, Compress, Swap, Pressure) without gauges, rates or Δ, aligned app or process (with its `VIA` column) and command tables, and a footnote when `*` or `unknown` appears.
 - A closed stdout pipe (`| head`) ends quietly with exit `0`.
 - `--help` is a standalone cheat sheet: purpose, commands, flags, keys, how to read pressure, one example. Unknown flags and invalid values fail with exit `2` and the accepted form.
 - Colour is never the only signal: sort direction uses `▴`/`▾`, deltas use `+`/`-` and `·`, pressure is a word. `NO_COLOR` is honoured.
@@ -542,7 +544,7 @@ macOS (`platform: "darwin"` in every document):
 - `system` has the native counters (`free_bytes` keeps its native meaning) and the partition fields `used_excluding_file_backed_bytes` and `free_excluding_speculative_bytes`, null when the partition is unknown.
 - `pressure` is `level` (null when unknown), `source` and `unavailable` (the reason).
 - App items have `id`, `name`, nullable `footprint_bytes` and `resident_bytes`, `procs` and `coverage` (readable/unreadable counts per metric, `partial`, `resident_partial`, `grouping_partial`); `next` uses the `id`.
-- Processes have `pid`, `start_abstime`, `name`, nullable footprint and resident, and `unavailable`; commands have both sums with their own counts.
+- Processes have `pid`, `start_abstime`, `name`, nullable footprint and resident, `unavailable` and `via` (`bundle`, `ancestry`, `responsible` or `root`: the rule that placed the process in the app, see "Grouping"); commands have both sums with their own counts.
 
 ### Exit codes
 
@@ -594,7 +596,7 @@ The live view's cost is mostly the table repaint, so it grows with the number of
 
 No test reads the live system or the real config: Linux tests use fixture trees under an injected root, macOS tests a fake native reader.
 
-- Grouping: the Linux acceptance table, plus escapes, unknown shapes and empty names; macOS bundles, the `.framework` rule, ancestry, merged roots, twins, PID reuse and partial grouping.
+- Grouping: the Linux acceptance table, plus escapes, unknown shapes and empty names; macOS bundles, the `.framework` rule, ancestry, the responsible-process rule (accepted, self-responsible, outside the sample, started later, symbol missing, terminal-launched child), merged roots, twins, PID reuse and partial grouping.
 - Unit walk: fixture tree with nested sub-cgroups (Konsole tabs, `system-cups.slice/cups.service`) and ignored `*.socket`/`*.mount` directories.
 - Collectors: fixture trees for `memory.stat`, `memory.swap.current`, `/proc/PID/*` (including names with spaces and parentheses), missing files, a process vanishing mid-read; macOS native decoding and failure classification.
 - Process view math: the `kernel`, `zswap pool` and `unattributed` rows, clamping at 0, grouping by command.

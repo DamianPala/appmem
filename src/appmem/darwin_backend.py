@@ -11,8 +11,8 @@ import platform
 import re
 import sys
 from collections import Counter
-from dataclasses import dataclass, field
-from typing import Protocol
+from dataclasses import dataclass, field, replace
+from typing import Literal, Protocol, get_args
 
 from appmem.darwin_native import (
     DarwinNative,
@@ -40,7 +40,13 @@ class NativeReader(Protocol):
     def process(self, pid: int) -> ReadResult[ProcessIdentity]: ...
     def path(self, pid: int) -> ReadResult[str]: ...
     def memory(self, pid: int) -> ReadResult[ProcessMemory]: ...
+    def responsible(self, pid: int) -> ReadResult[int]: ...
     def bundle_id(self, bundle: str) -> ReadResult[str]: ...
+
+
+# The rule that placed a process in its app, in the order the rules are tried.
+Via = Literal["bundle", "ancestry", "responsible", "root"]
+VIA_RULES: tuple[Via, ...] = get_args(Via)
 
 
 @dataclass(frozen=True)
@@ -53,6 +59,7 @@ class DarwinProcess:
     unavailable: str | None
     path: str | None
     resident_bytes: int | None = None
+    via: Via = "root"
 
 
 @dataclass(frozen=True)
@@ -234,6 +241,27 @@ class DarwinBackend:
             pid = parent
         return chain, True
 
+    def _responsible_bundle(
+        self,
+        top: int,
+        identities: dict[int, ProcessIdentity],
+        processes: dict[int, DarwinProcess],
+        direct_bundles: dict[int, str],
+    ) -> str | None:
+        """The app bundle macOS holds responsible for a launchd-parented helper, if any.
+
+        The answer is a plain pid, so it is only trusted when it is another process of
+        this sample that started no later than the helper (a reused pid starts later).
+        """
+        owner = self._native.responsible(top).value
+        if owner is None or owner == top or owner not in processes:
+            return None
+        started, owner_started = processes[top].start_abstime, processes[owner].start_abstime
+        if started is None or owner_started is None or owner_started > started:
+            return None
+        chain, _ = self._ancestry(processes[owner], identities, processes)
+        return next((direct_bundles[item] for item in chain if item in direct_bundles), None)
+
     def _group_processes(
         self, identities: dict[int, ProcessIdentity], processes: dict[int, DarwinProcess]
     ) -> dict[str, _Group]:
@@ -244,18 +272,28 @@ class DarwinBackend:
         }
 
         groups: dict[str, _Group] = {}
+        owners: dict[int, str | None] = {}
         for process in processes.values():
             chain, missing = self._ancestry(process, identities, processes)
             bundle = next((direct_bundles[item] for item in chain if item in direct_bundles), None)
+            via: Via = "bundle" if process.pid in direct_bundles else "ancestry"
+            top = chain[-1]
+            if bundle is None and processes[top].ppid == 1:
+                # Only a process launchd itself parents has no ancestry to follow: XPC services.
+                if top not in owners:
+                    owners[top] = self._responsible_bundle(
+                        top, identities, processes, direct_bundles
+                    )
+                bundle, via = owners[top], "responsible"
             if bundle is not None:
                 key = f"bundle:{bundle}"
                 name = bundle.rsplit("/", 1)[-1].removesuffix(".app") or "unknown"
             else:
                 # Same-named roots with no bundle are one app, as Linux merges units by name.
-                name = processes[chain[-1]].command
+                name, via = processes[top].command, "root"
                 key = f"session:{name}"
             group = groups.setdefault(key, _Group(key, name, bundle))
-            group.members.append(process)
+            group.members.append(replace(process, via=via))
             if missing or process.path is None or process.start_abstime is None:
                 group.uncertain = True
         return groups

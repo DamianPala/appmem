@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from typing import cast
 
 from appmem import __version__, schema
+from appmem.darwin_backend import VIA_RULES
 
 
 def _field(type_name: str | list[str], description: str) -> dict[str, object]:
@@ -87,6 +88,7 @@ _PROCESS = {
         "footprint_bytes",
         "resident_bytes",
         "unavailable",
+        "via",
     ],
     "properties": {
         "resident_bytes": _field(
@@ -94,6 +96,16 @@ _PROCESS = {
             "Resident bytes of readable members; shared/file-backed pages may double count; "
             "not additive with footprint and their difference is not swap",
         ),
+        "via": {
+            "type": "string",
+            "enum": list(VIA_RULES),
+            "description": (
+                "The rule that placed the process in this app: bundle (its executable is "
+                "inside the app's .app), ancestry (a parent is), responsible (launchd started "
+                "it and macOS holds the app responsible for it) or root (no app: grouped by "
+                "its topmost process's name)"
+            ),
+        },
         "pid": _field("integer", "Process ID"),
         "start_abstime": _field(["integer", "null"], "Native process start identity, if readable"),
         "name": _field("string", "Executable file name from its path, never arguments"),

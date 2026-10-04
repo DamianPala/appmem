@@ -104,7 +104,7 @@ RAM used reads higher than in Activity Monitor, because it includes memory the s
 Pressure is macOS's own verdict: `normal`, `warning` or `critical`.
 
 The rows are your own apps.
-Helper services that macOS starts on an app's behalf, such as Safari's web content processes, can show up as rows of their own.
+Helper services that macOS starts on an app's behalf, such as Safari's web content processes, count in that app's row; services shared by several apps stay rows of their own.
 
 ## For agents
 

@@ -591,7 +591,8 @@ class DarwinProcessesScreen(LiveScreen):
                 p.footprint_bytes,
                 1,
                 int(p.footprint_bytes is None),
-                p.unavailable or escape_control_chars(p.path or "path unavailable"),
+                f"via {p.via}  "
+                + (p.unavailable or escape_control_chars(p.path or "path unavailable")),
                 p.resident_bytes,
                 int(p.resident_bytes is None),
             )
@@ -961,9 +962,10 @@ class DarwinHelpScreen(Screen[None]):
         grouping = (
             "h on the main dashboard opens live, scrollable host memory details. "
             "A trailing … (ASCII >) means data hidden for space, not an unavailable reading. "
-            "Bundles follow the outermost .app path; bundleless processes follow "
-            "the nearest app ancestor or a session root. Shared launchd XPC/WebKit "
-            "services can remain separate, so related footprints may be omitted. "
+            "A process joins the app whose .app holds its executable, else the app of its "
+            "nearest parent; a helper launchd started (WebKit and other XPC services) joins "
+            "the app macOS holds responsible for it, and the rest group by name. "
+            "The process view's status line shows which rule placed the selected process. "
             "App sums do not equal host RAM. Only the current user's apps are shown; "
             "macOS 15+ on Apple Silicon is required."
         )

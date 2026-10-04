@@ -41,6 +41,9 @@ class Reader:
         self.memory_calls: dict[int, int] = {}
         self.process_calls: dict[int, int] = {}
         self.bundle_ids: dict[str, str] = {}
+        self.responsibles: dict[int, int] = {}
+        self.responsible_calls: list[int] = []
+        self.responsible_missing = False
         self.reuse_pid: int | None = None
         self.reuse_start_pid: int | None = None
         self.fresh_command_pid: int | None = None
@@ -109,6 +112,11 @@ class Reader:
                 value.footprint_bytes, value.resident_bytes, value.start_abstime + 1
             )
         return ReadResult(value, None if value is not None else Unavailable.DENIED)
+
+    def responsible(self, pid: int) -> ReadResult[int]:
+        self.responsible_calls.append(pid)
+        value = None if self.responsible_missing else self.responsibles.get(pid)
+        return ReadResult(value, None if value is not None else Unavailable.UNSUPPORTED)
 
     def bundle_id(self, bundle: str) -> ReadResult[str]:
         value = self.bundle_ids.get(bundle)
@@ -690,7 +698,7 @@ async def test_darwin_detail_renders_untrusted_markup_as_literal_text() -> None:
         table.move_cursor(row=1)
         await pilot.pause()
         status = cast("Content", screen.query_one("#status", Static).visual)
-        assert status.plain == "/tmp/[red]worker"
+        assert status.plain == "via ancestry  /tmp/[red]worker"
         assert status.spans == []
 
 

@@ -48,7 +48,7 @@ Use its non-interactive commands; the live TUI (bare `appmem`) is for the human.
 ## macOS: what to claim
 
 - Footprint is not resident RAM or a promise of reclaimable memory. Never derive host memory used by subtracting app footprints, and do not claim per-app swap, cache or compression: macOS gives none.
-- Helper services started by launchd can be their own rows, so an app row may omit helpers; closing the app does not necessarily free them.
+- Helper services launchd starts for an app (WebKit and other XPC services) join that app's row; `via` on each process in `app` says which rule placed it. Shared launchd agents stay their own rows, so an app row can still omit helpers, and closing the app does not necessarily free them.
 - `pressure.level` is a kernel state (`normal`, `warning`, `critical`), not a stall percentage.
 - `--system` and `--scope system` do not exist; never suggest `systemctl`. Suggest closing an identified app only when the evidence supports it.
 

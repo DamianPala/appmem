@@ -9,6 +9,7 @@ import os
 import plistlib
 import stat
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TypeVar, cast
@@ -251,6 +252,9 @@ def decode_vm(vm: VMStatistics64, count: int, page_size: int) -> dict[str, int |
 class DarwinNative:
     """ctypes wrappers with explicit missing-data results and no eager library load."""
 
+    _responsible_function: Callable[[int], int] | None = None
+    _responsible_resolved = False
+
     def __init__(self) -> None:
         if sys.platform != "darwin":
             raise RuntimeError("Darwin native reader requires macOS")
@@ -394,6 +398,37 @@ class DarwinNative:
         if length >= c.sizeof(buf) or b"\0" not in buf.raw[: length + 1]:
             return ReadResult(None, Unavailable.ERROR)
         return ReadResult(buf.value.decode(errors="replace"))
+
+    def _responsibility(self) -> Callable[[int], int] | None:
+        """The private libquarantine call, bound on first use and never required.
+
+        It has no header and Apple may drop it, so a missing symbol means "no answer",
+        not an error. It is not bound in `_bind`, which only holds the public calls.
+        """
+        if not self._responsible_resolved:
+            try:
+                function = self._lib.responsibility_get_pid_responsible_for_pid
+                function.argtypes = [c.c_int]
+                function.restype = c.c_int
+            except AttributeError:
+                self._responsible_function = None
+            else:
+                self._responsible_function = function
+            self._responsible_resolved = True
+        return self._responsible_function
+
+    def responsible(self, pid: int) -> ReadResult[int]:
+        """The pid macOS holds responsible for `pid` (its TCC attribution), if it says."""
+        function = self._responsibility()
+        if function is None:
+            return ReadResult(None, Unavailable.UNSUPPORTED)
+        try:
+            value = function(pid)
+        except (OSError, c.ArgumentError):
+            return ReadResult(None, Unavailable.ERROR)
+        if value <= 0:
+            return ReadResult(None, Unavailable.ERROR)
+        return ReadResult(value)
 
     def bundle_id(self, bundle: str) -> ReadResult[str]:
         """CFBundleIdentifier from `<bundle>/Contents/Info.plist`; nothing else is read."""

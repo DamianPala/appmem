@@ -446,6 +446,9 @@ class _MacReader:
         footprint = self._footprints[pid]
         return ReadResult(ProcessMemory(footprint, footprint * 3 // 4, pid * 10))
 
+    def responsible(self, pid: int) -> ReadResult[int]:
+        return ReadResult(None, Unavailable.UNSUPPORTED)
+
     def bundle_id(self, bundle: str) -> ReadResult[str]:
         return ReadResult(None, Unavailable.UNSUPPORTED)
 

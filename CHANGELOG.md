@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- macOS: each process of an app shows which rule put it there (`via`: `bundle`, `ancestry`, `responsible` or `root`), in the process view's status line, in the `app` JSON and schema, and as a `VIA` column in the `app` text report
+
+### Changed
+
+- macOS: helpers that launchd starts for an app now count in that app. Safari's row includes its WebContent, GPU and Networking services, and any app's per-client XPC services follow it, instead of each showing as a separate row. appmem asks macOS which process is responsible for the helper and uses the answer only when that process is in the same sample, started no later than the helper, and belongs to an app; otherwise nothing changes. A GUI app started from a terminal keeps its helpers in the terminal's row
+
 ## [0.2.0] - 2026-09-26
 
 ### Added
