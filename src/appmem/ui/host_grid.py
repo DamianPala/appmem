@@ -36,14 +36,33 @@ TOTAL_FIELD = 8  # `99.9 GiB`, `1023 MiB`; 100 GiB and more drop the decimal
 
 
 @dataclass(frozen=True)
+class ValueFields:
+    """The cells of the `used/total UNIT word` value beside a gauge. Every row
+    uses the same widths, so the slash, the unit and the word start at one cell
+    on every row: `used` is right-aligned, `total`, `unit` and `word` are
+    left-aligned and padded."""
+
+    number: int = 0  # widest total number (used never needs more)
+    unit: int = 0
+    word: int = 0
+
+    @property
+    def width(self) -> int:
+        if not self.number:
+            return 0
+        return self.number + 1 + self.number + 1 + self.unit + 1 + self.word
+
+
+@dataclass(frozen=True)
 class Slots:
     """Widths that follow from this machine's totals; constant for a run."""
 
     label1: int  # longest label in column 1
     label2: int  # longest label in column 2
-    value: int  # left value: `total/total unit word`
+    value: int  # left value: the `fields` width, or a special form if that is wider
     amount: int  # widest size() of anything bounded by the machine's totals
     pressure_left: int  # the pressure row's short word and its amount, from 80 columns
+    fields: ValueFields = ValueFields()
 
 
 @dataclass(frozen=True)
@@ -117,6 +136,62 @@ def pair_width(total: int, word: str) -> int:
     unit = unit_of(total)
     number = size_in_unit(total, unit)
     return len(value_text(total, total, word, unit, number))
+
+
+def value_fields(pairs: Sequence[tuple[int, str]]) -> tuple[ValueFields, int]:
+    """The field widths for the `(total, word)` pairs of the gauge rows, and the
+    width of the value they make. Aligned cells can be wider than the old
+    right-aligned strings (a 4-digit total on one row and a shorter word on
+    that row, the words differing in length); the left part must not grow, so
+    such a machine keeps the old composition: empty fields, the old width."""
+    numbers, units, words, legacy = [0], [0], [0], 0
+    for total, word in pairs:
+        unit = unit_of(total)
+        numbers.append(len(size_in_unit(total, unit)))
+        units.append(len(unit))
+        words.append(len(word))
+        legacy = max(legacy, pair_width(total, word))
+    fields = ValueFields(max(numbers), max(units), max(words))
+    return (fields, fields.width) if fields.width <= legacy else (ValueFields(), legacy)
+
+
+def field_value(used: str, total: int, word: str, fields: ValueFields) -> str:
+    """`used/total UNIT word` in the fixed cells of `fields`; `used` is the
+    figure in the pair's own unit, or a placeholder for an unknown one. Empty
+    fields give the old form, right-aligned as one string by the caller."""
+    unit = unit_of(total)
+    total_number = size_in_unit(total, unit)
+    if not fields.number:
+        return f"{used:>{len(total_number)}}/{total_number} {unit} {word}"
+    text = (
+        f"{used:>{fields.number}}/{total_number:<{fields.number}} "
+        f"{unit:<{fields.unit}} {word:<{fields.word}}"
+    )
+    # A zswap pool over its limit can carry one digit more than its total: it
+    # takes the word's padding, as the old composition did, so the separator holds.
+    return text if len(text) <= fields.width else text.rstrip().rjust(fields.width)
+
+
+def unit_field(amount_text: str, word: str, fields: ValueFields) -> str:
+    """A value with one number (`1.7 GiB` + `RAM`) in the same cells: the number
+    at the total's cell, the unit in the unit column, the word in the word column."""
+    number, _, unit = amount_text.rpartition(" ")
+    if not number or not fields.number:
+        return f"{amount_text} {word}"
+    if len(number) <= fields.number:
+        lead = " " * (fields.number + 1) + number.ljust(fields.number)
+    else:  # wider than the total's cell: end at the unit column instead
+        lead = number.rjust(2 * fields.number + 1)
+    return f"{lead} {unit:<{fields.unit}} {word:<{fields.word}}"
+
+
+def field_text(value: str, style: str = "") -> Text:
+    """A field as text. The style covers the figures only, not the padding."""
+    body = value.strip()
+    lead = len(value) - len(value.lstrip())
+    pieces: list[str | tuple[str, str]] = [" " * lead, (body, style) if style else body]
+    pieces.append(" " * (len(value) - lead - len(body)))
+    return Text.assemble(*pieces)
 
 
 @dataclass(frozen=True)

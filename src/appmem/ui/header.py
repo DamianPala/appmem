@@ -26,17 +26,19 @@ from appmem.ui.host_grid import (
     amount,
     choose,
     compact_total,
+    field_text,
+    field_value,
     field_width,
     gauge_left,
     grid_row,
     pair,
-    pair_width,
     parts,
     rate,
     spaces,
     span,
     state_left,
     unknown,
+    value_fields,
     value_text,
 )
 
@@ -189,32 +191,44 @@ def _zswap_limit(stats: SystemStats) -> int | None:
 
 def _slots(stats: SystemStats) -> Slots:
     """Slot widths from this machine's totals: RAM, swap and the zswap pool limit."""
-    values = [pair_width(stats.mem_total, "used")]
-    values.append(pair_width(stats.swap_total, "used") if stats.swap_total else len("off"))
+    pairs = [(stats.mem_total, "used")]
+    if stats.swap_total:
+        pairs.append((stats.swap_total, "used"))
     limit = _zswap_limit(stats)
     if stats.zswap_enabled and limit:
-        values.append(pair_width(limit, "RAM"))
+        pairs.append((limit, "RAM"))
+    fields, value = value_fields(pairs)
     amount_width = field_width(stats.mem_total + stats.swap_total)
     return Slots(
-        *_LABELS, max(values), amount_width, _PRESSURE_SHORT + 1 + _system_need(amount_width)
+        *_LABELS,
+        max(value, 0 if stats.swap_total else len("off")),
+        amount_width,
+        _PRESSURE_SHORT + 1 + _system_need(amount_width),
+        fields,
     )
 
 
-def _pair_value(used: int, total: int, suffix: str) -> tuple[str, str]:
+def _pair_value(used: int, total: int, suffix: str) -> str:
+    """The compact `used/total UNIT suffix` of the two-row form's narrowest layout."""
     unit = unit_of(total)
-    number = size_in_unit(total, unit)
-    return value_text(used, total, suffix, unit, number), unit
+    return value_text(used, total, suffix, unit, size_in_unit(total, unit))
+
+
+def _field(lay: Layout, used: int, total: int, word: str) -> str:
+    """The pair in the gauge rows' fixed cells."""
+    used_number = size_in_unit(used, unit_of(total))
+    return field_value(used_number, total, word, lay.slots.fields)
 
 
 def _ram_row(ctx: _Ctx, *, lead: list[Item] | None = None, shared_first: bool = False) -> Text:
     """The RAM row. `lead` items (the short form's pressure word) come first."""
     stats, lay = ctx.stats, ctx.lay
     used = stats.mem_total - stats.mem_available
-    value, unit = _pair_value(used, stats.mem_total, "used")
+    unit = unit_of(stats.mem_total)
     left = gauge_left(
         lay,
         bar_text(used, stats.mem_total, lay.gauge, ctx.colors, ascii_bars=ctx.ascii_bars),
-        Text(value),
+        field_text(_field(lay, used, stats.mem_total, "used")),
     )
     avail = pair("avail", amount(stats.mem_available, ascii_bars=False), 1, lay)
     shared = pair("shared", amount(stats.mem_shared, ascii_bars=False), 2, lay)
@@ -249,7 +263,7 @@ def _zswap_row(ctx: _Ctx, writeback_rate: int | None) -> Text:
     elif limit is None:
         value = f"{size(pool)}/{unknown(ascii_bars)} RAM"
     else:
-        value = _pair_value(pool, limit, "RAM")[0]
+        value = _field(lay, pool, limit, "RAM")
     shown = unknown(ascii_bars) if percent is None else f"{percent}%"
     limit_text = Text(f"{'above' if over else 'limit'} {shown}" + (" of RAM" if lay.wide else ""))
     if over:
@@ -259,7 +273,7 @@ def _zswap_row(ctx: _Ctx, writeback_rate: int | None) -> Text:
     ratio = stats.zswap_compression_ratio
     return grid_row(
         "Zswap",
-        gauge_left(lay, bar, Text(value, style=ctx.colors.error if over else "")),
+        gauge_left(lay, bar, field_text(value, ctx.colors.error if over else "")),
         lay,
         [
             pair("holds", amount(logical, ascii_bars=ascii_bars), 1, lay),
@@ -290,9 +304,9 @@ def _swap_left(ctx: _Ctx) -> Text:
     stats, lay = ctx.stats, ctx.lay
     used = stats.swap_total - stats.swap_free
     if stats.swap_total:
-        value = Text(
-            _pair_value(used, stats.swap_total, "used")[0],
-            style=_swap_style(used, stats.swap_total, ctx.colors) or "",
+        value = field_text(
+            _field(lay, used, stats.swap_total, "used"),
+            _swap_style(used, stats.swap_total, ctx.colors) or "",
         )
         bar = bar_text(used, stats.swap_total, lay.gauge, ctx.colors, ascii_bars=ctx.ascii_bars)
     else:
@@ -420,9 +434,9 @@ def _zswapped_item(ctx: _Ctx) -> Item | None:
 def _compact_rows(ctx: _Ctx) -> list[Text]:
     """Below 70 columns: the two pairs on one row, then the pressure row."""
     stats, lay = ctx.stats, ctx.lay
-    ram = _pair_value(stats.mem_total - stats.mem_available, stats.mem_total, "")[0].rstrip()
+    ram = _pair_value(stats.mem_total - stats.mem_available, stats.mem_total, "").rstrip()
     swap = (
-        _pair_value(stats.swap_total - stats.swap_free, stats.swap_total, "")[0].rstrip()
+        _pair_value(stats.swap_total - stats.swap_free, stats.swap_total, "").rstrip()
         if stats.swap_total
         else "off"
     )

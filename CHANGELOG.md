@@ -21,6 +21,7 @@
 
 ### Changed
 
+- The used/total values beside the header gauges line up: the slash, the unit and the word (`used`, `RAM`) start at the same cell on every row, so `1.0/6.2  GiB RAM` sits under `22.1/30.9 GiB used`. On macOS the swap row now reads `0.6/1.0 GiB used` (it said `used/alloc`); the `?` help and the `h` panel say that the second number is the swap macOS has allocated right now, which grows and shrinks. The macOS header is 4 to 6 columns narrower, so the wide words appear from 136 columns instead of 142
 - macOS: helpers that launchd starts for an app now count in that app. Safari's row includes its WebContent, GPU and Networking services, and any app's per-client XPC services follow it, instead of each showing as a separate row. appmem asks macOS which process is responsible for the helper and uses the answer only when that process is in the same sample, started no later than the helper, and belongs to an app; otherwise nothing changes. A GUI app started from a terminal keeps its helpers in the terminal's row
 
 ## [0.2.0] - 2026-09-26

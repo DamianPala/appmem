@@ -14,17 +14,19 @@ from appmem.ui.host_grid import (
     State,
     amount,
     choose,
+    field_text,
+    field_value,
     field_width,
     gauge_left,
     grid_row,
     pair,
-    pair_width,
     parts,
     spaces,
     span,
     state_left,
+    unit_field,
     unknown,
-    value_text,
+    value_fields,
 )
 
 _PRESSURE_WORD = len("unavailable")
@@ -47,12 +49,20 @@ def _slots(host: HostMemory) -> Slots:
     """Slot widths from the host's physical memory and swap allocation."""
     physical = _known(host.physical_bytes) or 0
     swap = _known(host.swap_total_bytes)
-    values = [pair_width(physical, "used"), len(_USED_UNAVAILABLE)]
+    pairs = [(physical, "used")] if physical else []
     if swap:
-        values.append(pair_width(swap, "used/alloc"))
-    elif swap == 0:
-        values.append(len(_NOT_ALLOCATED))
-    return Slots(*_LABELS, max(values), field_width(physical), _PRESSURE_WORD + 1 + len(_SCOPE))
+        pairs.append((swap, "used"))
+    fields, value = value_fields(pairs)
+    widths = [value, len(_USED_UNAVAILABLE)]
+    if swap == 0:
+        widths.append(len(_NOT_ALLOCATED))
+    return Slots(
+        *_LABELS,
+        max(widths),
+        field_width(physical),
+        _PRESSURE_WORD + 1 + len(_SCOPE),
+        fields,
+    )
 
 
 def _pressure_state(host: HostMemory, colors: ThemeColors) -> State:
@@ -73,12 +83,12 @@ def _ram_row(host: HostMemory, lay: Layout, colors: ThemeColors, *, ascii_bars: 
     if not physical:
         value = _USED_UNAVAILABLE
     else:
-        unit = unit_of(physical)
-        number = size_in_unit(physical, unit)
+        fields = lay.slots.fields
         if used is None:
-            value = f"{unknown(ascii_bars):>{len(number)}}/{number} {unit} used"
+            value = field_value(unknown(ascii_bars), physical, "used", fields)
         else:
-            value = value_text(used, physical, "used", unit, number)
+            used_number = size_in_unit(used, unit_of(physical))
+            value = field_value(used_number, physical, "used", fields)
             bar = bar_text(used, physical, lay.gauge, colors, ascii_bars=ascii_bars)
     field = lay.slots.amount
     backed_text = Text("file-backed " + amount(backed, ascii_bars=ascii_bars).rjust(field))
@@ -86,7 +96,7 @@ def _ram_row(host: HostMemory, lay: Layout, colors: ThemeColors, *, ascii_bars: 
     purgeable_text = Text("purgeable " + purgeable.rjust(field))
     return grid_row(
         "RAM",
-        gauge_left(lay, bar, Text(value)),
+        gauge_left(lay, bar, field_text(value)),
         lay,
         [
             pair("wired", amount(_known(host.wired_bytes), ascii_bars=ascii_bars), 1, lay),
@@ -106,7 +116,9 @@ def _ram_row(host: HostMemory, lay: Layout, colors: ThemeColors, *, ascii_bars: 
 def _compression_row(host: HostMemory, lay: Layout, *, ascii_bars: bool) -> Text:
     logical, physical = host.compressor_logical_bytes, host.compressor_physical_bytes
     valid = _nonnegative(logical) and _nonnegative(physical)
-    value = Text(f"{size(physical)} RAM" if valid else "unavailable")
+    value = field_text(
+        unit_field(size(physical), "RAM", lay.slots.fields) if valid else "unavailable"
+    )
     ratio = f"{logical / physical:.1f}:1" if valid and logical > 0 and physical > 0 else None
     return grid_row(
         "Compress",
@@ -134,14 +146,14 @@ def _swap_row(
     if not valid:
         value, bar = "unavailable", None
     elif total:
-        unit = unit_of(total)
-        value = value_text(used, total, "used/alloc", unit, size_in_unit(total, unit))
+        used_number = size_in_unit(used, unit_of(total))
+        value = field_value(used_number, total, "used", lay.slots.fields)
         bar = bar_text(used, total, lay.gauge, colors, ascii_bars=ascii_bars)
     else:
         value, bar = _NOT_ALLOCATED, placeholder_bar(lay.gauge)
     return grid_row(
         "Swap",
-        gauge_left(lay, bar, Text(value)),
+        gauge_left(lay, bar, field_text(value)),
         lay,
         activity_items(
             lay,

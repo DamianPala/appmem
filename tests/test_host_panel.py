@@ -98,6 +98,16 @@ def test_panel_mac_accounting_remains_native() -> None:
     assert "Current rate            0 B/s           unavailable" in text
 
 
+def test_panel_mac_says_the_second_swap_number_is_the_allocation_right_now() -> None:
+    text = " ".join(_text(darwin_details(HOST, (0, 0))).split())
+    assert "the second number is the swap allocated right now, which grows and shrinks" in text
+    assert "not a fixed size" in text
+    none = " ".join(
+        _text(darwin_details(replace(HOST, swap_used_bytes=0, swap_total_bytes=0), (0, 0))).split()
+    )
+    assert "0 B; not allocated" in none
+
+
 def test_panel_mac_says_why_ram_used_reads_higher_than_activity_monitor() -> None:
     text = " ".join(_text(darwin_details(HOST, (0, None))).split())
     assert "RAM used reads higher than Activity Monitor" in text

@@ -143,7 +143,7 @@ def test_duplicate_backward_or_long_gap_is_unknown(elapsed: float) -> None:
 def test_zswap_gauge_physical_and_activity_fit(width: int) -> None:
     ram, zswap, swap, pressure = header(width=width)
     assert all(line.cell_len <= width for line in (ram, zswap, swap, pressure))
-    assert "1.0/6.0 GiB RAM" in zswap.plain
+    assert re.search(r"1\.0/6\.0\s+GiB RAM", zswap.plain)
     assert re.search(r"holds\s+4.0 GiB", zswap.plain)
     assert re.search(r"in\s+0 B/s", swap.plain) and re.search(r"out\s+1 KiB/s", swap.plain)
 

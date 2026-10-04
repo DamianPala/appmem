@@ -248,7 +248,11 @@ def darwin_details(
         ),
         Entry(
             "Swap",
-            (swap, "macOS allocates swap space dynamically; this is not a fixed capacity."),
+            (
+                swap,
+                "macOS allocates swap dynamically: the second number is the swap allocated "
+                "right now, which grows and shrinks, not a fixed size.",
+            ),
         ),
         _activity(rates, (host.swap_in_bytes, host.swap_out_bytes), session),
         Prose(("Activity measures compressed data transferred to and from swap.",)),

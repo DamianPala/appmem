@@ -1,4 +1,4 @@
-# appmem: spec v0.24
+# appmem: spec v0.25
 
 A live terminal view of memory usage **per application**, not per process, on Linux and on Apple Silicon macOS.
 Think `btm` or `htop`, but rows are apps (Ghostty, Brave, LibreOffice), each summing all of its processes.
@@ -57,7 +57,7 @@ Linux:
 
 ```
 RAM      ██████████████▎░░░░░ 22.1/30.9 GiB used │ avail    8.8 GiB    shared    3.5 GiB    free  1.5 · cache  4.6 · slab  3.2
-Zswap    ███▎░░░░░░░░░░░░░░░░    1.0/6.2 GiB RAM │ holds    3.0 GiB    ratio       3.0:1    limit 20% of RAM  · writeback 0 B/s
+Zswap    ███▎░░░░░░░░░░░░░░░░  1.0/6.2  GiB RAM  │ holds    3.0 GiB    ratio       3.0:1    limit 20% of RAM  · writeback 0 B/s
 Swap     ██████████████▋░░░░░ 23.3/32.0 GiB used │ in         0 B/s    out      12 MiB/s    written this run   12 MiB · since boot 41.6 GiB
 Pressure none                system  610 MiB [x] │ Δ since 15:58 (12m)                      elsewhere 109 MiB
  APP                        RAM         SWAP        ZSWAP       TOTAL ▾     ΔRAM       ΔSWAP      PROCS
@@ -71,10 +71,10 @@ Pressure none                system  610 MiB [x] │ Δ since 15:58 (12m)       
 macOS:
 
 ```
-RAM      ██████████████▍░░░░░     11.5/16.0 GiB used │ wired    2.4 GiB    free     926 MiB    file-backed  3.6 GiB · purgeable  310 MiB
-Compress                                 1.3 GiB RAM │ data     4.1 GiB    ratio      3.2:1
-Swap     ████████████░░░░░░░░ 1.2/2.0 GiB used/alloc │ in         0 B/s    out      3 MiB/s    written this run    8 MiB · since boot  5.2 GiB
-Pressure normal                      apps: this user │ Δ since 15:58 (12m)
+RAM      ██████████████▍░░░░░ 11.5/16.0 GiB used │ wired    2.4 GiB    free     926 MiB    file-backed  3.6 GiB · purgeable  310 MiB
+Compress                           1.3  GiB RAM  │ data     4.1 GiB    ratio      3.2:1
+Swap     ████████████░░░░░░░░  1.2/2.0  GiB used │ in         0 B/s    out      3 MiB/s    written this run    8 MiB · since boot  5.2 GiB
+Pressure normal                  apps: this user │ Δ since 15:58 (12m)
  APP                               MEMORY ▾      ΔMEM         RESIDENT      PROCS
  Google Chrome                          3.8 GiB      +12 MiB       5.3 GiB       24
  Ghostty                               2.0 GiB*            ?      2.8 GiB*        5
@@ -94,7 +94,8 @@ Both platforms lay out their host rows on one grid.
 | Rows | Linux: RAM, Zswap (while zswap is enabled, also below 80 columns), Swap, Pressure. macOS: RAM, Compress, Swap, Pressure |
 | Row | `label  left │ right` |
 | Label | 9 cells from 80 columns, 10 below |
-| Left part | a gauge, then the value right-aligned in a slot as wide as `total/total unit word` for this machine's totals (`22.1/30.9 GiB used` has no padding on a 30.9 GiB machine) |
+| Left part | a gauge, then the value right-aligned in a slot as wide as the value's fixed cells for this machine's totals (`22.1/30.9 GiB used` has no padding on a 30.9 GiB machine) |
+| Value cells | `used/total unit word` in cells shared by every gauge row: `used` right-aligned, the slash always in the same cell, `total` left-aligned after it (a shorter total leaves its gap before the unit), the unit in one column, the word left-aligned and padded (`1.0/6.2  GiB RAM ` under `22.1/30.9 GiB used`). The widths come from the machine's totals (the widest total number, the longest unit and word over the rows) and change only when a total does. macOS Compress has one number: it starts at the total's cell, its unit and `RAM` sit in the unit and word columns. Special forms (`off`, `0 B; not allocated`, `unavailable`, `—` for an unknown figure) stay right-aligned in the same slot; the error colour covers the figures, not the padding |
 | Gauge | none below 60 columns, 6 cells from 60, 10 from 80; from 105 the largest of 20, 16 and 12 that leaves every row complete, else 12 |
 | Pressure slot | from 80 columns the left part also fits `unavailable` plus the Linux system amount or the macOS `apps: this user` |
 | Right part | starts with a dim `│` (ASCII `|`); three columns at fixed positions |
@@ -105,7 +106,8 @@ Both platforms lay out their host rows on one grid.
 | Values | zero is shown as zero, unknown as `—` (ASCII `?`) |
 
 - Every position and fit decision comes from the terminal width, the totals and the worst-case widths, never from the current values: nothing appears, disappears or moves when a number changes. If a total changes (swapon, macOS swap growth) the slots recompute.
-- Examples: a 30.9/32.0 GiB Linux machine is complete from 116 columns with short words and from 139 with wide words; an 8 GiB Mac with 1 GiB swap allocated, from 124 and 142.
+- The aligned cells never widen the left part. On macOS both pairs use the word `used`, so they never do. On Linux a machine with a 4-digit zswap limit in MiB beside a 3-digit RAM total and a short swap total (about 4.9 GiB of RAM) would, so it keeps the old composition: one right-aligned string per row, same slot width.
+- Examples: a 30.9/32.0 GiB Linux machine is complete from 116 columns with short words and from 139 with wide words; an 8 GiB Mac with 1 GiB swap allocated, from 118 and 136.
 - **Hidden data:** a normal-foreground `…` (ASCII `>`) right after the last visible field (one space after its own text, not after the padding reserved for its worst case) means host information was omitted for space; a row whose left part alone does not fit is cropped before it. Unavailable readings are distinct from omitted information.
 - Header rows never wrap or grow on a sample, and data changes never choose a new gauge width or row count. The table gets the remaining height.
 
@@ -116,7 +118,7 @@ Both platforms lay out their host rows on one grid.
   - macOS: used is the RAM partition (see Definitions); `wired` and `free`, then `file-backed` and `purgeable`. An unknown partition keeps every field in place with `—` (`—/8.0 GiB used`); with no physical total the value reads `used unavailable`.
 - **Zswap** (Linux): physical pool / approximate `max_pool_percent × RAM` limit in the gauge and value, `holds` (logical data) and `ratio` in columns 1 and 2, then `limit N% of RAM` and the `writeback` rate in column 3. The gauge is filled from the pool's RAM against its limit, never from the logical data. The limit is a policy, not reserved RAM. Unknown and zero limits have neutral placeholder gauges. A pool above its limit turns the value and the limit item to the error colour and the word reads `above N%` instead of `limit N%`; the item keeps its place either way. Swap used includes the held logical data before compression; RAM used includes the physical pool. Do not add either again or infer disk-only swap by subtraction.
 - **Compress** (macOS): the compressor's RAM as the value, no gauge (there is no limit), then `data` (logical bytes) and `ratio` (only when both are above zero).
-- **Swap:** used/total and a neutral gauge. Linux shows `off` with a placeholder gauge when total is zero, and turns the value the theme's error colour above 90% used. macOS divides by the swap allocated now (`used/alloc`); zero allocation reads `0 B; not allocated` with a placeholder gauge, invalid counters `unavailable`.
+- **Swap:** used/total and a neutral gauge. Linux shows `off` with a placeholder gauge when total is zero, and turns the value the theme's error colour above 90% used. macOS divides by the swap allocated now, which grows and shrinks (the word stays `used`; the `?` help and the `h` panel say the second number is the current allocation, not a fixed size); zero allocation reads `0 B; not allocated` with a placeholder gauge, invalid counters `unavailable`.
   - Columns 1 and 2: the `in` and `out` rates. Column 3: `written` with the total this run and since boot (`written run 1.9 GiB · boot 2.4 TiB`, wide `written this run 1.9 GiB · since boot 2.4 TiB`); since boot yields first.
   - Rates are averaged over a 5-second window of lifetime counters. The first frame shows `—` until two samples at least half a refresh interval apart (at most half a second) exist. Missing, invalid or decreasing samples, duplicate timestamps and discontinuities are unknown; measured zero is `0 B/s`. A wall/monotonic clock disagreement over 5 seconds, or a gap longer than max(30 seconds, 3×interval), restarts measurement. `b` does not reset rates.
 - **Pressure:** the word, bold, in the theme's success/warning/error colour, or `unavailable`, in the gauge column. `Δ since HH:MM (12m)` (baseline time and compact age, whole days from 100 h on) spans columns 1 and 2.
@@ -132,7 +134,7 @@ Both platforms lay out their host rows on one grid.
 - It is laid out from structured blocks for the current width, never by re-reading its own text; a tick that changes nothing does not touch the widget.
 - Both: RAM, Swap used, an Activity table (Read / Written by Current rate, Since boot, This run), Pressure, and when the Δ baseline started.
 - Linux adds the RAM breakdown, a Zswap block (RAM occupied, approximate Pool limit with its RAM percentage, Data held, Compression, Compressor, Writeback rate and since-boot total) with its accounting notes, the PSI percentages, the system services total and `elsewhere`. Writes are called disk writes only when every current `/proc/swaps` entry is a recognised swap file or disk partition; zram, mixed, aliased, device-mapper or unreadable entries get generic swap-device wording.
-- macOS adds file-backed, free, wired, purgeable, compressed data versus its RAM, that swap space is allocated dynamically, and one line on why RAM used reads higher than Activity Monitor (it includes memory the system sets aside at boot).
+- macOS adds file-backed, free, wired, purgeable, compressed data versus its RAM, that swap space is allocated dynamically (the second swap number is the allocation right now, which grows and shrinks, not a fixed size), and one line on why RAM used reads higher than Activity Monitor (it includes memory the system sets aside at boot).
 
 #### Table
 

@@ -1234,6 +1234,8 @@ def test_darwin_help_reads_in_screen_order_and_names_the_setuid_limit() -> None:
     positions = [("\n" + body).index(marker) for marker in order]
     assert positions == sorted(positions)
     assert "setuid process you started" in body
+    flat = " ".join(body.split())
+    assert "the swap macOS has allocated right now" in flat and "not a fixed size" in flat
 
 
 def test_darwin_text_reports_use_aligned_units_and_keep_documents() -> None:

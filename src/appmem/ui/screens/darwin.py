@@ -974,8 +974,9 @@ class DarwinHelpScreen(Screen[None]):
             ),
             (
                 "Swap",
-                "Used / currently allocated space, allocated dynamically. Zero total "
-                "means none allocated; per-app swap is unavailable.",
+                "Used / the swap macOS has allocated right now. The second number grows and "
+                "shrinks with demand; it is not a fixed size. Zero total means none "
+                "allocated; per-app swap is unavailable.",
             ),
             ("Pressure", "Native kernel state: normal, warning or critical; not Linux PSI."),
         )

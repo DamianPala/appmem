@@ -265,7 +265,7 @@ def test_swap_activity_retains_allocation_across_used_digit_boundary(width: int)
         for used in (5, 10)
     ]
     for used, line in zip((5, 10), lines, strict=True):
-        assert f"{used:.1f}/16.0 GiB used/alloc" in line
+        assert f"{used:.1f}/16.0 GiB used" in line
         assert re.search(r"in\s+1 KiB/s", line) and re.search(r"out\s+1 KiB/s", line)
     assert all(len(line) <= width for line in lines)
     assert lines[0].index("│") == lines[1].index("│")
@@ -279,7 +279,7 @@ def test_host_rows_keep_native_values_and_one_separator_column(width: int) -> No
     ram, compression, swap, pressure = (line.plain for line in rows)
     assert "5.1/8.0 GiB used" in ram
     assert "1.0 GiB RAM" in compression
-    assert "0.5/1.0 GiB used/alloc" in swap
+    assert "0.5/1.0 GiB used" in swap and "alloc" not in swap
     assert "normal" in pressure
     assert not any(glyph in compression for glyph in ("█", "░", "#"))
     separators = {line.index("│") for line in (ram, compression, swap, pressure) if "│" in line}

@@ -15,9 +15,12 @@ from appmem.darwin_backend import DarwinApp, DarwinBackend
 from appmem.darwin_native import HostMemory
 from appmem.model import SystemStats
 from appmem.ui.app import AppMemApp
+from appmem.ui.darwin_header import _slots as mac_slots  # pyright: ignore[reportPrivateUsage]
 from appmem.ui.darwin_header import render_host_header
 from appmem.ui.header import ThemeColors, render_header
-from appmem.ui.host_grid import Item, Layout, Slots, grid_row, spaces
+from appmem.ui.header import _slots as linux_slots  # pyright: ignore[reportPrivateUsage]
+from appmem.ui.host_grid import Item, Layout, Slots, ValueFields, grid_row, pair_width, spaces
+from appmem.ui.host_grid import _make as make_layout  # pyright: ignore[reportPrivateUsage]
 from appmem.ui.host_panel import HostPanel
 from appmem.ui.screens.darwin import DarwinMainScreen, DarwinProcessesScreen
 from appmem.ui.table import RowTable
@@ -238,7 +241,7 @@ def test_fields_stay_when_the_values_are_zero() -> None:
 
 
 @pytest.mark.parametrize(
-    ("name", "render", "wide_from"), [("linux", linux, 139), ("darwin", mac, 142)]
+    ("name", "render", "wide_from"), [("linux", linux, 139), ("darwin", mac, 136)]
 )
 def test_wide_words_start_where_the_wide_rows_are_complete(
     name: str, render: Render, wide_from: int
@@ -431,7 +434,7 @@ def test_swap_pair_is_error_coloured_only_above_ninety_percent() -> None:
     def colour(free: int) -> str:
         stats = replace(FULL_STATS, swap_total=1000, swap_free=free, zswap_enabled=False)
         swap = linux(stats, 200)[1]
-        match = re.search(r"[\d.]+/[\d.]+ \w+ used", swap.plain)
+        match = re.search(r"[\d.]+/[\d.]+\s+\w+\s+used", swap.plain)
         assert match
         start, end = match.span()
         covering = [str(s.style) for s in swap.spans if s.start <= start and s.end >= end]
@@ -645,3 +648,229 @@ def test_only_the_gauge_and_the_pressure_word_are_coloured(
                 assert set(covered) <= _BAR_GLYPHS, (name, covered)
             if "bold" in style:
                 assert covered in _PRESSURE_WORDS, (name, covered)
+
+
+# --- the value beside a gauge: fixed cells --------------------------------------------
+
+_VALUE = re.compile(r"/\S+\s+(\w+)\s+(used|RAM)")
+_ALIGN_WIDTHS = (80, 105, 130, 160)
+
+
+def value_cells(row: Text) -> tuple[int, int, int, int]:
+    """Columns of the slash, the unit, the word and the separator of a gauge row."""
+    match = _VALUE.search(row.plain)
+    assert match, row.plain
+    return (row.plain.index("/"), match.start(1), match.start(2), row.plain.index("│"))
+
+
+def gauge_rows(lines: list[Text]) -> list[Text]:
+    return [line for line in lines if _VALUE.search(line.plain) and "│" in line.plain]
+
+
+@pytest.mark.parametrize("width", _ALIGN_WIDTHS)
+@pytest.mark.parametrize("height", [30, 16])
+def test_linux_slash_unit_and_word_start_at_one_cell_on_every_gauge_row(
+    width: int, height: int
+) -> None:
+    rows = gauge_rows(linux(TYPICAL, width, height))
+    assert len(rows) == (3 if height >= 18 else 2)
+    assert len({value_cells(row) for row in rows}) == 1, [row.plain for row in rows]
+
+
+@pytest.mark.parametrize("width", _ALIGN_WIDTHS)
+def test_macos_slash_unit_and_word_start_at_one_cell_on_every_gauge_row(width: int) -> None:
+    lines = mac(HOST, width)
+    rows = gauge_rows(lines)
+    assert len(rows) == 2
+    assert len({value_cells(row) for row in rows}) == 1, [row.plain for row in rows]
+    slash, unit, word, separator = value_cells(rows[0])
+    compress = re.search(r"^Compress\s+(\S+) (\w+)\s+RAM\s+│", lines[1].plain)
+    assert compress, lines[1].plain
+    # one number: at the total's cell, its unit and word in the unit and word columns
+    assert (compress.start(1), compress.start(2)) == (slash + 1, unit)
+    assert lines[1].plain.index("RAM", compress.start(2)) == word
+    assert lines[1].plain.index("│") == separator
+
+
+def test_linux_value_cells_match_the_approved_mock() -> None:
+    ram, zswap, swap, _ = linux(TYPICAL, 160)
+    assert re.search(r"[█░] \d{2}\.\d/30\.9 GiB used │", ram.plain)
+    assert re.search(r"[█░]\s+1\.0/6\.2  GiB RAM  │", zswap.plain)
+    assert re.search(r"[█░] \d{2}\.\d/32\.0 GiB used │", swap.plain)
+
+
+def test_macos_value_cells_match_the_approved_mock() -> None:
+    ram, compress, swap, _ = mac(HOST, 160)
+    assert re.search(r"[█░] 5\.1/8\.0 GiB used │", ram.plain)
+    assert re.search(r"Compress\s+1\.0 GiB RAM  │", compress.plain)
+    assert re.search(r"[█░] 0\.5/1\.0 GiB used │", swap.plain)
+
+
+def linux_variants() -> list[SystemStats]:
+    limit = TYPICAL.mem_total * 20 // 100
+    return [
+        TYPICAL,
+        replace(TYPICAL, mem_available=TYPICAL.mem_total),  # RAM used 0
+        replace(TYPICAL, mem_available=0),  # RAM used all of it
+        replace(TYPICAL, swap_free=TYPICAL.swap_total),  # swap used 0
+        replace(TYPICAL, swap_free=0),  # swap used all of it (error colour)
+        replace(TYPICAL, zswap_pool_bytes=0),
+        replace(TYPICAL, zswap_pool_bytes=limit),
+        replace(TYPICAL, zswap_pool_bytes=limit + 1),  # over its limit (error colour)
+        replace(TYPICAL, zswap_pool_bytes=None),  # `unavailable`
+    ]
+
+
+@pytest.mark.parametrize("width", _ALIGN_WIDTHS)
+def test_linux_value_cells_do_not_move_with_the_values(width: int) -> None:
+    reference = [value_cells(row) for row in gauge_rows(linux(TYPICAL, width))]
+    for stats in linux_variants():
+        rows = linux(stats, width)
+        assert len({row.plain.index("│") for row in rows if "│" in row.plain}) == 1
+        for row in gauge_rows(rows):
+            assert value_cells(row) in reference, row.plain
+
+
+@pytest.mark.parametrize("width", _ALIGN_WIDTHS)
+def test_macos_value_cells_do_not_move_with_the_values(width: int) -> None:
+    reference = {value_cells(row) for row in gauge_rows(mac(HOST, width))}
+    variants = [
+        HOST,
+        replace(HOST, free_bytes=4 * GIB),  # RAM used drops
+        replace(HOST, free_bytes=0, file_backed_bytes=0),  # RAM used rises
+        replace(HOST, swap_used_bytes=0),
+        replace(HOST, swap_used_bytes=HOST.swap_total_bytes),
+        replace(HOST, compressor_physical_bytes=1023 * MIB),
+        replace(HOST, compressor_physical_bytes=0, compressor_logical_bytes=0),
+    ]
+    for host in variants:
+        lines = mac(host, width)
+        assert len({line.plain.index("│") for line in lines if "│" in line.plain}) == 1
+        assert {value_cells(row) for row in gauge_rows(lines)} <= reference
+
+
+def test_special_forms_stay_inside_the_field_without_moving_the_separator() -> None:
+    off = linux(replace(TYPICAL, swap_total=0, swap_free=0, zswapped_bytes=0), 160)
+    assert len({row.plain.index("│") for row in off if "│" in row.plain}) == 1
+    assert re.search(r"[░-]\s+off │", off[2].plain)
+    for host in (
+        replace(HOST, swap_used_bytes=0, swap_total_bytes=0),
+        replace(HOST, swap_used_bytes=-1, swap_total_bytes=1),
+        replace(HOST, file_backed_bytes=None),
+    ):
+        lines = mac(host, 160)
+        assert len({line.plain.index("│") for line in lines if "│" in line.plain}) == 1
+    swap_off = mac(replace(HOST, swap_used_bytes=0, swap_total_bytes=0), 160)[2].plain
+    assert re.search(r"0 B; not allocated │", swap_off)
+    assert re.search(r"—/8\.0\s+GiB used", mac(replace(HOST, file_backed_bytes=None), 160)[0].plain)
+
+
+def test_a_pool_over_a_mib_limit_with_one_more_digit_keeps_the_separator() -> None:
+    # 4 GiB of RAM: the 20 % limit is 819 MiB, and a pool left above it can reach 1229 MiB.
+    small = replace(
+        TYPICAL,
+        mem_total=4 * GIB,
+        mem_available=GIB,
+        swap_total=4 * GIB,
+        swap_free=2 * GIB,
+        zswap_enabled=True,
+        zswap_max_pool_percent=20,
+    )
+    for pool in (500 * MIB, 1229 * MIB):
+        rows = linux(replace(small, zswap_pool_bytes=pool), 130)
+        assert len({row.plain.index("│") for row in rows if "│" in row.plain}) == 1
+    assert "1229/819 MiB RAM │" in linux(replace(small, zswap_pool_bytes=1229 * MIB), 130)[1].plain
+
+
+def error_span(row: Text) -> str:
+    """The error-coloured text left of the separator (the value, not the limit word)."""
+    separator = row.plain.index("│")
+    covered = [
+        row.plain[s.start : s.end]
+        for s in row.spans
+        if COLORS.error in str(s.style) and s.end < separator
+    ]
+    assert len(covered) == 1, covered
+    return covered[0]
+
+
+def test_error_colour_covers_the_figures_of_the_value_not_its_padding() -> None:
+    limit = TYPICAL.mem_total * 20 // 100
+    over = linux(replace(TYPICAL, zswap_pool_bytes=limit + 1), 160)[1]
+    assert re.fullmatch(r"\d\.\d/6\.2  GiB RAM", error_span(over))
+    nearly_full = linux(replace(TYPICAL, swap_free=0), 160)[2]
+    assert error_span(nearly_full) == "32.0/32.0 GiB used"
+    # the text next to the error colour carries none of it
+    assert "│" not in error_span(nearly_full)
+
+
+def legacy_value(pairs: list[tuple[int, str]]) -> int:
+    return max(pair_width(total, word) for total, word in pairs)
+
+
+def machines() -> list[tuple[int, int, int | None]]:
+    rams = [int(x * GIB) for x in (2, 4.9, 8, 15.5, 16, 30.9, 32, 64, 127.5, 128)]
+    swaps = [0, GIB // 2, GIB, 2 * GIB, 8 * GIB, int(9.9 * GIB), 10 * GIB, 32 * GIB, 100 * GIB]
+    return [(ram, swap, pct) for ram in rams for swap in swaps for pct in (None, 20, 50)]
+
+
+@pytest.mark.parametrize("gauge", [0, 6, 10, 12, 16, 20])
+def test_the_left_part_never_grows_beyond_the_old_composition(gauge: int) -> None:
+    """Aligned cells that would widen the left part for a machine are not used:
+    that machine keeps the old composition (same width, empty fields)."""
+    for ram, swap, pct in machines():
+        stats = replace(
+            TYPICAL,
+            mem_total=ram,
+            mem_available=ram // 3,
+            swap_total=swap,
+            swap_free=swap // 2,
+            zswap_enabled=pct is not None,
+            zswap_max_pool_percent=pct,
+        )
+        slots = linux_slots(stats)
+        pairs = [(ram, "used")] + ([(swap, "used")] if swap else [])
+        if pct is not None and ram * pct // 100:
+            pairs.append((ram * pct // 100, "RAM"))
+        old = replace(slots, value=max(legacy_value(pairs), 0 if swap else 3), fields=ValueFields())
+        assert slots.value == old.value, (ram, swap, pct)
+        new_left = make_layout(100, slots, gauge, wide=False).left
+        assert new_left == make_layout(100, old, gauge, wide=False).left, (ram, swap, pct)
+    for ram, swap, _ in machines():
+        host = replace(HOST, physical_bytes=ram, swap_total_bytes=swap, swap_used_bytes=swap // 2)
+        slots = mac_slots(host)
+        pairs = [(ram, "used")] + ([(swap, "used")] if swap else [])
+        floor = len("used unavailable") if swap else len("0 B; not allocated")
+        assert slots.value == max(legacy_value(pairs), floor), (ram, swap)
+        if swap:  # both words are `used`: the aligned cells are never wider
+            assert slots.fields != ValueFields(), (ram, swap)
+
+
+@pytest.mark.parametrize("ram", [8, 16, 32, 64])
+@pytest.mark.parametrize("swap", [GIB // 2, GIB, 3 * GIB, 8 * GIB, 12 * GIB, 40 * GIB])
+@pytest.mark.parametrize("width", [80, 105, 130, 160])
+def test_macos_cells_align_on_every_memory_size_with_small_and_large_swap(
+    ram: int, swap: int, width: int
+) -> None:
+    host = replace(HOST, physical_bytes=ram * GIB, swap_total_bytes=swap, swap_used_bytes=swap // 2)
+    lines = mac(host, width)
+    assert mac_slots(host).fields != ValueFields()
+    assert len({line.plain.index("│") for line in lines if "│" in line.plain}) == 1
+    assert len({value_cells(row) for row in gauge_rows(lines)}) == 1, [r.plain for r in lines]
+
+
+def test_the_rare_linux_machine_with_a_wider_zswap_limit_keeps_the_old_composition() -> None:
+    # About 4.9 GiB of RAM with a 20 % pool limit of 1004 MiB: a 4-digit total on the RAM-word row
+    # beside a 3-digit one would make the aligned cells one wider, so no cells are used.
+    stats = replace(
+        TYPICAL,
+        mem_total=int(4.9 * GIB),
+        mem_available=GIB,
+        swap_total=3 * GIB,
+        swap_free=GIB,
+        zswap_enabled=True,
+    )
+    assert linux_slots(stats).fields == ValueFields()
+    rows = linux(stats, 160)
+    assert len({row.plain.index("│") for row in rows if "│" in row.plain}) == 1
+    assert linux_slots(TYPICAL).fields != ValueFields() and mac_slots(HOST).fields != ValueFields()

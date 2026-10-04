@@ -102,7 +102,7 @@ The column does not add up to the Compress line at the top: that line counts eve
 RESIDENT (from 100 columns) is what the app has in RAM at this moment, including files it shares with other apps; it overlaps with MEMORY, so don't add the two.
 A `*` after a number means some of the app's processes could not be read, `?` means none could.
 
-macOS does not say how much of each app sits in swap, so swap appears only in the header, for the whole machine, next to the machine-wide compression: the Compress row shows how much data macOS squeezed and how much RAM it takes now, the Swap row what went to disk, with the same `in`, `out` and `written` as on Linux.
+macOS does not say how much of each app sits in swap, so swap appears only in the header, for the whole machine, next to the machine-wide compression: the Compress row shows how much data macOS squeezed and how much RAM it takes now, the Swap row what went to disk (its second number is the swap macOS has allocated right now, which grows and shrinks, not a fixed size), with the same `in`, `out` and `written` as on Linux.
 RAM used reads higher than in Activity Monitor, because it includes memory the system sets aside at boot.
 Pressure is macOS's own verdict: `normal`, `warning` or `critical`.
 
