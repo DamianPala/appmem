@@ -107,6 +107,56 @@ class RUsageV4(c.Structure):
     ]
 
 
+class TaskVMInfoRev1(c.Structure):
+    """`task_vm_info_data_t` through `phys_footprint`, the revision macOS 12 and later accept
+    with `TASK_VM_INFO_REV1_COUNT` words. Later fields are never read."""
+
+    _fields_ = [
+        ("virtual_size", c.c_uint64),
+        ("region_count", c.c_int32),
+        ("page_size", c.c_int32),
+        *[
+            (name, c.c_uint64)
+            for name in (
+                "resident_size",
+                "resident_size_peak",
+                "device",
+                "device_peak",
+                "internal",
+                "internal_peak",
+                "external",
+                "external_peak",
+                "reusable",
+                "reusable_peak",
+                "purgeable_volatile_pmap",
+                "purgeable_volatile_resident",
+                "purgeable_volatile_virtual",
+                "compressed",
+                "compressed_peak",
+                "compressed_lifetime",
+                "phys_footprint",
+            )
+        ],
+    ]
+
+
+_TASK_VM_INFO = 22
+_KERN_FAILURE = 5
+_KERN_INVALID_ARGUMENT = 4
+_KERN_TERMINATED = 49
+
+
+def classify_kern(code: int) -> ReadResult[int]:
+    """A Mach `kern_return_t`: a name port the user may not take, or a task that is gone."""
+    if code == _KERN_FAILURE:
+        reason = Unavailable.DENIED
+    elif code in (_KERN_INVALID_ARGUMENT, _KERN_TERMINATED):
+        reason = Unavailable.VANISHED
+    else:
+        reason = Unavailable.ERROR
+    return ReadResult(None, reason, code)
+
+
 class VMStatistics64(c.Structure):
     _fields_ = [
         ("free_count", c.c_uint32),
@@ -252,6 +302,7 @@ def decode_vm(vm: VMStatistics64, count: int, page_size: int) -> dict[str, int |
 class DarwinNative:
     """ctypes wrappers with explicit missing-data results and no eager library load."""
 
+    _task_port: int | None = None
     _responsible_function: Callable[[int], int] | None = None
     _responsible_resolved = False
 
@@ -280,6 +331,10 @@ class DarwinNative:
         lib.mach_host_self.restype = c.c_uint32
         lib.mach_port_deallocate.argtypes = [c.c_uint32, c.c_uint32]
         lib.mach_port_deallocate.restype = c.c_int
+        lib.task_name_for_pid.argtypes = [c.c_uint32, c.c_int, c.POINTER(c.c_uint32)]
+        lib.task_name_for_pid.restype = c.c_int
+        lib.task_info.argtypes = [c.c_uint32, c.c_int, c.c_void_p, c.POINTER(c.c_uint32)]
+        lib.task_info.restype = c.c_int
         proc.proc_listpids.argtypes = [c.c_uint32, c.c_uint32, c.c_void_p, c.c_int]
         proc.proc_listpids.restype = c.c_int
         proc.proc_pidinfo.argtypes = [c.c_int, c.c_int, c.c_uint64, c.c_void_p, c.c_int]
@@ -351,7 +406,10 @@ class DarwinNative:
         )
 
     def _task_self_port(self) -> int:
-        return c.c_uint32.in_dll(self._lib, "mach_task_self_").value  # pyright: ignore[reportUnknownArgumentType] - ctypes dynamic DLL
+        """Our own task port, which never changes; looked up once, as it is read per process."""
+        if self._task_port is None:
+            self._task_port = c.c_uint32.in_dll(self._lib, "mach_task_self_").value  # pyright: ignore[reportUnknownArgumentType] - ctypes dynamic DLL
+        return self._task_port
 
     def pids(self) -> ReadResult[list[int]]:
         c.set_errno(0)
@@ -398,6 +456,31 @@ class DarwinNative:
         if length >= c.sizeof(buf) or b"\0" not in buf.raw[: length + 1]:
             return ReadResult(None, Unavailable.ERROR)
         return ReadResult(buf.value.decode(errors="replace"))
+
+    def compressed(self, pid: int) -> ReadResult[int]:
+        """Bytes of the process held by the compressor, in memory or swapped out.
+
+        Reads `TASK_VM_INFO` through a task name port, which needs no privilege for the
+        user's own processes. The port is released on every path.
+        """
+        task = self._task_self_port()
+        port = c.c_uint32()
+        code = cast(int, self._lib.task_name_for_pid(task, pid, c.byref(port)))
+        if code:
+            return classify_kern(code)
+        try:
+            info = TaskVMInfoRev1()
+            count = c.c_uint32(c.sizeof(info) // 4)
+            code = cast(
+                int, self._lib.task_info(port.value, _TASK_VM_INFO, c.byref(info), c.byref(count))
+            )
+        finally:
+            self._lib.mach_port_deallocate(task, port.value)
+        if code:
+            return classify_kern(code)
+        if count.value * 4 < TaskVMInfoRev1.compressed.offset + 8:
+            return ReadResult(None, Unavailable.ERROR)
+        return ReadResult(info.compressed)
 
     def _responsibility(self) -> Callable[[int], int] | None:
         """The private libquarantine call, bound on first use and never required.

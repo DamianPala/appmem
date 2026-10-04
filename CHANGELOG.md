@@ -4,6 +4,7 @@
 
 ### Added
 
+- macOS: a COMPRESSED column, from 80 columns, in the main table and the process view, sortable with `c`. It is the part of each app's MEMORY that macOS holds compressed, in RAM or swapped out, so it answers "which app is being squeezed". It is already inside MEMORY, not added on top. `?` means no process of the app could be read, `*` a partial sum. The `snapshot` and `app` JSON gain `compressed_bytes` (per app, process and command) and the matching coverage counts, and the text reports gain a `COMPRESSED` column
 - macOS: each process of an app shows which rule put it there (`via`: `bundle`, `ancestry`, `responsible` or `root`), in the process view's status line, in the `app` JSON and schema, and as a `VIA` column in the `app` text report
 
 ### Changed

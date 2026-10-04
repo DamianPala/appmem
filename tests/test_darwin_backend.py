@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from datetime import UTC, datetime
+from types import EllipsisType
 from typing import Any, cast
 
 import pytest
@@ -41,6 +42,7 @@ class Reader:
         self.memory_calls: dict[int, int] = {}
         self.process_calls: dict[int, int] = {}
         self.bundle_ids: dict[str, str] = {}
+        self.compressions: dict[int, int] = {}
         self.responsibles: dict[int, int] = {}
         self.responsible_calls: list[int] = []
         self.responsible_missing = False
@@ -75,7 +77,13 @@ class Reader:
         *,
         start: int | None = None,
         uid: int = 501,
+        compressed: int | EllipsisType | None = ...,
     ) -> None:
+        """`compressed` defaults to a quarter of a readable footprint; None is unreadable."""
+        if compressed is ...:
+            compressed = footprint // 4 if footprint is not None else None
+        if compressed is not None:
+            self.compressions[pid] = compressed
         self.identities[pid] = ProcessIdentity(pid, ppid, uid, 1, command)
         if path is not None:
             self.paths[pid] = path
@@ -111,6 +119,10 @@ class Reader:
             value = ProcessMemory(
                 value.footprint_bytes, value.resident_bytes, value.start_abstime + 1
             )
+        return ReadResult(value, None if value is not None else Unavailable.DENIED)
+
+    def compressed(self, pid: int) -> ReadResult[int]:
+        value = self.compressions.get(pid)
         return ReadResult(value, None if value is not None else Unavailable.DENIED)
 
     def responsible(self, pid: int) -> ReadResult[int]:
@@ -562,8 +574,8 @@ def test_darwin_schema_needs_no_native_collection(
                 "-i, --interval",
                 "default: 1",
                 "appmem snapshot --help",
-                "f/d/r",
-                "f/r/n/p/u",
+                "f/c/d/r",
+                "f/c/r/n/p/u",
                 "Esc back",
                 "PgUp/PgDn",
                 "Ctrl+P",
@@ -664,6 +676,7 @@ async def test_darwin_live_view_uses_footprint_columns_and_drill_down() -> None:
         assert list(table.column_keys) == [
             "app",
             "footprint",
+            "compressed",
             "delta",
             "procs",
         ]

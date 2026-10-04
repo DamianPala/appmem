@@ -47,7 +47,8 @@ Use its non-interactive commands; the live TUI (bare `appmem`) is for the human.
 
 ## macOS: what to claim
 
-- Footprint is not resident RAM or a promise of reclaimable memory. Never derive host memory used by subtracting app footprints, and do not claim per-app swap, cache or compression: macOS gives none.
+- Footprint is not resident RAM or a promise of reclaimable memory. Never derive host memory used by subtracting app footprints, and do not claim per-app swap or cache: macOS gives none.
+- Compressed memory per app (`compressed_bytes`, meaning in the schema) sits inside the footprint: never add it on top, and a null is unknown, not zero (see `coverage.compressed_partial`). A large share says the app was squeezed to make room, not that it uses the most; the apps' sum is not the host's compressor figures.
 - Helper services launchd starts for an app (WebKit and other XPC services) join that app's row; `via` on each process in `app` says which rule placed it. Shared launchd agents stay their own rows, so an app row can still omit helpers, and closing the app does not necessarily free them.
 - `pressure.level` is a kernel state (`normal`, `warning`, `critical`), not a stall percentage.
 - `--system` and `--scope system` do not exist; never suggest `systemctl`. Suggest closing an identified app only when the evidence supports it.

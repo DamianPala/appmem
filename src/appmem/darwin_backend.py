@@ -40,6 +40,7 @@ class NativeReader(Protocol):
     def process(self, pid: int) -> ReadResult[ProcessIdentity]: ...
     def path(self, pid: int) -> ReadResult[str]: ...
     def memory(self, pid: int) -> ReadResult[ProcessMemory]: ...
+    def compressed(self, pid: int) -> ReadResult[int]: ...
     def responsible(self, pid: int) -> ReadResult[int]: ...
     def bundle_id(self, bundle: str) -> ReadResult[str]: ...
 
@@ -59,6 +60,7 @@ class DarwinProcess:
     unavailable: str | None
     path: str | None
     resident_bytes: int | None = None
+    compressed_bytes: int | None = None
     via: Via = "root"
 
 
@@ -87,6 +89,19 @@ class DarwinApp:
     @property
     def resident_partial(self) -> bool:
         return self.resident_readable_processes < self.procs
+
+    @property
+    def compressed_bytes(self) -> int | None:
+        known = [p.compressed_bytes for p in self.members if p.compressed_bytes is not None]
+        return sum(known) if known else None
+
+    @property
+    def compressed_readable_processes(self) -> int:
+        return sum(p.compressed_bytes is not None for p in self.members)
+
+    @property
+    def compressed_partial(self) -> bool:
+        return self.compressed_readable_processes < self.procs
 
     @property
     def procs(self) -> int:
@@ -192,6 +207,7 @@ class DarwinBackend:
         memory_result = self._native.memory(pid)
         memory = memory_result.value
         path = self._native.path(pid).value
+        compressed = self._native.compressed(pid).value
         # Re-reading the identity after the memory read catches a PID reused mid-sample
         # when the parent or owner changed; a second memory read catches it by start time.
         after = self._native.process(pid).value
@@ -211,6 +227,7 @@ class DarwinBackend:
             unavailable=unavailable,
             path=path,
             resident_bytes=memory.resident_bytes if memory is not None else None,
+            compressed_bytes=compressed,
         )
 
     def _ancestry(

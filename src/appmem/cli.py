@@ -197,12 +197,13 @@ and `appmem app --help` for each command's flags.
 
 Memory is each process's physical footprint, the number Activity Monitor shows in
 its Memory column, added up per app. It is not resident RAM or reclaimable memory.
-Only the current user's apps are shown, and macOS has no per-app swap or compression
-figures. Denied process reads make app totals partial or unknown.
+COMPRESSED is the part of MEMORY macOS holds compressed. Only the current user's apps
+are shown, and macOS has no per-app swap figure. Denied process reads make app totals
+partial or unknown.
 Requires macOS 15+ on Apple Silicon. --system is unsupported.
 
-Keys: f/d/r main sort MEMORY/ΔMEM/RESIDENT (when visible; repeat reverses).
-      f/r/n/p/u details sort MEMORY/RESIDENT/command/PID or count/unreadable.
+Keys: f/c/d/r main sort MEMORY/COMPRESSED/ΔMEM/RESIDENT (when visible; repeat reverses).
+      f/c/r/n/p/u details sort MEMORY/COMPRESSED/RESIDENT/command/PID or count/unreadable.
       Enter details or group members, g group by command, Esc back, b reset Δ.
       up/down/PgUp/PgDn move, Home/End first/last, T/Ctrl+P theme,
       h main dashboard host memory (h/Esc close); a trailing … (ASCII >) means data

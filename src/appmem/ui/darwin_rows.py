@@ -17,6 +17,8 @@ class DarwinRow:
     partial: bool
     resident_bytes: int | None = None
     resident_partial: bool = False
+    compressed_bytes: int | None = None
+    compressed_partial: bool = False
 
 
 def _members(app: DarwinApp) -> set[tuple[int, int]]:
@@ -71,6 +73,8 @@ def build_rows(apps: list[DarwinApp], baseline: dict[str, DarwinApp]) -> list[Da
                 partial=app.partial or app.grouping_partial,
                 resident_bytes=app.resident_bytes,
                 resident_partial=app.resident_partial or app.grouping_partial,
+                compressed_bytes=app.compressed_bytes,
+                compressed_partial=app.compressed_partial or app.grouping_partial,
             )
         )
     return rows
@@ -83,6 +87,7 @@ def sort_rows(rows: list[DarwinRow], key: str, reverse: bool) -> list[DarwinRow]
         "footprint": "footprint_bytes",
         "delta": "delta_bytes",
         "resident": "resident_bytes",
+        "compressed": "compressed_bytes",
         "procs": "procs",
     }[key]
     known = [row for row in rows if getattr(row, attribute) is not None]

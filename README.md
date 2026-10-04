@@ -95,11 +95,13 @@ A `…` at the end of a header row means the terminal is too narrow for the rest
 ### On a Mac
 
 MEMORY is the number Activity Monitor shows in its Memory column, added up per app.
+COMPRESSED (from 80 columns, `c` sorts by it) is the part of MEMORY that macOS holds compressed, in RAM or swapped out.
+It is already inside MEMORY, so don't add the two; a large share means the app's pages were squeezed to make room for something else.
 ΔMEM is how much it grew or shrank since you started appmem.
 RESIDENT (from 100 columns) is what the app has in RAM at this moment, including files it shares with other apps; it overlaps with MEMORY, so don't add the two.
 A `*` after a number means some of the app's processes could not be read, `?` means none could.
 
-macOS does not say how much of each app sits in swap or in compressed memory, so those appear in the header, for the whole machine: the Compress row shows how much data macOS squeezed and how much RAM it takes now, the Swap row what went to disk, with the same `in`, `out` and `written` as on Linux.
+macOS does not say how much of each app sits in swap, so swap appears only in the header, for the whole machine, next to the machine-wide compression: the Compress row shows how much data macOS squeezed and how much RAM it takes now, the Swap row what went to disk, with the same `in`, `out` and `written` as on Linux.
 RAM used reads higher than in Activity Monitor, because it includes memory the system sets aside at boot.
 Pressure is macOS's own verdict: `normal`, `warning` or `critical`.
 

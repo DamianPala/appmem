@@ -28,21 +28,38 @@ def _paged(item: Mapping[str, object], items_description: str, more: str) -> dic
     }
 
 
+_COMPRESSED = _field(
+    ["integer", "null"],
+    "Bytes of readable members held by the compressor, in RAM or swapped out, at their "
+    "uncompressed size; already part of footprint_bytes, not on top of it; null if none readable",
+)
+
 _COVERAGE = {
     "type": "object",
     "description": (
-        "Independent footprint/resident and grouping coverage for captured member processes"
+        "Independent footprint, resident, compressed and grouping coverage for captured "
+        "member processes"
     ),
     "required": [
         "readable_processes",
         "unreadable_processes",
         "resident_readable_processes",
         "resident_unreadable_processes",
+        "compressed_readable_processes",
+        "compressed_unreadable_processes",
         "partial",
         "grouping_partial",
         "resident_partial",
+        "compressed_partial",
     ],
     "properties": {
+        "compressed_partial": _field("boolean", "Some member compressed values are unavailable"),
+        "compressed_readable_processes": _field(
+            "integer", "Members with readable compressed bytes"
+        ),
+        "compressed_unreadable_processes": _field(
+            "integer", "Members with unavailable compressed bytes"
+        ),
         "resident_partial": _field("boolean", "Some member resident values are unavailable"),
         "resident_readable_processes": _field("integer", "Members with readable resident bytes"),
         "resident_unreadable_processes": _field(
@@ -57,8 +74,17 @@ _COVERAGE = {
 _APP = {
     "type": "object",
     "description": "One application group and its known footprint",
-    "required": ["id", "name", "footprint_bytes", "resident_bytes", "procs", "coverage"],
+    "required": [
+        "id",
+        "name",
+        "footprint_bytes",
+        "resident_bytes",
+        "compressed_bytes",
+        "procs",
+        "coverage",
+    ],
     "properties": {
+        "compressed_bytes": _COMPRESSED,
         "resident_bytes": _field(
             ["integer", "null"],
             "Resident bytes of readable members; shared/file-backed pages may double count; "
@@ -87,10 +113,16 @@ _PROCESS = {
         "name",
         "footprint_bytes",
         "resident_bytes",
+        "compressed_bytes",
         "unavailable",
         "via",
     ],
     "properties": {
+        "compressed_bytes": _field(
+            ["integer", "null"],
+            "Bytes of the process held by the compressor, in RAM or swapped out, at their "
+            "uncompressed size; already part of footprint_bytes; null when unreadable",
+        ),
         "resident_bytes": _field(
             ["integer", "null"],
             "Resident bytes of readable members; shared/file-backed pages may double count; "
@@ -125,8 +157,18 @@ _COMMAND = {
         "unreadable_processes",
         "resident_readable_processes",
         "resident_unreadable_processes",
+        "compressed_bytes",
+        "compressed_readable_processes",
+        "compressed_unreadable_processes",
     ],
     "properties": {
+        "compressed_bytes": _COMPRESSED,
+        "compressed_readable_processes": _field(
+            "integer", "Members with readable compressed bytes"
+        ),
+        "compressed_unreadable_processes": _field(
+            "integer", "Members with unavailable compressed bytes"
+        ),
         "resident_readable_processes": _field("integer", "Members with readable resident bytes"),
         "resident_unreadable_processes": _field(
             "integer", "Members with unavailable resident bytes"

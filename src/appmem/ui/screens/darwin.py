@@ -43,6 +43,15 @@ def _amount(value: int | None) -> str:
     return "?" if value is None else size(value)
 
 
+def _compressed_amount(value: int | None, *, partial: bool = False) -> str:
+    """A known sum, `*` when only some members were readable, `?` when none were."""
+    return _amount(value) + ("*" if partial and value is not None else "")
+
+
+# COMPRESSED sits next to MEMORY once the terminal is this wide, ahead of RESIDENT (100).
+_COMPRESSED_MIN_WIDTH = 80
+
+
 def _read_error(had_data: bool) -> str:
     return (
         "Read unavailable; showing stale values; retrying"
@@ -75,6 +84,7 @@ class DarwinMainScreen(LiveScreen):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("h", "host", "host", show=False),
         Binding("f", "sort('footprint')", "sort memory", show=False),
+        Binding("c", "sort('compressed')", "sort compressed", show=False),
         Binding("r", "sort('resident')", "sort resident", show=False),
         Binding("d", "sort('delta')", "sort growth", show=False),
         Binding("b", "reset_delta", "reset Δ", show=False),
@@ -224,15 +234,15 @@ class DarwinMainScreen(LiveScreen):
         self._render_header()
 
     def _render_footer(self) -> None:
+        width = self.size.width
+        sort_keys = (
+            ("f",)
+            + (("c",) if width >= _COMPRESSED_MIN_WIDTH else ())
+            + (("d",) if width >= 65 else ())
+            + (("r",) if width >= 100 else ())
+        )
         items = [
-            (
-                ("f", "d", "r")
-                if self.size.width >= 100
-                else ("f", "d")
-                if self.size.width >= 65
-                else ("f",),
-                "sort",
-            ),
+            (sort_keys, "sort"),
             (("enter",), "procs"),
             (("b",), "reset Δ"),
             (("T",), "theme"),
@@ -278,6 +288,8 @@ class DarwinMainScreen(LiveScreen):
             ("app", "APP", None),
             ("footprint", "MEMORY", 12),
         ]
+        if self.size.width >= _COMPRESSED_MIN_WIDTH:
+            specs.append(("compressed", "COMPRESSED", 12))
         if self.size.width >= 65:
             specs.append(("delta", "ΔMEM", 11))
         if self.size.width >= 100:
@@ -304,6 +316,7 @@ class DarwinMainScreen(LiveScreen):
             "app": truncate_name(escape_control_chars(row.name), app_width),
             "footprint": _amount(row.footprint_bytes)
             + ("*" if row.partial and row.footprint_bytes is not None else ""),
+            "compressed": _compressed_amount(row.compressed_bytes, partial=row.compressed_partial),
             "delta": "?" if row.delta_bytes is None else format_delta(row.delta_bytes),
             "resident": _amount(row.resident_bytes)
             + ("*" if row.resident_partial and row.resident_bytes is not None else ""),
@@ -354,8 +367,10 @@ class DarwinMainScreen(LiveScreen):
             self.call_after_refresh(self._sync_columns)
 
     def _drop_hidden_sort(self) -> None:
-        if (self._sort_key == "delta" and self.size.width < 65) or (
-            self._sort_key == "resident" and self.size.width < 100
+        if (
+            (self._sort_key == "delta" and self.size.width < 65)
+            or (self._sort_key == "compressed" and self.size.width < _COMPRESSED_MIN_WIDTH)
+            or (self._sort_key == "resident" and self.size.width < 100)
         ):
             self._sort_key, self._reverse = "footprint", True
 
@@ -452,6 +467,8 @@ class _DetailRow:
     status: str
     resident_bytes: int | None = None
     resident_unreadable: int = 0
+    compressed_bytes: int | None = None
+    compressed_unreadable: int = 0
 
 
 class DarwinProcessesScreen(LiveScreen):
@@ -461,6 +478,7 @@ class DarwinProcessesScreen(LiveScreen):
     """
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("f", "sort('footprint')", "sort memory", show=False),
+        Binding("c", "sort('compressed')", "sort compressed", show=False),
         Binding("r", "sort('resident')", "sort resident", show=False),
         Binding("n", "sort('name')", "sort command", show=False),
         Binding("p", "sort('count')", "sort PID or count", show=False),
@@ -568,6 +586,7 @@ class DarwinProcessesScreen(LiveScreen):
                 known = [p.footprint_bytes for p in members if p.footprint_bytes is not None]
                 unreadable = len(members) - len(known)
                 residents = [p.resident_bytes for p in members if p.resident_bytes is not None]
+                squeezed = [p.compressed_bytes for p in members if p.compressed_bytes is not None]
                 rows.append(
                     _DetailRow(
                         command,
@@ -577,9 +596,12 @@ class DarwinProcessesScreen(LiveScreen):
                         len(members),
                         unreadable,
                         f"{len(known)} memory readable, {unreadable} unreadable processes; "
-                        f"resident {len(residents)}/{len(members)} readable",
+                        f"resident {len(residents)}/{len(members)} readable; "
+                        f"compressed {len(squeezed)}/{len(members)} readable",
                         sum(residents) if residents else None,
                         len(members) - len(residents),
+                        sum(squeezed) if squeezed else None,
+                        len(members) - len(squeezed),
                     )
                 )
             return rows
@@ -595,6 +617,8 @@ class DarwinProcessesScreen(LiveScreen):
                 + (p.unavailable or escape_control_chars(p.path or "path unavailable")),
                 p.resident_bytes,
                 int(p.resident_bytes is None),
+                p.compressed_bytes,
+                int(p.compressed_bytes is None),
             )
             for p in self._visible_processes()
         ]
@@ -614,7 +638,9 @@ class DarwinProcessesScreen(LiveScreen):
             )
         if self._sort_key == "unreadable":
             return sorted(by_name, key=lambda row: row.unreadable, reverse=self._reverse)
-        attribute = "resident_bytes" if self._sort_key == "resident" else "footprint_bytes"
+        attribute = {"resident": "resident_bytes", "compressed": "compressed_bytes"}.get(
+            self._sort_key, "footprint_bytes"
+        )
         known = [row for row in by_name if getattr(row, attribute) is not None]
         unknown = [row for row in by_name if getattr(row, attribute) is None]
         return (
@@ -627,6 +653,8 @@ class DarwinProcessesScreen(LiveScreen):
         if not grouped:
             specs.append(("pid", "PID", 7))
         specs.extend((("name", "COMMAND", None), ("footprint", "MEMORY", 12)))
+        if self.size.width >= _COMPRESSED_MIN_WIDTH:
+            specs.append(("compressed", "COMPRESSED", 12))
         if self.size.width >= 100:
             specs.append(("resident", "RESIDENT", 12))
         if grouped:
@@ -660,6 +688,9 @@ class DarwinProcessesScreen(LiveScreen):
             "name": truncate_name(escape_control_chars(row.name), name_width),
             "footprint": _amount(row.footprint_bytes)
             + ("*" if row.unreadable and row.footprint_bytes is not None else ""),
+            "compressed": _compressed_amount(
+                row.compressed_bytes, partial=bool(row.compressed_unreadable)
+            ),
             "resident": _amount(row.resident_bytes)
             + ("*" if row.resident_unreadable and row.resident_bytes is not None else ""),
             "count": str(row.procs),
@@ -727,12 +758,19 @@ class DarwinProcessesScreen(LiveScreen):
         if tuple(width for _, _, width in specs) != self._column_widths:
             self._apply_rows(list(self._rows.values()), force_columns=True)
 
+    def _sort_footer_keys(self) -> tuple[str, ...]:
+        keys = ("f", "n", "p", "u") if "unreadable" in self._column_keys else ("f", "n", "p")
+        for column, key in (("compressed", "c"), ("resident", "r")):
+            if column in self._column_keys:
+                keys += (key,)
+        return keys
+
     def _render_detail(self, *, force_columns: bool = False, scroll: bool = False) -> None:
         app = self._app
         if self._command is not None and not self._visible_processes():
             self._command = None
             force_columns = True
-        if self._sort_key in ("unreadable", "resident") and self._sort_key not in {
+        if self._sort_key in ("unreadable", "resident", "compressed") and self._sort_key not in {
             key for key, _, _ in self._specs(self._table())
         }:
             self._sort_key, self._reverse = "footprint", True
@@ -752,11 +790,8 @@ class DarwinProcessesScreen(LiveScreen):
         self._set_static("#title", truncate_name(title, self.size.width))
         self._apply_rows(self._build_rows(), force_columns=force_columns, scroll=scroll)
         self._render_status()
-        sort_keys = ("f", "n", "p", "u") if "unreadable" in self._column_keys else ("f", "n", "p")
-        if "resident" in self._column_keys:
-            sort_keys += ("r",)
         footer: list[tuple[tuple[str, ...], str]] = [
-            (sort_keys, "sort"),
+            (self._sort_footer_keys(), "sort"),
             (("g",), "ungroup" if self._grouped else "group"),
         ]
         if self._showing_groups and self._rows:
@@ -797,9 +832,9 @@ class DarwinProcessesScreen(LiveScreen):
             self._render_detail(force_columns=True, scroll=True)
 
     def action_sort(self, key: str) -> None:
-        if key not in ("footprint", "resident", "name", "count", "unreadable"):
+        if key not in ("footprint", "compressed", "resident", "name", "count", "unreadable"):
             return
-        if key in ("unreadable", "resident") and key not in self._column_keys:
+        if key in ("unreadable", "resident", "compressed") and key not in self._column_keys:
             return
         self._reverse = not self._reverse if self._sort_key == key else key != "name"
         self._sort_key = key
@@ -894,6 +929,12 @@ class DarwinHelpScreen(Screen[None]):
                 "including compression), summed per app. Not resident RAM or reclaimable memory.",
             ),
             (
+                "COMPRESSED",
+                "The part of MEMORY that macOS holds compressed, in RAM or swapped out; it is "
+                "included in MEMORY, not added on top. A large share means the app's pages "
+                "were squeezed to make room for something else.",
+            ),
+            (
                 "RESIDENT",
                 "Resident shared/file-backed pages can double count between processes. "
                 "Do not add to MEMORY or subtract to infer swap.",
@@ -906,8 +947,8 @@ class DarwinHelpScreen(Screen[None]):
             ),
             (
                 "* / ?",
-                "Partial known sum / unknown for that metric. MEMORY and RESIDENT "
-                "have independent coverage; grouping can also be partial.",
+                "Partial known sum / unknown for that metric. MEMORY, "
+                "COMPRESSED and RESIDENT have independent coverage; grouping can also be partial.",
             ),
             (
                 "RAM",
@@ -931,10 +972,11 @@ class DarwinHelpScreen(Screen[None]):
         keys = (
             ("click header", "sort; click again reverses"),
             ("click row", "select; double click opens"),
-            ("f / d / r", "main: sort MEMORY / ΔMEM / RESIDENT (when visible)"),
+            ("f / c / d / r", "main: sort MEMORY / COMPRESSED / ΔMEM / RESIDENT (when visible)"),
             (
-                "f / r / n / p / u",
-                "details: sort MEMORY / RESIDENT / command / PID or count / unreadable",
+                "f / c / r / n / p / u",
+                "details: sort MEMORY / COMPRESSED / RESIDENT / command / PID or count / "
+                "unreadable",
             ),
             ("up/down PgUp PgDn", "move"),
             ("Home / End", "first / last row"),

@@ -31,6 +31,9 @@ def _coverage(app: DarwinApp) -> dict[str, object]:
         "resident_readable_processes": app.resident_readable_processes,
         "resident_unreadable_processes": app.procs - app.resident_readable_processes,
         "resident_partial": app.resident_partial,
+        "compressed_readable_processes": app.compressed_readable_processes,
+        "compressed_unreadable_processes": app.procs - app.compressed_readable_processes,
+        "compressed_partial": app.compressed_partial,
     }
 
 
@@ -40,6 +43,7 @@ def _app_item(app: DarwinApp) -> dict[str, object]:
         "name": app.name,
         "footprint_bytes": app.footprint_bytes,
         "resident_bytes": app.resident_bytes,
+        "compressed_bytes": app.compressed_bytes,
         "procs": app.procs,
         "coverage": _coverage(app),
     }
@@ -52,6 +56,7 @@ def _process_item(process: DarwinProcess) -> dict[str, object]:
         "name": process.command,
         "footprint_bytes": process.footprint_bytes,
         "resident_bytes": process.resident_bytes,
+        "compressed_bytes": process.compressed_bytes,
         "unavailable": process.unavailable,
         "via": process.via,
     }
@@ -70,6 +75,7 @@ def _commands(app: DarwinApp) -> list[dict[str, object]]:
     for name, members in grouped.items():
         known = [p.footprint_bytes for p in members if p.footprint_bytes is not None]
         residents = [p.resident_bytes for p in members if p.resident_bytes is not None]
+        squeezed = [p.compressed_bytes for p in members if p.compressed_bytes is not None]
         result.append(
             {
                 "name": name,
@@ -77,6 +83,9 @@ def _commands(app: DarwinApp) -> list[dict[str, object]]:
                 "resident_bytes": sum(residents) if residents else None,
                 "resident_readable_processes": len(residents),
                 "resident_unreadable_processes": len(members) - len(residents),
+                "compressed_bytes": sum(squeezed) if squeezed else None,
+                "compressed_readable_processes": len(squeezed),
+                "compressed_unreadable_processes": len(members) - len(squeezed),
                 "procs": len(members),
                 "readable_processes": len(known),
                 "unreadable_processes": len(members) - len(known),
@@ -224,6 +233,9 @@ def render_snapshot_text(document: dict[str, Any]) -> str:
             escape_control_chars(app["name"]),
             _text_amount(app["footprint_bytes"], partial=_partial(app["coverage"], "partial")),
             _text_amount(
+                app["compressed_bytes"], partial=_partial(app["coverage"], "compressed_partial")
+            ),
+            _text_amount(
                 app["resident_bytes"], partial=_partial(app["coverage"], "resident_partial")
             ),
             str(app["procs"]),
@@ -231,14 +243,16 @@ def render_snapshot_text(document: dict[str, Any]) -> str:
         )
         for app in document["apps"]["items"]
     ]
-    lines.extend(_text_table(("APP", "MEMORY", "RESIDENT", "PROCS", "COVERAGE"), rows))
+    lines.extend(
+        _text_table(("APP", "MEMORY", "COMPRESSED", "RESIDENT", "PROCS", "COVERAGE"), rows)
+    )
     lines.extend(_legend(rows))
     return "\n".join(lines)
 
 
 def _legend(rows: list[tuple[str, ...]]) -> list[str]:
     """The footnote only when a shown amount is partial or unknown."""
-    if any(cell.endswith("*") or cell == "unknown" for row in rows for cell in row[1:3]):
+    if any(cell.endswith("*") or cell == "unknown" for row in rows for cell in row[1:4]):
         return ["* partial known sum; unknown = unavailable for that metric"]
     return []
 
@@ -254,23 +268,31 @@ def render_app_text(document: dict[str, Any]) -> str:
             str(p["pid"]),
             escape_control_chars(p["name"]),
             _text_amount(p["footprint_bytes"]),
+            _text_amount(p["compressed_bytes"]),
             _text_amount(p["resident_bytes"]),
             p["via"],
         )
         for p in document["processes"]["items"]
     ]
-    lines.extend(_text_table(("PID", "COMMAND", "MEMORY", "RESIDENT", "VIA"), process_rows))
+    lines.extend(
+        _text_table(("PID", "COMMAND", "MEMORY", "COMPRESSED", "RESIDENT", "VIA"), process_rows)
+    )
     command_rows = [
         (
             escape_control_chars(c["name"]),
             _text_amount(c["footprint_bytes"], partial=bool(c["unreadable_processes"])),
+            _text_amount(c["compressed_bytes"], partial=bool(c["compressed_unreadable_processes"])),
             _text_amount(c["resident_bytes"], partial=bool(c["resident_unreadable_processes"])),
             str(c["procs"]),
             "partial" if c["unreadable_processes"] else "complete",
         )
         for c in document["commands"]["items"]
     ]
-    lines.extend(_text_table(("COMMAND", "MEMORY", "RESIDENT", "PROCS", "COVERAGE"), command_rows))
+    lines.extend(
+        _text_table(
+            ("COMMAND", "MEMORY", "COMPRESSED", "RESIDENT", "PROCS", "COVERAGE"), command_rows
+        )
+    )
     # Process rows lead with a PID, so their amounts sit one column to the right.
     lines.extend(_legend([row[1:] for row in process_rows] + command_rows))
     return "\n".join(lines)

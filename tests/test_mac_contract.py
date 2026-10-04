@@ -511,7 +511,7 @@ def test_text_reports_mark_a_grouping_partial_app_as_the_live_view_does() -> Non
     document, _ = darwin_report.snapshot_document(backend, limit=5, now=NOW)
     lines = darwin_report.render_snapshot_text(document).splitlines()
     row = next(line for line in lines if line.startswith("App"))
-    assert row.count("*") == 2 and row.rstrip().endswith("partial")
+    assert row.count("*") == 3 and row.rstrip().endswith("partial")  # MEMORY, COMPRESSED, RESIDENT
     detail, _, _ = darwin_report.app_document(backend, "App", limit=5, now=NOW)
     assert "partial" in darwin_report.render_app_text(detail).splitlines()[0]
 

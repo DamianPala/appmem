@@ -1,4 +1,4 @@
-# appmem: spec v0.22
+# appmem: spec v0.23
 
 A live terminal view of memory usage **per application**, not per process, on Linux and on Apple Silicon macOS.
 Think `btm` or `htop`, but rows are apps (Ghostty, Brave, LibreOffice), each summing all of its processes.
@@ -20,12 +20,12 @@ Which app holds the memory and swap? Is memory actually the problem right now? W
 |---|---|---|
 | Requires | systemd user session, cgroup v2 with the memory controller, kernel 5.10+ (zswap figures need 5.19, Pressure needs PSI) | macOS 15+, Apple Silicon, a native arm64 Python |
 | Apps seen | the user's units, plus system services on request | the current user's processes only |
-| App memory | per-app cgroup counters: RAM, SWAP, CACHE, ZSWAP | per-process physical footprints (MEMORY) and resident sizes (RESIDENT), summed per app |
+| App memory | per-app cgroup counters: RAM, SWAP, CACHE, ZSWAP | per-process physical footprints (MEMORY), the compressed part of them (COMPRESSED) and resident sizes (RESIDENT), summed per app |
 | Host memory | RAM, Zswap, Swap, PSI pressure | RAM, compression, Swap, native pressure level |
-| Not available | cgroup v1, running as root | Intel Macs, macOS before 15, other users' processes, system scope, per-app swap, compression or GPU memory |
+| Not available | cgroup v1, running as root | Intel Macs, macOS before 15, other users' processes, system scope, per-app swap, GPU memory |
 
 - **Linux:** the kernel already sums each unit's memory, so appmem finds the units, names them and adds same-named units together.
-- **macOS:** nothing is counted per app, so each sample lists the user's processes, reads each one natively and groups them by `.app` bundle, ancestry or the app macOS holds responsible for them. Per-app swap, cache and compression don't exist there.
+- **macOS:** nothing is counted per app, so each sample lists the user's processes, reads each one natively and groups them by `.app` bundle, ancestry or the app macOS holds responsible for them. Per-app swap and cache don't exist there; each process's compressed bytes do, and are summed like its footprint.
 
 Any other operating system fails with `platform_unavailable`.
 
@@ -144,10 +144,11 @@ Columns, in order:
 | Platform | Columns | Shown |
 |---|---|---|
 | Linux | APP, RAM, SWAP, CACHE, ZSWAP, TOTAL, ΔRAM, ΔSWAP, PROCS | CACHE only after `c`; ZSWAP by default while zswap is enabled (`w` toggles), from 85 columns; ΔRAM and ΔSWAP from 95 columns |
-| macOS | APP, MEMORY, ΔMEM, RESIDENT, PROCS | ΔMEM from 65 columns; RESIDENT from 100 columns |
+| macOS | APP, MEMORY, COMPRESSED, ΔMEM, RESIDENT, PROCS | ΔMEM from 65 columns; COMPRESSED from 80 columns; RESIDENT from 100 columns |
 
 - Linux: at the default 1 s interval, PROCS in the live table refreshes every five seconds (every 5th tick); the memory columns (RAM, SWAP, CACHE, ZSWAP, TOTAL) refresh every tick. A unit seen for the first time is always counted right away. Δ columns render dim while the baseline is younger than 60 s.
-- macOS: a partial known sum is marked `*`, a wholly unknown value is `?`. Every group is shown, whatever its size.
+- macOS: a partial known sum is marked `*`, a wholly unknown value is `?`; a known zero reads `0 B`. Every group is shown, whatever its size.
+- macOS width: the APP name column gives way first (it shrinks from 32 cells to 28 at 80 columns, never below 8); below 80 columns COMPRESSED goes, below 65 ΔMEM, and RESIDENT only appears from 100. A sort on a column that goes falls back to MEMORY.
 
 ### Process view (after Enter)
 
@@ -201,28 +202,28 @@ macOS:
 
 ```
 Google Chrome  memory 3.8 GiB
- PID      COMMAND                           MEMORY ▾      RESIDENT      STATE
-     100  Google Chrome                          900 MiB       1.2 GiB  readable
-     101  Google Chrome Helper (Renderer)        130 MiB       182 MiB  readable
-     102  Google Chrome Helper (Renderer)        130 MiB       182 MiB  readable
+ PID      COMMAND                           MEMORY ▾    COMPRESSED      RESIDENT      STATE
+     100  Google Chrome                          900 MiB       310 MiB       1.2 GiB  readable
+     101  Google Chrome Helper (Renderer)        130 MiB        64 MiB       182 MiB  readable
+     102  Google Chrome Helper (Renderer)        130 MiB             ?       182 MiB  readable
  ...
 via bundle  /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
- f n p r sort  g group  esc back  T theme  ? help  q quit
+ f c n p r sort  g group  esc back  T theme  ? help  q quit
 ```
 
 With `g` (group by command):
 
 ```
- COMMAND                           MEMORY ▾      RESIDENT      PROCS    UNREADABLE
- Google Chrome Helper (Renderer)        2.9 GiB       4.1 GiB       23             0
- Google Chrome                          900 MiB       1.2 GiB        1             0
-23 memory readable, 0 unreadable processes; resident 23/23 readable
- f n p u r sort  g ungroup  enter members  esc back  T theme  ? help  q quit
+ COMMAND                           MEMORY ▾    COMPRESSED      RESIDENT      PROCS    UNREADABLE
+ Google Chrome Helper (Renderer)        2.9 GiB       1.1 GiB       4.1 GiB       23             0
+ Google Chrome                          900 MiB       310 MiB       1.2 GiB        1             0
+23 memory readable, 0 unreadable processes; resident 23/23 readable; compressed 23/23 readable
+ f c n p u r sort  g ungroup  enter members  esc back  T theme  ? help  q quit
 ```
 
 - Title: the app name and its MEMORY, or `Application vanished`.
-- Flat: PID, COMMAND, MEMORY, RESIDENT (from 100 columns), STATE (`readable`/`unreadable`, from 75 columns). The status line shows `via <rule>` (see "Grouping"), then the selected process's executable path, or why its memory is unavailable.
-- Grouped: COMMAND, MEMORY, RESIDENT (from 100 columns), PROCS, UNREADABLE (from 75 columns), with readable/unreadable counts for both metrics in the status line. Enter drills into a command's processes, live; Esc returns to the groups on the same command.
+- Flat: PID, COMMAND, MEMORY, COMPRESSED (from 80 columns), RESIDENT (from 100 columns), STATE (`readable`/`unreadable`, from 75 columns). The status line shows `via <rule>` (see "Grouping"), then the selected process's executable path, or why its memory is unavailable.
+- Grouped: COMMAND, MEMORY, COMPRESSED (from 80 columns), RESIDENT (from 100 columns), PROCS, UNREADABLE (from 75 columns), with readable counts for all three metrics in the status line. Enter drills into a command's processes, live; Esc returns to the groups on the same command.
 - All layouts refresh with the same interval as the main view.
 - Sorted by MEMORY descending, unknown last; a hidden sort column falls back to that.
 - No stop commands and no kernel or unattributed rows: nothing is held outside the processes' footprints.
@@ -232,7 +233,7 @@ With `g` (group by command):
 A scrolling screen with the definitions below in plain words, soft-wrapped to the width, with `esc/?/q close` in its title line, ending with the platform's key list, one line per key.
 
 - Linux: what RAM, CACHE, SWAP, TOTAL, pressure and the header's shared/free/cache/avail mean (tmpfs files count toward the app that wrote them), swap in/out and written totals, why rows don't add up to the header, why a closed app can still have a row, and how to act on what you see, plus `h` for the host panel, the trailing hidden-data marker (`…`, ASCII `>`), and `T` with where the theme is saved. When zswap is enabled, it also defines the physical Zswap gauge and logical ZSWAP, and lists `z` and `w`. It also explains the bar glyphs (`█` used, `░` what's left).
-- macOS: swap in/out, MEMORY, RESIDENT, ΔMEM, `*`/`?`, RAM, file-backed, Compress, Swap, Pressure, grouping, the host panel and the hidden-data marker.
+- macOS: swap in/out, MEMORY, COMPRESSED (part of MEMORY, not on top of it; a large share means the app's pages were squeezed to make room), RESIDENT, ΔMEM, `*`/`?`, RAM, file-backed, Compress, Swap, Pressure, grouping, the host panel and the hidden-data marker.
 
 ## Keys
 
@@ -241,14 +242,14 @@ A scrolling screen with the definitions below in plain words, soft-wrapped to th
 | click header | sort by that column, click again to reverse |
 | click a row | select it, double click opens it (process view, or a command's processes when grouped) |
 | `r` / `s` / `t` / `d` / `z` | Linux: sort by RAM / SWAP / TOTAL / ΔSWAP / ZSWAP (repeat to reverse); a key whose column is hidden is absent and does nothing; other columns sort by click |
-| `f` / `d` / `r` | macOS main view: sort by MEMORY / ΔMEM / RESIDENT (repeat to reverse); a hidden column's key does nothing |
-| `f` / `r` / `n` / `p` / `u` | macOS process view: sort by MEMORY / RESIDENT / command / PID (PROCS when grouped) / UNREADABLE |
+| `f` / `c` / `d` / `r` | macOS main view: sort by MEMORY / COMPRESSED / ΔMEM / RESIDENT (repeat to reverse); a hidden column's key does nothing |
+| `f` / `c` / `r` / `n` / `p` / `u` | macOS process view: sort by MEMORY / COMPRESSED / RESIDENT / command / PID (PROCS when grouped) / UNREADABLE |
 | `↑` `↓` `PgUp` `PgDn` | move |
 | `Home` `End` | jump to the first/last row |
 | `Enter` | open the process view for the selected app; in grouped mode, the processes of the selected command |
 | `g` | process view: toggle grouping by command |
 | `Esc` | back to the main view (from a drill-down, to the groups) |
-| `c` | Linux: toggle the CACHE column |
+| `c` | Linux: toggle the CACHE column. macOS: sort by COMPRESSED (see the sort rows above) |
 | `w` | Linux: toggle the ZSWAP column (main view, only while zswap is enabled; the choice lasts for the session) |
 | `x` | Linux: toggle system services |
 | `b` | reset the Δ baseline to now |
@@ -297,6 +298,7 @@ Native calls through `ctypes`: no privileges, no subprocesses, only the current 
 | Parent, owner, short name | `proc_pidinfo` short BSD info |
 | Executable path | `proc_pidpath` |
 | Footprint, resident size, start time | `proc_pid_rusage` `RUSAGE_INFO_V4`: `ri_phys_footprint`, `ri_resident_size`, `ri_proc_start_abstime` |
+| Compressed bytes | `task_name_for_pid` and `task_info(TASK_VM_INFO)` with the 38-word revision macOS 12 and later accept, field `compressed` only; the name port is released after every read. A refused or vanished process is unavailable for this metric alone |
 | Bundle id (same-named bundles only) | `CFBundleIdentifier` in `<bundle>/Contents/Info.plist`, a regular file of at most 1 MiB |
 | Physical memory | `sysctl hw.memsize` |
 | Swap used and allocated | `sysctl vm.swapusage` |
@@ -355,6 +357,7 @@ Linux:
 macOS:
 
 - **MEMORY** sums the readable members' physical footprints: the memory charged to each process, including its compressed pages, as in Activity Monitor's Memory column. It is not resident RAM or what quitting frees, and footprint sums never yield host used, available or `elsewhere`.
+- **COMPRESSED** sums the readable members' `compressed` bytes: the part of each process's memory held by the compressor, in RAM or swapped out, at its uncompressed size. It is already inside MEMORY, never added to it. Its coverage is independent of MEMORY's: an unreadable member makes the sum partial (`*`), no readable member makes it unknown (`?`, `unknown` in text, JSON `null`), not zero. Shared anonymous memory can count in more than one process, as in MEMORY, and the sum over apps is not the host's Compress figure (other users' processes and the kernel hold compressed pages too).
 - **RESIDENT** sums the readable members' resident sizes, where shared and file-backed pages count in every process. It is not additive with MEMORY, and their difference is not swap.
 - **Coverage:** each metric counts its own readable and unreadable members. A sum with an unreadable member, or from a partially grouped app, is marked `*`; no readable member is `?` (`unknown` in text), never zero.
 - **Host RAM used = physical − (free − speculative) − file-backed.** Native free includes speculative, which file-backed also includes, so it is subtracted once. Reserved and unaccounted memory stays in used; wired and purgeable overlap used; file-backed is not all immediately available. The partition is unknown when a counter is missing or negative, free or file-backed exceeds physical, speculative exceeds free or file-backed, or used would be below wired plus compressed RAM.
@@ -515,7 +518,7 @@ The command line conforms to the house CLI Design Standard 0.1.0 (claimed in `ap
 - **app NAME**: one app with `processes` and `commands`, each paged by `--limit` (default 100). No match, or every unit gone before it is read: `not_found`, exit 1, with `next` pointing at `appmem snapshot`. Linux resolves (scope, name) exactly like the process view and adds `units` as `{name, label}` objects (raw name, and the systemd-unescaped label), `private_bytes` per process, `kernel_bytes`, `zswap_pool_bytes` and `unattributed_*`. macOS resolves names and ids as in "Grouping".
 - **schema**: the index (platform, commands, global flags, format defaults, exit codes, conformance) or one command's detail (flags, args, output schema). Always JSON, for the running platform only; the index's `platform` is `linux` or `darwin`. Every output field carries a short `description`. This deliberately departs from the 0.1.0 claim, whose O4 allows only the five validation keywords; the 0.2 draft's O4a admits `description` as an annotation, which validators ignore. `conformance.extensions` stays empty: no 0.1.0 extension covers it.
 - Output: text on a terminal, JSON otherwise; `--json` forces JSON. Sizes are integer bytes (`_bytes`), percentages `_percent`, ages integer `age_seconds`, `taken_at` is RFC 3339 with the local offset. Text reports contain no escape sequences, and names with control characters are shown escaped.
-- macOS text reports show four host lines (RAM, Compress, Swap, Pressure) without gauges, rates or Δ, aligned app or process (with its `VIA` column) and command tables, and a footnote when `*` or `unknown` appears.
+- macOS text reports show four host lines (RAM, Compress, Swap, Pressure) without gauges, rates or Δ, aligned app or process (with its `VIA` column) and command tables, each with a `COMPRESSED` column after `MEMORY`, and a footnote when `*` or `unknown` appears.
 - A closed stdout pipe (`| head`) ends quietly with exit `0`.
 - `--help` is a standalone cheat sheet: purpose, commands, flags, keys, how to read pressure, one example. Unknown flags and invalid values fail with exit `2` and the accepted form.
 - Colour is never the only signal: sort direction uses `▴`/`▾`, deltas use `+`/`-` and `·`, pressure is a word. `NO_COLOR` is honoured.
@@ -543,8 +546,8 @@ macOS (`platform: "darwin"` in every document):
 
 - `system` has the native counters (`free_bytes` keeps its native meaning) and the partition fields `used_excluding_file_backed_bytes` and `free_excluding_speculative_bytes`, null when the partition is unknown.
 - `pressure` is `level` (null when unknown), `source` and `unavailable` (the reason).
-- App items have `id`, `name`, nullable `footprint_bytes` and `resident_bytes`, `procs` and `coverage` (readable/unreadable counts per metric, `partial`, `resident_partial`, `grouping_partial`); `next` uses the `id`.
-- Processes have `pid`, `start_abstime`, `name`, nullable footprint and resident, `unavailable` and `via` (`bundle`, `ancestry`, `responsible` or `root`: the rule that placed the process in the app, see "Grouping"); commands have both sums with their own counts.
+- App items have `id`, `name`, nullable `footprint_bytes`, `resident_bytes` and `compressed_bytes` (part of the footprint, not on top of it), `procs` and `coverage` (readable/unreadable counts per metric, `partial`, `resident_partial`, `compressed_partial`, `grouping_partial`); `next` uses the `id`.
+- Processes have `pid`, `start_abstime`, `name`, nullable footprint, resident and compressed, `unavailable` and `via` (`bundle`, `ancestry`, `responsible` or `root`: the rule that placed the process in the app, see "Grouping"); commands have all three sums with their own counts.
 
 ### Exit codes
 
@@ -598,7 +601,7 @@ No test reads the live system or the real config: Linux tests use fixture trees 
 
 - Grouping: the Linux acceptance table, plus escapes, unknown shapes and empty names; macOS bundles, the `.framework` rule, ancestry, the responsible-process rule (accepted, self-responsible, outside the sample, started later, symbol missing, terminal-launched child), merged roots, twins, PID reuse and partial grouping.
 - Unit walk: fixture tree with nested sub-cgroups (Konsole tabs, `system-cups.slice/cups.service`) and ignored `*.socket`/`*.mount` directories.
-- Collectors: fixture trees for `memory.stat`, `memory.swap.current`, `/proc/PID/*` (including names with spaces and parentheses), missing files, a process vanishing mid-read; macOS native decoding and failure classification.
+- Collectors: fixture trees for `memory.stat`, `memory.swap.current`, `/proc/PID/*` (including names with spaces and parentheses), missing files, a process vanishing mid-read; macOS native decoding and failure classification, including the compressed read (struct layout, port release on every path, refused, vanished and short replies).
 - Process view math: the `kernel`, `zswap pool` and `unattributed` rows, clamping at 0, grouping by command.
 - Formatting: unit boundaries (1023 KiB, 1 MiB, 1023 MiB, 1 GiB) and pressure word thresholds.
 - Header and panel: grid positions per width and totals, the RAM partition, rates, run totals and the Zswap gauge.

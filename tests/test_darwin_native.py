@@ -56,6 +56,8 @@ def test_host_page_size_binding_uses_pointer_width(monkeypatch: pytest.MonkeyPat
         "host_statistics64",
         "mach_host_self",
         "mach_port_deallocate",
+        "task_name_for_pid",
+        "task_info",
     )
     proc_names = ("proc_listpids", "proc_pidinfo", "proc_pidpath", "proc_pid_rusage")
     lib = SimpleNamespace(**{name: Function() for name in lib_names})
