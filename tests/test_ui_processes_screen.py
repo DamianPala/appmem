@@ -1751,10 +1751,14 @@ async def test_age_column_recomputes_on_resize(tmp_path: Path) -> None:
         table = _table(pilot)
         assert "age" in table.column_keys
 
+        # The columns follow the Resize message, which a slow runner may not
+        # have delivered by the time `resize_terminal` returns.
         await pilot.resize_terminal(80, 24)
+        await pilot.pause()
         assert "age" not in table.column_keys
 
         await pilot.resize_terminal(120, 35)
+        await pilot.pause()
         assert "age" in table.column_keys
 
 
