@@ -94,8 +94,9 @@ It is not counted in the RAM or TOTAL columns: the kernel can drop it when it ne
 The rows don't add up to the header, because system services, virtual machines, containers and other users hold the rest.
 
 In the header, `in` and `out` on the Swap row are how fast the system is reading from swap and writing to it right now, and `written` is how much it wrote since you started appmem and since the machine booted.
-A steady `out` while Pressure is above `none` means the machine is short of memory right now.
-A full swap with `in` and `out` both at zero is not a problem: the data is just parked there.
+To tell whether swap is a problem, look at `out` and Pressure together.
+If `out` keeps showing a number and Pressure is above `none`, the machine is running out of memory right now and is pushing data to disk to cope.
+If swap is full but `in` and `out` both show zero, nothing is wrong: that data was moved out earlier and is just sitting there.
 With zswap, the Zswap row shows how much RAM the compressed pool takes and how much data it holds; both are already inside the RAM and Swap figures, so don't add them again.
 A `…` at the end of a header row means the terminal is too narrow for the rest; `h` shows all of it.
 
