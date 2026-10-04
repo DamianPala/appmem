@@ -61,7 +61,7 @@ def _pressure_state(host: HostMemory, colors: ThemeColors) -> State:
     if host.pressure_unavailable is not None:
         word = None
     color = {"normal": colors.success, "warning": colors.warning, "critical": colors.error}
-    text = Text(word or "unavailable", style=f"bold {color[word]}" if word else "dim")
+    text = Text.assemble((word or "unavailable", f"bold {color[word]}" if word else "dim"))
     return State(text, _PRESSURE_WORD, text, _PRESSURE_WORD)
 
 

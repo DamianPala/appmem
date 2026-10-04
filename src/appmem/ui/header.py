@@ -91,12 +91,14 @@ def bar_text(used: int, total: int, width: int, colors: ThemeColors, *, ascii_ba
     # No fullness colouring (SPEC.md "Main view", "Colour"): one neutral
     # fill colour, a dim track -- under NO_COLOR the glyphs alone (`█`/`#`
     # vs `░`/`.`) still carry the whole picture, styles or not.
-    return Text(fill, style=colors.primary) + Text(track, style="dim")
+    # Styled as spans, never as the Text's own style: a base style would
+    # colour everything later appended to the bar (the value next to it).
+    return Text.assemble((fill, colors.primary), (track, "dim"))
 
 
 def placeholder_bar(width: int) -> Text:
     """The neutral gauge of a row whose total is zero or unknown."""
-    return Text("-" * width, style="dim")
+    return Text.assemble(("-" * width, "dim"))
 
 
 def _swap_style(used: int, total: int, colors: ThemeColors) -> str | None:
@@ -150,7 +152,7 @@ def _pressure_state(stats: SystemStats, colors: ThemeColors) -> State:
     )
     pressure_color = {"none": colors.success, "some": colors.warning, "high": colors.error}
     head, _, rest = full.partition(" ")
-    short = Text(head, style=f"bold {pressure_color[head]}")
+    short = Text.assemble((head, f"bold {pressure_color[head]}"))
     long = short + Text(f" {rest}") if rest else short
     return State(long, _PRESSURE_FULL, short, _PRESSURE_SHORT)
 

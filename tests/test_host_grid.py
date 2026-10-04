@@ -433,10 +433,13 @@ def test_swap_pair_is_error_coloured_only_above_ninety_percent() -> None:
         swap = linux(stats, 200)[1]
         match = re.search(r"[\d.]+/[\d.]+ \w+ used", swap.plain)
         assert match
-        return style_at(swap, match.group(0))
+        start, end = match.span()
+        covering = [str(s.style) for s in swap.spans if s.start <= start and s.end >= end]
+        return covering[-1] if covering else ""
 
-    assert COLORS.error not in colour(100)  # exactly 90 %
-    assert COLORS.error not in colour(500)
+    # Below the threshold the pair has no colour of its own (not the gauge's either).
+    assert colour(100) == ""  # exactly 90 %
+    assert colour(500) == ""
     assert COLORS.error in colour(99)
     assert COLORS.error in colour(0)
 
@@ -620,3 +623,25 @@ def test_zswap_writeback_shows_a_measured_zero_and_a_dash_for_unknown() -> None:
     unknown = linux(width=200, writeback=None)[1].plain
     assert re.search(r"writeback\s+0 B/s", zero)
     assert re.search(r"writeback\s+—", unknown) and "0 B/s" not in unknown.split("writeback")[1]
+
+
+_BAR_GLYPHS = set("█▏▎▍▌▋▊▉░#.-")
+_PRESSURE_WORDS = {"none", "some", "high", "normal", "warning", "critical"}
+
+
+@pytest.mark.parametrize(("name", "render"), PLATFORMS)
+@pytest.mark.parametrize("width", [80, 105, 130, 160])
+@pytest.mark.parametrize("ascii_bars", [False, True])
+def test_only_the_gauge_and_the_pressure_word_are_coloured(
+    name: str, render: Render, width: int, ascii_bars: bool
+) -> None:
+    """A gauge's or a state word's colour must not run on into the value beside it."""
+    for line in render(width=width, ascii_bars=ascii_bars):
+        assert str(line.style) in ("", "none"), line.plain
+        for span in line.spans:
+            covered = line.plain[span.start : span.end]
+            style = str(span.style)
+            if "blue" in style:
+                assert set(covered) <= _BAR_GLYPHS, (name, covered)
+            if "bold" in style:
+                assert covered in _PRESSURE_WORDS, (name, covered)

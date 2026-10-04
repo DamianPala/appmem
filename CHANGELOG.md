@@ -11,6 +11,7 @@
 
 ### Fixed
 
+- The used/total numbers next to the RAM, Zswap and Swap gauges are plain text again instead of the gauge's colour, and only the pressure word is bold and coloured, so the red of a nearly full swap stands out
 - A double click outside the theme panel no longer also opens the process view of the row under the pointer
 - An unknown flag such as `appmem snapshot --bogus` prints the usage of that command, not the top-level one
 - The header's `…` marker sits right after the last visible item, not after blank padding
