@@ -304,6 +304,7 @@ async def test_session_survives_baseline_navigation_pause_clock_shift_and_indepe
         readings[0] = replace(initial, swap_in_bytes=12345, swap_out_bytes=123456)
         await pilot.press("b", "?", "escape", "T", "escape")
         await pilot.resize_terminal(80, 24)
+        await pilot.pause()
         owner.refresh_now()
         assert owner._swap_in_session.total == 12345  # pyright: ignore[reportPrivateUsage]
         assert owner._swap_out_session.total == 122456  # pyright: ignore[reportPrivateUsage]

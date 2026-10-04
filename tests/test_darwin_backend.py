@@ -836,10 +836,12 @@ async def test_darwin_rowtable_navigation_and_resize() -> None:
         await pilot.pause()
         assert table.scroll_y == 3
         await pilot.resize_terminal(55, 16)
+        await pilot.pause()
         assert table.column_keys == ("app", "footprint", "procs")
         assert table.column_region("procs").right <= table.scrollable_content_region.width
         assert table.scroll_y == 0
         await pilot.resize_terminal(90, 16)
+        await pilot.pause()
         assert "delta" in table.column_keys
         assert table.scroll_y == 0
 
@@ -912,6 +914,7 @@ async def test_darwin_detail_group_back_and_overlay_scroll() -> None:
         table.move_cursor(row=20, scroll=True)
         selected = table.cursor_key
         await pilot.resize_terminal(90, 10)
+        await pilot.pause()
         assert table.cursor_key == selected
         assert _cursor_visible(table)
 

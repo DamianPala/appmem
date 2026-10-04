@@ -1049,6 +1049,7 @@ async def test_footer_recomputes_on_resize_in_grouped_mode(tmp_path: Path) -> No
         await pilot.pause()
 
         await pilot.resize_terminal(60, 24)
+        await pilot.pause()
         footer = pilot.app.screen.query_one("#footer", Static)
         content = footer.content
         assert isinstance(content, Text)
@@ -1808,6 +1809,7 @@ async def test_sorting_by_age_hidden_by_width_resorts_by_total_desc(tmp_path: Pa
         assert _row_keys(_table(pilot))[:2] == ["100", "101"]
 
         await pilot.resize_terminal(80, 24)
+        await pilot.pause()
 
         assert _row_keys(_table(pilot))[:2] == ["101", "100"]
 

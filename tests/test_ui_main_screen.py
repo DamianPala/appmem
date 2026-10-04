@@ -380,9 +380,11 @@ async def test_zswap_column_recomputes_on_resize(tmp_path: Path) -> None:
         assert "zswap" in table.column_keys
 
         await pilot.resize_terminal(80, 24)
+        await pilot.pause()
         assert "zswap" not in table.column_keys
 
         await pilot.resize_terminal(120, 35)
+        await pilot.pause()
         assert "zswap" in table.column_keys
 
 
@@ -1422,9 +1424,11 @@ async def test_delta_columns_recompute_on_resize(tmp_path: Path) -> None:
         assert "delta_ram" in table.column_keys
 
         await pilot.resize_terminal(80, 24)
+        await pilot.pause()
         assert "delta_ram" not in table.column_keys
 
         await pilot.resize_terminal(120, 35)
+        await pilot.pause()
         assert "delta_ram" in table.column_keys
 
 
@@ -1443,6 +1447,7 @@ async def test_sorting_by_delta_hidden_by_width_falls_back_to_total_desc(tmp_pat
         await pilot.press("d")  # sort by ΔSWAP desc
 
         await pilot.resize_terminal(80, 24)
+        await pilot.pause()
 
         assert _row_names(table) == ["bravo", "alpha"]  # TOTAL desc, not left on ΔSWAP
 
@@ -1494,6 +1499,7 @@ async def test_sorting_by_zswap_hidden_by_width_falls_back_to_total_desc(tmp_pat
         await pilot.press("z")  # sort by ZSWAP desc
 
         await pilot.resize_terminal(84, 24)  # below `_ZSWAP_MIN_WIDTH`
+        await pilot.pause()
 
         assert _row_names(table) == ["bravo", "alpha"]  # TOTAL desc, not left on ZSWAP
 
