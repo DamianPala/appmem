@@ -62,20 +62,21 @@ Anything above that means programs are waiting for memory.
 On a narrow terminal some columns are hidden; widen the window to see them.
 
 `Enter` on an app shows its processes.
-On Linux the bottom line has the command ready for the selected row, for example `systemctl --user stop 'app-firefox.service'` or `kill 41233`.
+On Linux the bottom line shows the command that would stop the selected row, ready to copy, for example `systemctl --user stop 'app-firefox.service'` or `kill 41233`; appmem never runs it itself.
 
 Everything you start from a terminal counts as the terminal.
 Press `g` in the process view to group by command.
-That is how a "terminal holding 20 GiB" turns out to be eighteen `claude` processes plus the terminal itself, running for 86 days with 3.4 GiB in swap.
+That is how a "terminal holding 20 GiB" turns out to be eighteen `claude` processes plus the terminal itself.
+Each row also shows how long it has been running and how much of it sits in swap.
 
 ![The process view, grouped by command: several claude processes collapse into one row](https://raw.githubusercontent.com/DamianPala/appmem/main/docs/screenshots/processes.svg)
 
-The Δ columns show how each app grew or shrank since you started appmem (`b` resets the baseline).
+The Δ columns show how each app grew or shrank since you started appmem (`b` starts the comparison again from now).
 `h` opens the full memory details of the machine.
 On Linux, `x` adds system services and `c` shows the CACHE column.
 
 `T` opens a theme panel with a live preview: a set of built-in themes plus `terminal-dark` and `terminal-light`, which use your terminal's own colours.
-The theme you keep is saved to `~/.config/appmem/config.toml`; `appmem --theme NAME` or `APPMEM_THEME` override it for one run.
+The theme you keep is saved to `~/.config/appmem/config.toml`; `appmem --theme NAME` or the `APPMEM_THEME` environment variable override it for one run.
 
 ![The theme panel open on dracula, live-previewed on the main view behind it](https://raw.githubusercontent.com/DamianPala/appmem/main/docs/screenshots/theme-panel.svg)
 
@@ -88,12 +89,12 @@ The theme you keep is saved to `~/.config/appmem/config.toml`; `appmem --theme N
 RAM is what the app is using right now.
 SWAP is what the system moved out of RAM to make room: onto the disk or, with zswap, into a compressed corner of RAM.
 TOTAL is RAM + SWAP, one number to sort by.
-Closing the app gives you back less than that: memory shared with other apps stays, and freed swap is mostly space on the disk, not RAM.
+Closing the app gives you back less than that: memory shared with other apps stays, and the part in swap was mostly on the disk, not in RAM.
 CACHE (press `c`) is file data the kernel keeps around because something read or wrote it recently.
 It is not counted in the RAM or TOTAL columns: the kernel can drop it when it needs the space, and an app that just read a big file would otherwise look like a memory hog.
 The rows don't add up to the header, because system services, virtual machines, containers and other users hold the rest.
 
-In the header, `in` and `out` on the Swap row are how fast the system is reading from swap and writing to it right now, and `written` is how much it wrote since you started appmem and since the machine booted.
+In the header, `in` and `out` on the Swap row are how fast the system is reading from swap and writing to it right now, and `written` shows two totals: since you started appmem and since the machine booted.
 To tell whether swap is a problem, look at `out` and Pressure together.
 If `out` keeps showing a number and Pressure is above `none`, the machine is running out of memory right now and is pushing data to disk to cope.
 If swap is full but `in` and `out` both show zero, nothing is wrong: that data was moved out earlier and is just sitting there.
@@ -139,8 +140,8 @@ Bare `appmem` without a terminal exits 1 and points to `appmem snapshot`.
 
 ## Cost
 
-Reading the counters once a second takes about 1 % of one CPU core.
-The live view takes 3 to 12 % of one core on a busy Linux desktop, more with a tall terminal and many apps; on the Mac we tested it took about 3 %.
+Collecting the numbers once a second takes about 1 % of one CPU core.
+Drawing the live view brings that to 3 to 12 % of one core on a busy Linux desktop, more with a tall terminal and many apps; on the Mac we tested it took about 3 %.
 Refreshing every two seconds instead of every second (`appmem -i 2`) cuts that in half.
 
 ## Development
