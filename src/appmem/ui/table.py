@@ -45,6 +45,7 @@ from rich.segment import Segment
 from rich.style import Style
 from rich.text import Text
 from textual import events
+from textual.app import App
 from textual.binding import Binding, BindingType
 from textual.geometry import Region, Size, Spacing
 from textual.message import Message
@@ -202,6 +203,7 @@ class RowTable(ScrollView, can_focus=True):
         self._row_order: list[str] = []
         self._strips: dict[str, Strip] = {}
         self._header_strip: Strip | None = None
+        self._last_click_at: float | None = None
         self.virtual_size = Size(0, 1)
 
     def notify_style_update(self) -> None:
@@ -482,7 +484,21 @@ class RowTable(ScrollView, can_focus=True):
             return self._row_order[index]
         return None
 
+    def _double_click_is_ours(self, event: events.Click) -> bool:
+        """Textual counts a click chain app-wide, so the second click of a
+        double click whose first click closed a panel above this table
+        arrives here as `chain=2` without this table ever seeing the first.
+        It is a click on a widget that was covered a moment ago, not a
+        double click on a row. Times are the events' own, as Textual's chain
+        uses, so a slow handler cannot split a real double click."""
+        now = event.time
+        previous, self._last_click_at = self._last_click_at, now
+        if event.chain < 2:
+            return False
+        return previous is not None and now - previous <= App.CLICK_CHAIN_TIME_THRESHOLD
+
     def on_click(self, event: events.Click) -> None:
+        opens = self._double_click_is_ours(event)
         meta = event.style.meta
         column_key = meta.get("column")
         if column_key is not None:
@@ -497,7 +513,7 @@ class RowTable(ScrollView, can_focus=True):
         except ValueError:
             return
         self.move_cursor(index)
-        if event.chain >= 2:
+        if opens:
             self.post_message(self.RowSelected(self, row_key))
         event.stop()
 

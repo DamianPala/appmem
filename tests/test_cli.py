@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -323,6 +324,28 @@ def test_error_object_is_the_last_stderr_line_and_never_on_stdout(
     parsed = json.loads(last_line)
     assert "error" in parsed
     assert "kind" in parsed["error"]
+
+
+@pytest.mark.parametrize(
+    ("argv", "form"),
+    [
+        (["snapshot", "--bogus"], "usage: appmem snapshot "),
+        (["app", "x", "--bogus"], "usage: appmem app "),
+        (["schema", "snapshot", "--bogus"], "usage: appmem schema "),
+    ],
+)
+def test_unknown_flag_shows_the_usage_of_its_own_command(
+    argv: list[str], form: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(argv, stdin_isatty=_true, stdout_isatty=_true)
+
+    assert exc_info.value.code == 2
+    err = capsys.readouterr().err
+    assert err.startswith(form)
+    error = cast("dict[str, str]", _last_json_line(err)["error"])
+    assert error["kind"] == "invalid_input"
+    assert error["hint"].startswith(f"Accepted form: {form.removeprefix('usage: ')}")
 
 
 def test_snapshot_cgroup_unavailable_when_the_user_tree_is_missing(

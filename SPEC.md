@@ -1,4 +1,4 @@
-# appmem: spec v0.23
+# appmem: spec v0.24
 
 A live terminal view of memory usage **per application**, not per process, on Linux and on Apple Silicon macOS.
 Think `btm` or `htop`, but rows are apps (Ghostty, Brave, LibreOffice), each summing all of its processes.
@@ -28,6 +28,11 @@ Which app holds the memory and swap? Is memory actually the problem right now? W
 - **macOS:** nothing is counted per app, so each sample lists the user's processes, reads each one natively and groups them by `.app` bundle, ancestry or the app macOS holds responsible for them. Per-app swap and cache don't exist there; each process's compressed bytes do, and are summed like its footprint.
 
 Any other operating system fails with `platform_unavailable`.
+
+Known limits on macOS:
+
+- A setuid process the user started (`top`, for example) runs with an effective uid of root, and apps are keyed on the effective uid, so it is not listed and no coverage marker says so. The `?` help says it. appmem does not try to read such processes.
+- A system helper of an app launched from a terminal or over SSH stays a row of its own. macOS holds the shell responsible for that helper, not the app, and rule 3 only trusts an answer that resolves to an app (seen with VS Code started from an SSH shell: one app row, but `MTLCompilerService` separate).
 
 ## Scope
 
@@ -101,7 +106,7 @@ Both platforms lay out their host rows on one grid.
 
 - Every position and fit decision comes from the terminal width, the totals and the worst-case widths, never from the current values: nothing appears, disappears or moves when a number changes. If a total changes (swapon, macOS swap growth) the slots recompute.
 - Examples: a 30.9/32.0 GiB Linux machine is complete from 116 columns with short words and from 139 with wide words; an 8 GiB Mac with 1 GiB swap allocated, from 124 and 142.
-- **Hidden data:** a normal-foreground `…` (ASCII `>`) right after the last visible field means host information was omitted for space; a row whose left part alone does not fit is cropped before it. Unavailable readings are distinct from omitted information.
+- **Hidden data:** a normal-foreground `…` (ASCII `>`) right after the last visible field (one space after its own text, not after the padding reserved for its worst case) means host information was omitted for space; a row whose left part alone does not fit is cropped before it. Unavailable readings are distinct from omitted information.
 - Header rows never wrap or grow on a sample, and data changes never choose a new gauge width or row count. The table gets the remaining height.
 
 #### Header rows
@@ -127,7 +132,7 @@ Both platforms lay out their host rows on one grid.
 - It is laid out from structured blocks for the current width, never by re-reading its own text; a tick that changes nothing does not touch the widget.
 - Both: RAM, Swap used, an Activity table (Read / Written by Current rate, Since boot, This run), Pressure, and when the Δ baseline started.
 - Linux adds the RAM breakdown, a Zswap block (RAM occupied, approximate Pool limit with its RAM percentage, Data held, Compression, Compressor, Writeback rate and since-boot total) with its accounting notes, the PSI percentages, the system services total and `elsewhere`. Writes are called disk writes only when every current `/proc/swaps` entry is a recognised swap file or disk partition; zram, mixed, aliased, device-mapper or unreadable entries get generic swap-device wording.
-- macOS adds file-backed, free, wired, purgeable, compressed data versus its RAM, and that swap space is allocated dynamically.
+- macOS adds file-backed, free, wired, purgeable, compressed data versus its RAM, that swap space is allocated dynamically, and one line on why RAM used reads higher than Activity Monitor (it includes memory the system sets aside at boot).
 
 #### Table
 
@@ -221,7 +226,7 @@ With `g` (group by command):
  f c n p u r sort  g ungroup  enter members  esc back  T theme  ? help  q quit
 ```
 
-- Title: the app name and its MEMORY, or `Application vanished`.
+- Title: the app name and its MEMORY, or `Application vanished`. Inside one command's members the title reads `ghostty › claude  app memory 3.4 GiB`: the number is still the whole app's, and says so.
 - Flat: PID, COMMAND, MEMORY, COMPRESSED (from 80 columns), RESIDENT (from 100 columns), STATE (`readable`/`unreadable`, from 75 columns). The status line shows `via <rule>` (see "Grouping"), then the selected process's executable path, or why its memory is unavailable.
 - Grouped: COMMAND, MEMORY, COMPRESSED (from 80 columns), RESIDENT (from 100 columns), PROCS, UNREADABLE (from 75 columns), with readable counts for all three metrics in the status line. Enter drills into a command's processes, live; Esc returns to the groups on the same command.
 - All layouts refresh with the same interval as the main view.
@@ -233,7 +238,7 @@ With `g` (group by command):
 A scrolling screen with the definitions below in plain words, soft-wrapped to the width, with `esc/?/q close` in its title line, ending with the platform's key list, one line per key.
 
 - Linux: what RAM, CACHE, SWAP, TOTAL, pressure and the header's shared/free/cache/avail mean (tmpfs files count toward the app that wrote them), swap in/out and written totals, why rows don't add up to the header, why a closed app can still have a row, and how to act on what you see, plus `h` for the host panel, the trailing hidden-data marker (`…`, ASCII `>`), and `T` with where the theme is saved. When zswap is enabled, it also defines the physical Zswap gauge and logical ZSWAP, and lists `z` and `w`. It also explains the bar glyphs (`█` used, `░` what's left).
-- macOS: swap in/out, MEMORY, COMPRESSED (part of MEMORY, not on top of it; a large share means the app's pages were squeezed to make room; it does not add up to the Compress line, which counts every user's memory still in RAM while the column counts this user's apps and includes what went on to swap), RESIDENT, ΔMEM, `*`/`?`, RAM, file-backed, Compress, Swap, Pressure, grouping, the host panel and the hidden-data marker.
+- macOS, in the order the screen reads: the table columns MEMORY, COMPRESSED (part of MEMORY, not on top of it; a large share means the app's pages were squeezed to make room; it does not add up to the Compress line, which counts every user's memory still in RAM while the column counts this user's apps and includes what went on to swap), ΔMEM, RESIDENT, PROCS and `*`/`?`; then the header lines RAM, file-backed, Compress, swap in/out, Swap and Pressure; then grouping, the host panel, the hidden-data marker and the setuid limit (a setuid process the user started is not listed); then the keys.
 
 ## Keys
 
@@ -514,13 +519,13 @@ The command line conforms to the house CLI Design Standard 0.1.0 (claimed in `ap
   - At the bottom are fixed-height lines, which never wrap and don't move the panel: an info line (`your terminal's colours` on `terminal-*`, blank otherwise), then `↑↓ preview` and `enter keep  esc cancel`.
   - The view behind the panel pauses while it's open, the same as under the help screen, and catches up the moment it closes.
 - **Colour contrast.** Table header text reaches at least 4.5:1 against its background in every theme: black or white, whichever contrasts more. In terminal themes, table headers use the terminal's default colours, bold and underlined, since any other pair of palette slots can be unreadable in some palette.
-- **snapshot**: one sample with the same numbers as the main view and header, apps sorted by TOTAL (Linux, apps ≥ 1 MiB) or MEMORY (macOS, unknown last), at most `--limit` (default 50).
+- **snapshot**: one sample with the same numbers as the main view and header, apps sorted by TOTAL (Linux, apps ≥ 1 MiB) or MEMORY (macOS, unknown last; ties A to Z ignoring case, as in the live view), at most `--limit` (default 50).
 - **app NAME**: one app with `processes` and `commands`, each paged by `--limit` (default 100). No match, or every unit gone before it is read: `not_found`, exit 1, with `next` pointing at `appmem snapshot`. Linux resolves (scope, name) exactly like the process view and adds `units` as `{name, label}` objects (raw name, and the systemd-unescaped label), `private_bytes` per process, `kernel_bytes`, `zswap_pool_bytes` and `unattributed_*`. macOS resolves names and ids as in "Grouping".
-- **schema**: the index (platform, commands, global flags, format defaults, exit codes, conformance) or one command's detail (flags, args, output schema). Always JSON, for the running platform only; the index's `platform` is `linux` or `darwin`. Every output field carries a short `description`. This deliberately departs from the 0.1.0 claim, whose O4 allows only the five validation keywords; the 0.2 draft's O4a admits `description` as an annotation, which validators ignore. `conformance.extensions` stays empty: no 0.1.0 extension covers it.
+- **schema**: the index (platform, commands, global flags, format defaults, exit codes, `error_kinds` (each error `kind` the running platform can emit, with a one-line meaning), conformance) or one command's detail (flags, args, output schema). Always JSON, for the running platform only; the index's `platform` is `linux` or `darwin`. Every output field carries a short `description`. This deliberately departs from the 0.1.0 claim, whose O4 allows only the five validation keywords; the 0.2 draft's O4a admits `description` as an annotation, which validators ignore. `conformance.extensions` stays empty: no 0.1.0 extension covers it.
 - Output: text on a terminal, JSON otherwise; `--json` forces JSON. Sizes are integer bytes (`_bytes`), percentages `_percent`, ages integer `age_seconds`, `taken_at` is RFC 3339 with the local offset. Text reports contain no escape sequences, and names with control characters are shown escaped.
 - macOS text reports show four host lines (RAM, Compress, Swap, Pressure) without gauges, rates or Δ, aligned app or process (with its `VIA` column) and command tables, each with a `COMPRESSED` column after `MEMORY`, and a footnote when `*` or `unknown` appears.
 - A closed stdout pipe (`| head`) ends quietly with exit `0`.
-- `--help` is a standalone cheat sheet: purpose, commands, flags, keys, how to read pressure, one example. Unknown flags and invalid values fail with exit `2` and the accepted form.
+- `--help` is a standalone cheat sheet: purpose, commands, flags, keys, how to read pressure, one example. Unknown flags and invalid values fail with exit `2` and the accepted form of the command they were given to (`appmem snapshot --bogus` prints the `snapshot` usage, not the top-level one).
 - Colour is never the only signal: sort direction uses `▴`/`▾`, deltas use `+`/`-` and `·`, pressure is a word. `NO_COLOR` is honoured.
 
 ### JSON documents

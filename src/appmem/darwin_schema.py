@@ -341,6 +341,16 @@ def _app_output() -> dict[str, object]:
     }
 
 
+DARWIN_ERROR_KINDS: tuple[str, ...] = (
+    "invalid_input",
+    "terminal_required",
+    "not_found",
+    "interrupted",
+    "platform_unavailable",
+    "read_failed",
+)
+
+
 def index() -> dict[str, object]:
     return {
         "schema_version": schema.SCHEMA_VERSION,
@@ -363,6 +373,7 @@ def index() -> dict[str, object]:
             "130": "interrupted by SIGINT",
             "143": "terminated by SIGTERM",
         },
+        "error_kinds": schema.error_kinds(DARWIN_ERROR_KINDS),
         "commands": [
             {
                 "name": "",

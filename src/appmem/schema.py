@@ -800,6 +800,31 @@ EXIT_CODES: dict[str, str] = {
 }
 
 
+ERROR_KIND_DESCRIPTIONS: dict[str, str] = {
+    "invalid_input": "the call itself is wrong (unknown flag, bad value); exit 2",
+    "terminal_required": "bare `appmem` without a terminal; use `appmem snapshot`; exit 1",
+    "cgroup_unavailable": "no readable cgroup v2 user tree for this user; exit 1",
+    "not_found": "no app matches the name in that scope; exit 1",
+    "interrupted": "snapshot or app was interrupted by SIGINT; exit 130",
+    "platform_unavailable": "not Linux or macOS, or a Mac this tool does not support; exit 1",
+    "read_failed": "a native macOS read failed and may succeed on retry; exit 1",
+}
+"""Every error `kind`, described once; each platform's `schema` lists its own
+subset (`LINUX_ERROR_KINDS` here, `darwin_schema.index` for macOS)."""
+
+LINUX_ERROR_KINDS: tuple[str, ...] = (
+    "invalid_input",
+    "terminal_required",
+    "cgroup_unavailable",
+    "not_found",
+    "interrupted",
+)
+
+
+def error_kinds(kinds: tuple[str, ...]) -> dict[str, str]:
+    return {kind: ERROR_KIND_DESCRIPTIONS[kind] for kind in kinds}
+
+
 def root_detail() -> dict[str, object]:
     return {
         "name": "",
@@ -858,6 +883,7 @@ def index() -> dict[str, object]:
         "global_flags": [JSON_FLAG.to_dict()],
         "format_defaults": dict(FORMAT_DEFAULTS),
         "exit_codes": dict(EXIT_CODES),
+        "error_kinds": error_kinds(LINUX_ERROR_KINDS),
         "commands": [dict(command) for command in INDEX_COMMANDS],
         "command": root_detail(),
     }

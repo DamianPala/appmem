@@ -238,6 +238,8 @@ def darwin_details(
                 f"Wired {_amount(host.wired_bytes)} · purgeable {_amount(host.purgeable_bytes)}.",
                 "Wired cannot be swapped; purgeable can be reclaimed. These overlap RAM used.",
                 "File-backed is not an available-memory estimate.",
+                "RAM used reads higher than Activity Monitor: it includes memory the system "
+                "sets aside at boot.",
             ),
         ),
         Entry(

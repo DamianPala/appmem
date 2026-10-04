@@ -98,6 +98,13 @@ def test_panel_mac_accounting_remains_native() -> None:
     assert "Current rate            0 B/s           unavailable" in text
 
 
+def test_panel_mac_says_why_ram_used_reads_higher_than_activity_monitor() -> None:
+    text = " ".join(_text(darwin_details(HOST, (0, None))).split())
+    assert "RAM used reads higher than Activity Monitor" in text
+    assert "memory the system sets aside at boot" in text
+    assert "Activity Monitor" not in _text(linux_details(STATS, (None, None)))
+
+
 def test_panel_pressure_keeps_available_fields_with_partial_readings() -> None:
     stats = replace(STATS, pressure_some_avg10=None, pressure_full_avg60=2.5)
     text = _text(linux_details(stats, (None, None)))

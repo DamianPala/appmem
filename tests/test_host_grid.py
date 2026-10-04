@@ -297,6 +297,18 @@ def test_an_item_without_room_for_the_marker_is_dropped_whole() -> None:
     assert row.endswith("…") and "x" not in row and len(row) <= 27
 
 
+def test_the_marker_follows_the_last_visible_item_not_its_padding() -> None:
+    lay = Layout(40, 9, 0, 2, False, Slots(5, 6, 4, 8, 0), 4)
+    items = [Item(Text("x" * 4), 10, spaces(2)), Item(Text("y" * 4), 10, Text())]
+    row = grid_row("RAM", Text("abcd"), lay, items, hidden=True).plain
+    assert row.endswith("yyyy …"), row
+    for width in range(60, 201):
+        lines = [*linux(TYPICAL, width, 16), *linux(TYPICAL, width, 30), *mac(HOST, width)]
+        for line in lines:
+            if "│" in line.plain and line.plain.endswith("…"):
+                assert re.search(r"\S ?…$", line.plain), (width, line.plain)
+
+
 def test_slots_follow_the_totals_and_recompute_when_a_total_changes() -> None:
     small = linux(TYPICAL, 160)
     # `30.9/30.9 GiB used` needs no padding on this machine.

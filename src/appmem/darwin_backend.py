@@ -346,6 +346,7 @@ class DarwinBackend:
             key=lambda app: (
                 app.footprint_bytes is None,
                 -(app.footprint_bytes or 0),
+                app.name.casefold(),
                 app.name,
                 app.id,
             ),

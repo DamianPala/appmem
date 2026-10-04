@@ -26,6 +26,7 @@ from appmem import darwin_backend, darwin_report, darwin_schema, report, schema
 from appmem.backend import Backend
 from appmem.darwin_backend import DarwinBackend
 from appmem.darwin_native import BSDShortInfo, DarwinNative, HostMemory, ReadResult, Unavailable
+from appmem.fmt import size
 from appmem.model import AppStats, SystemStats
 from appmem.ui.app import AppMemApp
 from appmem.ui.darwin_rows import DarwinRow, sort_rows
@@ -139,6 +140,22 @@ def test_equal_sizes_order_by_name_then_pid() -> None:
     assert names == [("a", 12), ("a", 13), ("b", 11), ("App", 10)]
 
 
+def test_equal_sizes_order_a_to_z_ignoring_case_like_the_tui() -> None:
+    reader = _reader(("Zed", 5), ("alpha", 5), ("Beta", 5), ("beta2", 5))
+    document, _ = darwin_report.snapshot_document(DarwinBackend(501, reader), limit=9, now=NOW)
+    apps = cast("dict[str, Any]", document["apps"])["items"]
+    assert [item["name"] for item in apps] == ["alpha", "Beta", "beta2", "Zed"]
+
+    reader = Reader()
+    reader.add(10, 1, "App", "/Applications/App.app/Contents/MacOS/App", 1)
+    for pid, name in ((11, "Zed"), (12, "alpha"), (13, "Beta")):
+        reader.add(pid, 10, name, f"/usr/bin/{name}", 7)
+    detail, _, _ = darwin_report.app_document(DarwinBackend(501, reader), "App", limit=9, now=NOW)
+    doc = cast("dict[str, Any]", detail)
+    assert [p["name"] for p in doc["processes"]["items"]] == ["alpha", "Beta", "Zed", "App"]
+    assert [c["name"] for c in doc["commands"]["items"]] == ["alpha", "Beta", "Zed", "App"]
+
+
 def test_swap_activity_values_reach_the_macos_document() -> None:
     document, _ = darwin_report.snapshot_document(
         cast("DarwinBackend", _MacStub()), limit=1, now=NOW
@@ -210,6 +227,33 @@ def test_exit_code_text_declares_the_new_failures() -> None:
     mac = cast("dict[str, str]", darwin_schema.index()["exit_codes"])["1"]
     assert "unsupported platform" in mac and "retry" in mac
     assert "read_failed" in cli_module.ERROR_KINDS
+
+
+def test_schema_index_lists_the_error_kinds_each_platform_can_emit(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    assert cli_module.main(["schema"], root=tmp_path) == 0
+    linux = json.loads(capsys.readouterr().out)["error_kinds"]
+    _mac_cli(monkeypatch)
+    assert cli_module.main(["schema"], uid=501) == 0
+    mac = json.loads(capsys.readouterr().out)["error_kinds"]
+    assert set(linux) == {
+        "invalid_input",
+        "terminal_required",
+        "cgroup_unavailable",
+        "not_found",
+        "interrupted",
+    }
+    assert set(mac) == {
+        "invalid_input",
+        "terminal_required",
+        "not_found",
+        "interrupted",
+        "platform_unavailable",
+        "read_failed",
+    }
+    assert set(linux) | set(mac) == set(cli_module.ERROR_KINDS)
+    assert all(isinstance(text, str) and text for text in (*linux.values(), *mac.values()))
 
 
 # --- --system on macOS ---------------------------------------------------------
@@ -435,7 +479,8 @@ async def test_detail_view_says_where_you_are_in_members_and_when_the_app_is_gon
         table.move_cursor(row=table.get_row_index("helper"))
         await pilot.press("enter")
         await pilot.pause()
-        assert shown("#title").startswith(f"App {crumb} helper  memory ")
+        # The number is the whole app's (100 + 20 + 30), and the title says so.
+        assert shown("#title") == f"App {crumb} helper  app memory {size(150)}"
         assert "esc groups" in shown("#footer") and "esc back" not in shown("#footer")
         assert shown("#status") == "Command helper"
 

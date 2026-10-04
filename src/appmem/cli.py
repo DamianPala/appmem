@@ -241,6 +241,17 @@ class _SubparserFactory(Protocol):
 class _ArgumentParser(argparse.ArgumentParser):
     """Routes argparse's own error path through the standard's JSON error format."""
 
+    def parse_known_args(  # pyright: ignore[reportIncompatibleMethodOverride]
+        self, args: Sequence[str] | None = None, namespace: argparse.Namespace | None = None
+    ) -> tuple[argparse.Namespace | None, list[str]]:
+        # argparse hands a subparser's leftovers up to the top-level parser,
+        # which then reports them with its own usage; fail here instead, so
+        # `appmem snapshot --bogus` shows the `snapshot` form.
+        parsed, extras = super().parse_known_args(args, namespace)
+        if extras:
+            self.error(f"unrecognized arguments: {' '.join(extras)}")
+        return parsed, extras
+
     def error(self, message: str) -> NoReturn:
         usage = self.format_usage()
         sys.stderr.write(usage)  # fails "with the accepted form"

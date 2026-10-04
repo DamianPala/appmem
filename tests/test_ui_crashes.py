@@ -188,6 +188,85 @@ async def test_double_click_outside_theme_panel_closes_it_once(tmp_path: Path) -
         assert pilot.app.query_one("#header1", Static)
 
 
+def _click_on(table: RowTable, chain: int) -> events.Click:
+    """A click on the first data row (line 1 under the column header)."""
+    region = table.region
+    return events.Click(
+        table,
+        5,
+        1,
+        0,
+        0,
+        1,
+        False,
+        False,
+        False,
+        screen_x=region.x + 5,
+        screen_y=region.y + 1,
+        chain=chain,
+    )
+
+
+@pytest.mark.asyncio
+async def test_second_click_of_a_double_click_does_not_click_through_the_panel(
+    tmp_path: Path,
+) -> None:
+    """The first click closes the theme panel; its chain=2 partner then lands
+    on the row under the pointer and must not open the process view."""
+    _linux_tree(tmp_path)
+    app = AppMemApp(backend=LinuxBackend(tmp_path, 1000), interval=3600, include_system=False)
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        main_screen = pilot.app.screen
+        table = main_screen.query_one("#table", RowTable)
+        await pilot.press("T")
+        await pilot.pause()
+        panel = pilot.app.screen
+        assert isinstance(panel, ThemePanel)
+        panel.post_message(
+            events.Click(panel, 1, 1, 0, 0, 1, False, False, False, screen_x=1, screen_y=1)
+        )
+        await pilot.pause()
+        assert pilot.app.screen is main_screen
+        table.post_message(_click_on(table, 2))
+        await pilot.pause()
+        assert pilot.app.screen is main_screen
+
+
+@pytest.mark.asyncio
+async def test_an_old_click_on_the_table_does_not_pair_with_a_later_chain(
+    tmp_path: Path,
+) -> None:
+    """The table saw a click long ago; a chain=2 now (its first click went to a
+    panel) is still not a double click on the row."""
+    _linux_tree(tmp_path)
+    app = AppMemApp(backend=LinuxBackend(tmp_path, 1000), interval=3600, include_system=False)
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        main_screen = pilot.app.screen
+        table = main_screen.query_one("#table", RowTable)
+        old = _click_on(table, 1)
+        old.time -= 5
+        table.post_message(old)
+        await pilot.pause()
+        table.post_message(_click_on(table, 2))
+        await pilot.pause()
+        assert pilot.app.screen is main_screen
+
+
+@pytest.mark.asyncio
+async def test_double_click_on_a_row_still_opens_the_process_view(tmp_path: Path) -> None:
+    _linux_tree(tmp_path)
+    app = AppMemApp(backend=LinuxBackend(tmp_path, 1000), interval=3600, include_system=False)
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        table = pilot.app.screen.query_one("#table", RowTable)
+        for chain in (1, 2):
+            table.post_message(_click_on(table, chain))
+        await pilot.pause()
+        assert isinstance(pilot.app.screen, ProcessesScreen)
+
+
 @pytest.mark.asyncio
 async def test_command_palette_offers_only_theme_and_quit(tmp_path: Path) -> None:
     """Textual's Keys panel can end the app on a mouse press and its

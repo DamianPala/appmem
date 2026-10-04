@@ -784,7 +784,8 @@ class DarwinProcessesScreen(LiveScreen):
             title = f"{shown}   (app no longer running)"
         elif self._command is not None:  # members of one command: say so, as Linux does
             title = f"{shown} › {escape_control_chars(self._command)}"  # noqa: RUF001 -- breadcrumb separator
-            title += f"  memory {_amount(app.footprint_bytes)}"
+            # the number is the whole app's, not this command's
+            title += f"  app memory {_amount(app.footprint_bytes)}"
         else:
             title = f"{shown}  memory {_amount(app.footprint_bytes)}"
         self._set_static("#title", truncate_name(title, self.size.width))
@@ -907,22 +908,9 @@ class DarwinHelpScreen(Screen[None]):
 
     @staticmethod
     def _body(width: int) -> str:
+        # The order the screen reads: table columns, then the header lines, then
+        # grouping and keys below.
         definitions = (
-            (
-                "Swap in/out",
-                "Host activity averaged over about 5 seconds in this run. "
-                "Native counters count page-rounded compressed segments transferred to/from swap "
-                "files, including housekeeping, not logical app bytes or SSD throughput. "
-                "Unknown means insufficient/unavailable samples; 0 B/s is measured zero. "
-                "Clock discontinuities reset rates; b resets growth only. "
-                "The Swap line keeps in and out in fixed columns, then the exact total written "
-                "this run; the since-boot total follows when space permits. Rates have priority "
-                "over both totals, and the total for this run has priority over the boot total. "
-                "h shows Read/Written rates, "
-                "boot totals and exact totals for this run. Totals for this run survive "
-                "navigation and rate resets. Missing initial counters or any decrease leave "
-                "that direction unavailable; temporary missing readings retain its baseline.",
-            ),
             (
                 "MEMORY",
                 "What Activity Monitor's Memory column shows per process (physical footprint, "
@@ -937,15 +925,20 @@ class DarwinHelpScreen(Screen[None]):
                 "column counts only your apps and includes what went on to swap.",
             ),
             (
+                "ΔMEM",
+                "Change since the app's first complete sample or b reset. Partial current "
+                "samples stay unknown; recovery uses the retained complete baseline. Reopened "
+                "apps start fresh. The header clock counts from this run or the last b.",
+            ),
+            (
                 "RESIDENT",
                 "Resident shared/file-backed pages can double count between processes. "
                 "Do not add to MEMORY or subtract to infer swap.",
             ),
             (
-                "ΔMEM",
-                "Change since the app's first complete sample or b reset. Partial current "
-                "samples stay unknown; recovery uses the retained complete baseline. Reopened "
-                "apps start fresh. The header clock counts from this run or the last b.",
+                "PROCS",
+                "How many processes the app has; in the process view grouped by command, how "
+                "many run that command.",
             ),
             (
                 "* / ?",
@@ -964,6 +957,21 @@ class DarwinHelpScreen(Screen[None]):
                 "is not an available-memory estimate.",
             ),
             ("Compress", "Logical data -> physical RAM, with a ratio when both are nonzero."),
+            (
+                "Swap in/out",
+                "Host activity averaged over about 5 seconds in this run. "
+                "Native counters count page-rounded compressed segments transferred to/from swap "
+                "files, including housekeeping, not logical app bytes or SSD throughput. "
+                "Unknown means insufficient/unavailable samples; 0 B/s is measured zero. "
+                "Clock discontinuities reset rates; b resets growth only. "
+                "The Swap line keeps in and out in fixed columns, then the exact total written "
+                "this run; the since-boot total follows when space permits. Rates have priority "
+                "over both totals, and the total for this run has priority over the boot total. "
+                "h shows Read/Written rates, "
+                "boot totals and exact totals for this run. Totals for this run survive "
+                "navigation and rate resets. Missing initial counters or any decrease leave "
+                "that direction unavailable; temporary missing readings retain its baseline.",
+            ),
             (
                 "Swap",
                 "Used / currently allocated space, allocated dynamically. Zero total "
@@ -1010,7 +1018,8 @@ class DarwinHelpScreen(Screen[None]):
             "nearest parent; a helper launchd started (WebKit and other XPC services) joins "
             "the app macOS holds responsible for it, and the rest group by name. "
             "The process view's status line shows which rule placed the selected process. "
-            "App sums do not equal host RAM. Only the current user's apps are shown; "
+            "App sums do not equal host RAM. Only the current user's apps are shown, and a "
+            "setuid process you started (top, for example) runs as root and is not listed; "
             "macOS 15+ on Apple Silicon is required."
         )
         return (

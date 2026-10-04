@@ -262,8 +262,10 @@ def grid_row(
             text += piece
             if index < kept:
                 text += Text(" " * (item.need - piece.cell_len)) + item.after
-            elif marker or measuring:
+            elif measuring:
                 text += Text(" " * (item.need - piece.cell_len))
+            # With a marker the last item's own text ends the row: the marker
+            # follows it at once, not the item's worst-case padding.
     if text.cell_len > lay.width - (_MARKER_CELLS if marker else 0):
         marker = True
         text.truncate(max(0, lay.width - _MARKER_CELLS))

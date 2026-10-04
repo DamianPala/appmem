@@ -62,9 +62,9 @@ def _process_item(process: DarwinProcess) -> dict[str, object]:
     }
 
 
-def _by_size(footprint: int | None, name: str, pid: int = 0) -> tuple[bool, int, str, int]:
-    """Largest first, unreadable last, ties A to Z then by PID."""
-    return (footprint is None, -(footprint or 0), name, pid)
+def _by_size(footprint: int | None, name: str, pid: int = 0) -> tuple[bool, int, str, str, int]:
+    """Largest first, unreadable last, ties A to Z ignoring case, then by PID."""
+    return (footprint is None, -(footprint or 0), name.casefold(), name, pid)
 
 
 def _commands(app: DarwinApp) -> list[dict[str, object]]:

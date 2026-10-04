@@ -6,6 +6,17 @@
 
 - macOS: a COMPRESSED column, from 80 columns, in the main table and the process view, sortable with `c`. It is the part of each app's MEMORY that macOS holds compressed, in RAM or swapped out, so it answers "which app is being squeezed". It is already inside MEMORY, not added on top. `?` means no process of the app could be read, `*` a partial sum. The `snapshot` and `app` JSON gain `compressed_bytes` (per app, process and command) and the matching coverage counts, and the text reports gain a `COMPRESSED` column
 - macOS: each process of an app shows which rule put it there (`via`: `bundle`, `ancestry`, `responsible` or `root`), in the process view's status line, in the `app` JSON and schema, and as a `VIA` column in the `app` text report
+- `appmem schema` lists the error kinds the running platform can emit (`error_kinds`), with a one-line meaning for each
+- macOS: the `h` panel says why RAM used reads higher than Activity Monitor, as the help (`?`) already did, and the help says that a setuid process you started (`top`, for example) is not listed
+
+### Fixed
+
+- A double click outside the theme panel no longer also opens the process view of the row under the pointer
+- An unknown flag such as `appmem snapshot --bogus` prints the usage of that command, not the top-level one
+- The header's `…` marker sits right after the last visible item, not after blank padding
+- macOS: the process view of one command says `app memory` before the number, because it is the whole app's memory, not the command's
+- macOS: `snapshot` and `app` order apps, processes and commands of equal size A to Z ignoring case, as the live view does
+- macOS: the help (`?`) reads in the order of the screen: table columns, header lines, grouping, keys
 
 ### Changed
 

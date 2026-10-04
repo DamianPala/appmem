@@ -1213,6 +1213,29 @@ async def test_darwin_help_scroll_reaches_keys_and_returns_at_80x24() -> None:
         assert app.screen is main
 
 
+def test_darwin_help_reads_in_screen_order_and_names_the_setuid_limit() -> None:
+    body = DarwinHelpScreen._body(100)  # pyright: ignore[reportPrivateUsage]
+    order = [
+        "\nMEMORY ",
+        "\nCOMPRESSED ",
+        "\nΔMEM ",
+        "\nRESIDENT ",
+        "\nPROCS ",
+        "\n* / ? ",
+        "\nRAM ",
+        "\nfile-backed ",
+        "\nCompress ",
+        "\nSwap in/out ",
+        "\nSwap ",
+        "\nPressure ",
+        "h on the main dashboard",
+        "\nKeys:\n",
+    ]
+    positions = [("\n" + body).index(marker) for marker in order]
+    assert positions == sorted(positions)
+    assert "setuid process you started" in body
+
+
 def test_darwin_text_reports_use_aligned_units_and_keep_documents() -> None:
     reader = Reader()
     reader.add(10, 1, "Long App", "/Applications/Long App.app/Contents/MacOS/App", 1024**3)
